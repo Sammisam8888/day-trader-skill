@@ -415,3 +415,67 @@ def build_for_instrument(
         exchange=getattr(instrument, "exchange", "NSE") or "NSE",
         remarks=remarks,
     )
+
+
+def build_trigger_for_instrument(
+    instrument,
+    *,
+    qty: int,
+    range_high: Decimal,
+    stop: Decimal,
+    target: Decimal,
+    cmp: Decimal,
+    slippage_ticks: int = 2,
+    remarks: Optional[str] = None,
+) -> SmartOrder:
+    """A resting TRIGGER order at the opening-range high, legs attached.
+
+    This is what removes execution latency: the order sits AT THE EXCHANGE
+    with its stop and target, so the fill happens in exchange time rather
+    than waiting on a human, a chat round trip or an ssh session.
+
+    The trade-off is honest and worth stating: a TRIGGER fires on a TOUCH of
+    the level, where the close-above rule waits for a completed candle. It
+    will catch moves the close rule misses and will also be taken out by
+    wicks the close rule ignores. Different strategy, not a faster one.
+
+    trigger_price must sit strictly above the current price, so a level that
+    has already been passed is refused rather than silently repriced.
+    """
+    tick = instrument.tick_size
+    band = tick * slippage_ticks
+
+    trigger = to_tick(range_high + tick, tick, mode="up")
+    if trigger <= cmp:
+        raise SmartOrderError(
+            "TriggerPriceVsCMP",
+            f"range high {range_high} is already below the market at {cmp}; "
+            "the breakout has happened and this entry is stale",
+        )
+
+    # The entry the legs are measured against is trigger_limit_price.
+    trigger_limit = to_tick(trigger + band, tick, mode="up")
+
+    sl_trigger = to_tick(stop, tick, mode="down")
+    sl_limit = to_tick(sl_trigger - band, tick, mode="down")
+    tgt_trigger = to_tick(target, tick, mode="up")
+    tgt_limit = to_tick(tgt_trigger + band, tick, mode="up")
+
+    return SmartOrder(
+        txn_type="BUY",
+        exchange=getattr(instrument, "exchange", "NSE") or "NSE",
+        segment="EQUITY",
+        product="INTRADAY",
+        order_type="TRIGGER",
+        security_id=instrument.security_id,
+        qty=qty,
+        trigger_price=trigger,
+        trigger_limit_price=trigger_limit,
+        sl_trigger_price=sl_trigger,
+        sl_limit_price=sl_limit,
+        tgt_trigger_price=tgt_trigger,
+        tgt_limit_price=tgt_limit,
+        tick_size=tick,
+        cmp=cmp,
+        remarks=remarks,
+    ).validate()

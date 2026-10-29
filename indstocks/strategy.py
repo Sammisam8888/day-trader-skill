@@ -143,3 +143,19 @@ def plan_exit(entry: Decimal, range_high: Decimal, range_low: Decimal,
 
     return ExitPlan(entry=entry, stop=stop, target=target, risk_per_share=risk,
                     reward_to_risk=(target - entry) / risk)
+
+
+def plan_trigger_exit(range_high: Decimal, range_low: Decimal, tick: Decimal, *,
+                      stop_mode: str = "or-mid",
+                      reward_multiple: Decimal = Decimal(2),
+                      slippage_ticks: int = 2) -> ExitPlan:
+    """Stop and target for a RESTING trigger entry at the range high.
+
+    The entry price is not yet known when the order is placed, so the plan is
+    measured against the trigger-limit price -- the worst price the entry can
+    fill at -- rather than an observed close. Measuring against the trigger
+    itself would understate the risk by the slippage band.
+    """
+    entry = to_tick(range_high + tick + tick * slippage_ticks, tick, mode="up")
+    return plan_exit(entry, range_high, range_low, tick, stop_mode=stop_mode,
+                     reward_multiple=reward_multiple)
