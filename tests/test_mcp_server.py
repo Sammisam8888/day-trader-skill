@@ -101,5 +101,40 @@ class TestWriteToolsAreGated(unittest.TestCase):
         self.assertIsNone(tk.parent_order_id, "nothing may have been sent")
 
 
+class TestSizingUsesRealFunds(unittest.TestCase):
+    def test_reads_eq_mis_from_funds(self):
+        class C:
+            def get(self, path, params=None):
+                return {"status": "success", "data": {
+                    "sod_balance": 4996.47,
+                    "detailed_avl_balance": {"eq_mis": 2980.40, "eq_cnc": 2980.40}}}
+
+        from decimal import Decimal as D
+        self.assertEqual(_m.available_cash(C()), D("2980.40"))
+
+    def test_falls_back_to_eq_cnc_when_mis_absent(self):
+        class C:
+            def get(self, path, params=None):
+                return {"data": {"detailed_avl_balance": {"eq_cnc": 1234.5}}}
+
+        from decimal import Decimal as D
+        self.assertEqual(_m.available_cash(C()), D("1234.5"))
+
+    def test_unreadable_funds_returns_none_rather_than_a_default(self):
+        class C:
+            def get(self, path, params=None):
+                raise RuntimeError("network down")
+
+        self.assertIsNone(_m.available_cash(C()),
+                          "a guessed balance would size the position wrong")
+
+    def test_missing_balance_block_returns_none(self):
+        class C:
+            def get(self, path, params=None):
+                return {"data": {}}
+
+        self.assertIsNone(_m.available_cash(C()))
+
+
 if __name__ == "__main__":
     unittest.main()
