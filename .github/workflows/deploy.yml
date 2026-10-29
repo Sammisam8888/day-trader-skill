@@ -1,0 +1,60 @@
+name: test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # One deploy at a time. Two concurrent restarts of the token-holding
+  # service would have both processes racing /generate/token, and each
+  # call invalidates the other's token.
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run the offline suite
+        run: python3 -m unittest discover -s tests
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write deploy key and pinned host key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Pinned, not StrictHostKeyChecking=no: without this the runner
+          # trusts whatever answers on that IP.
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Pull and restart on the server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes "$USER@$HOST" bash -seu <<'REMOTE'
+          cd /opt/indstocks/day-trader-skill
+          git fetch --quiet origin main
+          git reset --hard origin/main
+          python3 -m venv --upgrade-deps .venv 2>/dev/null || true
+          if [ -f requirements.txt ]; then .venv/bin/pip install -q -r requirements.txt; fi
+          python3 -m unittest discover -s tests
+          # Restart only if the unit exists; early on there is nothing to run yet.
+          if systemctl list-unit-files | grep -q '^indstocks-mcp\.service'; then
+            sudo systemctl restart indstocks-mcp
+            sleep 2
+            systemctl is-active --quiet indstocks-mcp || { journalctl -u indstocks-mcp -n 50 --no-pager; exit 1; }
+          fi
+          REMOTE
