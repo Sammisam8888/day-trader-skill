@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -28,6 +29,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session import IST, epoch_ms, from_candle_ts  # noqa: E402
 
 MAX_CODES_PER_CALL = 5
+
+# The endpoint answers success:true with an EMPTY candles array when it is
+# unhappy, rather than 429 or an error. Observed directly: NSE_11536 returned
+# 0 candles in one run and 75 for the identical request two minutes later,
+# while a live quote for the same id worked throughout.
+#
+# An empty array is therefore ambiguous -- it means "did not trade" OR
+# "throttled" -- and the two are indistinguishable in the response. We retry
+# empties with backoff and surface anything still empty afterwards, because
+# silently reading a throttle as "no setup here" is how a scanner goes blind
+# to two thirds of its watchlist without ever logging an error.
+EMPTY_RETRIES = int(os.environ.get("INDSTOCKS_EMPTY_RETRIES", "3"))
+EMPTY_BACKOFF_S = float(os.environ.get("INDSTOCKS_EMPTY_BACKOFF", "1.5"))
 
 INTERVAL_MINUTES = {
     "1minute": 1, "2minute": 2, "3minute": 3, "4minute": 4, "5minute": 5,
@@ -96,26 +110,45 @@ class Bars:
     def interval_minutes(self) -> int:
         return INTERVAL_MINUTES[self.interval]
 
-    def fetch(self, codes: Iterable[str], start: datetime,
+    def _call(self, batch: List[str], start: datetime,
               end: datetime) -> Dict[str, List[Candle]]:
-        """Candles for the half-open window [start, end), batching by five."""
+        payload = self.client.get(
+            f"/market/historical/{self.interval}",
+            params={
+                "scrip-codes": ",".join(batch),
+                "start_time": epoch_ms(start),
+                "end_time": epoch_ms(end),
+            },
+        )
+        return parse_response(payload, self.interval)
+
+    def fetch(self, codes: Iterable[str], start: datetime, end: datetime, *,
+              sleep=time.sleep) -> Dict[str, List[Candle]]:
+        """Candles for the half-open window [start, end), batching by five.
+
+        Codes that come back empty are retried individually with backoff,
+        because an empty array here does not reliably mean "no trades".
+        """
         codes = list(dict.fromkeys(codes))       # de-dupe, keep order
-        result: Dict[str, List[Candle]] = {}
+        result: Dict[str, List[Candle]] = {c: [] for c in codes}
+
         for i in range(0, len(codes), MAX_CODES_PER_CALL):
             batch = codes[i:i + MAX_CODES_PER_CALL]
-            payload = self.client.get(
-                f"/market/historical/{self.interval}",
-                params={
-                    "scrip-codes": ",".join(batch),
-                    "start_time": epoch_ms(start),
-                    "end_time": epoch_ms(end),
-                },
-            )
-            result.update(parse_response(payload, self.interval))
-        # A code with no candles is absent from `data`; make that explicit so
-        # callers can tell "no data" from "never asked".
-        for code in codes:
-            result.setdefault(code, [])
+            for code, candles in self._call(batch, start, end).items():
+                if candles:
+                    result[code] = candles
+
+        for attempt in range(1, EMPTY_RETRIES + 1):
+            empties = [c for c in codes if not result[c]]
+            if not empties:
+                break
+            sleep(EMPTY_BACKOFF_S * attempt)
+            for code in empties:
+                got = self._call([code], start, end).get(code) or []
+                if got:
+                    result[code] = got
+
+        self.unresolved = [c for c in codes if not result[c]]
         return result
 
     def fetch_one(self, code: str, start: datetime, end: datetime) -> List[Candle]:

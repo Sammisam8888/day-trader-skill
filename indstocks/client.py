@@ -44,9 +44,15 @@ class DailyBudgetExhausted(RuntimeError):
 
 
 # category -> (per second, per day or None)
+# "data" is deliberately BELOW the documented 5/sec. At 5 the historical
+# endpoint starts answering success:true with empty candle arrays instead of
+# 429, which is indistinguishable from a stock that did not trade. Slower and
+# correct beats fast and silently blind.
+_DATA_RPS = int(os.environ.get("INDSTOCKS_DATA_RPS", "2"))
+
 LIMITS = {
     "order": (10, None),
-    "data": (5, 100_000),
+    "data": (_DATA_RPS, 100_000),
     "quote": (5, 100_000),
     "non_trading": (15, 100_000),
 }
