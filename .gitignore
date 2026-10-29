@@ -1,0 +1,7 @@
+# Python bytecode, produced by running the test suite
+__pycache__/
+*.py[cod]
+
+# Runtime state the skills write (plans, orders, verdicts, broker log).
+# Never commit this: it holds order history and portfolio positions.
+trader/
