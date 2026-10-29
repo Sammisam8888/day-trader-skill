@@ -8,6 +8,7 @@ SmartOrder = _m.SmartOrder
 SmartOrderError = _m.SmartOrderError
 build_long_day_trade = _m.build_long_day_trade
 build_for_instrument = _m.build_for_instrument
+build_trigger_for_instrument = _m.build_trigger_for_instrument
 on_tick = _m.on_tick
 to_tick = _m.to_tick
 
@@ -221,6 +222,43 @@ class TestBuildForInstrument(unittest.TestCase):
         o = build_for_instrument(Penny(), qty=100, entry=D("11.37"),
                                  stop=D("10.92"), target=D("12.27"))
         self.assertEqual(o.payload()["sl_trigger_price"], 10.92)
+
+
+class TestTriggerOrder(unittest.TestCase):
+    class Inst:
+        security_id = "2885"
+        tick_size = D("0.10")
+        exchange = "NSE"
+
+    def build(self, cmp="1160.00"):
+        return build_trigger_for_instrument(
+            self.Inst(), qty=10, range_high=D("1170.50"), stop=D("1163.00"),
+            target=D("1197.20"), cmp=D(cmp), remarks="orb-trig/RELIANCE")
+
+    def test_rests_above_the_range_high(self):
+        p = self.build().payload()
+        self.assertEqual(p["order_type"], "TRIGGER")
+        self.assertEqual(p["trigger_price"], 1170.60)      # high + one tick
+        self.assertEqual(p["trigger_limit_price"], 1170.80)
+        self.assertNotIn("limit_price", p, "rejected on TRIGGER orders")
+
+    def test_legs_ride_along_with_the_resting_order(self):
+        p = self.build().payload()
+        self.assertEqual(p["sl_trigger_price"], 1163.00)
+        self.assertEqual(p["sl_limit_price"], 1162.80)
+        self.assertEqual(p["tgt_trigger_price"], 1197.20)
+        self.assertEqual(p["tgt_limit_price"], 1197.40)
+
+    def test_a_level_already_passed_is_refused_not_repriced(self):
+        with self.assertRaises(SmartOrderError) as cm:
+            self.build(cmp="1180.00")
+        self.assertIn("already below the market", str(cm.exception))
+
+    def test_everything_sits_on_the_instrument_tick(self):
+        p = self.build().payload()
+        for k in ("trigger_price", "trigger_limit_price", "sl_trigger_price",
+                  "sl_limit_price", "tgt_trigger_price", "tgt_limit_price"):
+            self.assertEqual((D(str(p[k])) / D("0.10")) % 1, 0, k)
 
 
 if __name__ == "__main__":

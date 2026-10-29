@@ -31,10 +31,11 @@ import risk as risk_mod  # noqa: E402
 import session as sess  # noqa: E402
 import strategy as strat  # noqa: E402
 import ticket as tk_mod  # noqa: E402
-from bars import Bars, scrip_code  # noqa: E402
+from bars import Bars, opening_range, scrip_code  # noqa: E402
 from client import Client  # noqa: E402
 from instruments import Instruments  # noqa: E402
-from smartorder import SmartOrderError, build_for_instrument  # noqa: E402
+from smartorder import (SmartOrderError, build_for_instrument,  # noqa: E402
+                        build_trigger_for_instrument)
 
 PROTOCOL_VERSION = "2024-11-05"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -201,6 +202,106 @@ def t_propose_order(args):
             "risk": "PASS" if verdict.passed else f"BLOCK: {verdict}"}
 
 
+def t_propose_batch(args):
+    """Scan once, build a RESTING trigger ticket for every candidate.
+
+    Run this just after the opening range closes (09:30). Each ticket is an
+    order that waits at the exchange at the range high with its stop and
+    target attached, so the fill costs no human time at all. One approval
+    round, then nothing to watch.
+    """
+    now = sess.now()
+    session = sess.session_for(now)
+    if session is None:
+        return {"error": f"{now.date()} is not an NSE trading day"}
+    if now < session.opening_range_end:
+        return {"error": f"opening range closes at "
+                         f"{session.opening_range_end:%H:%M}; nothing to propose yet"}
+
+    limits = limits_from_env()
+    cash = (Decimal(str(args["cash"])) if args.get("cash")
+            else available_cash(client()))
+    if cash is None:
+        return {"error": "could not read available funds; refusing to size blind"}
+
+    symbols = [s.upper() for s in (args.get("symbols") or watchlist())]
+    m = master()
+    bars = Bars(client(), "5minute")
+    log = tk_mod.day_state_from_log()
+    day_state = risk_mod.DayState(trades_taken=log["trades_taken"],
+                                  risk_committed=log["risk_committed"],
+                                  open_symbols=log["open_symbols"])
+
+    tickets, skipped, unknown = [], [], []
+    for sym in symbols:
+        try:
+            inst = m.resolve(sym)
+        except KeyError:
+            unknown.append(sym)
+            continue
+
+        candles = bars.fetch_one(scrip_code(inst), session.open,
+                                 min(now, session.close))
+        if not candles:
+            # Feed gap for this instrument today. Not "no setup".
+            unknown.append(sym)
+            continue
+
+        rng = opening_range(candles, session)
+        if rng is None:
+            skipped.append({"symbol": sym, "reason": "no opening range"})
+            continue
+        high, low = rng
+
+        try:
+            quote = client().get("/market/quotes/ltp",
+                                 params={"scrip-codes": scrip_code(inst)})
+            ltp = Decimal(str((quote.get("data") or {}).get(
+                scrip_code(inst), {}).get("live_price")))
+        except Exception as exc:                        # noqa: BLE001
+            skipped.append({"symbol": sym, "reason": f"no live price ({exc})"})
+            continue
+
+        try:
+            plan = strat.plan_trigger_exit(high, low, inst.tick_size)
+        except strat.PlanError as exc:
+            skipped.append({"symbol": sym, "reason": str(exc)})
+            continue
+
+        sizing = risk_mod.size_position(plan, cash, limits)
+        if not sizing.ok:
+            skipped.append({"symbol": sym, "reason": f"sizing: {sizing.limit_hit}"})
+            continue
+
+        verdict = risk_mod.check_entry_order(
+            symbol=sym, plan=plan, sizing=sizing, session=session, now=now,
+            day=day_state, limits=limits)
+
+        try:
+            order = build_trigger_for_instrument(
+                inst, qty=sizing.qty, range_high=high, stop=plan.stop,
+                target=plan.target, cmp=ltp,
+                remarks=f"orb-trig/{sym}/{now:%Y-%m-%d}")
+        except SmartOrderError as exc:
+            skipped.append({"symbol": sym, "reason": str(exc)})
+            continue
+
+        tk = tk_mod.build_ticket(sym, order, risk_verdict=verdict,
+                                 max_loss=sizing.loss_at_stop)
+        _state["tickets"][tk.id] = tk
+        tickets.append({"ticket_id": tk.id, "symbol": sym, "ready": tk.ready,
+                        "ticket": tk.human(), "payload": tk.payload,
+                        "risk": "PASS" if verdict.passed else f"BLOCK: {verdict}"})
+
+    return {"as_of": now.isoformat(), "cash_used": str(cash),
+            "tickets": tickets, "skipped": skipped,
+            "no_data_today": unknown,
+            "note": "Each ticket rests at the exchange once placed. "
+                    "Approve with place_order, one ticket_id and one literal "
+                    "yes each. Symbols under no_data_today are UNKNOWN, not "
+                    "absent setups."}
+
+
 def t_place_order(args):
     """Send a ticket the user has said yes to. WRITE -- needs approval."""
     tk = _state["tickets"].get(args.get("ticket_id"))
@@ -261,6 +362,13 @@ TOOLS = [
      {"type": "object", "properties": {
          "symbols": {"type": "array", "items": {"type": "string"},
                      "description": "override the watchlist"}}}),
+    ("propose_batch",
+     "Scan after 09:30 and build a RESTING trigger ticket for every "
+     "candidate, so fills happen at the exchange with no latency. "
+     "Places nothing.", t_propose_batch,
+     {"type": "object", "properties": {
+         "symbols": {"type": "array", "items": {"type": "string"}},
+         "cash": {"type": "string"}}}),
     ("propose_order", "Build a risk-checked ticket for one symbol. Places nothing.",
      t_propose_order,
      {"type": "object", "required": ["symbol"], "properties": {
