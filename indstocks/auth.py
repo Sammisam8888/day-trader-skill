@@ -37,6 +37,24 @@ from pathlib import Path
 from typing import Optional
 
 BASE_URL = "https://api.indstocks.com"
+
+# urllib advertises "Python-urllib/3.x", which the edge in front of this API
+# rejects with Cloudflare error 1010 ("banned based on browser signature")
+# before the request ever reaches INDstocks. Their own examples use curl,
+# which passes. Override with INDSTOCKS_USER_AGENT if the rules change.
+USER_AGENT = os.environ.get(
+    "INDSTOCKS_USER_AGENT",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+)
+
+
+def default_headers() -> dict:
+    return {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 CACHE_PATH = Path(os.environ.get("INDSTOCKS_TOKEN_CACHE", "/var/lib/indstocks/token.json"))
 
 TOKEN_TTL = 24 * 60 * 60
@@ -154,6 +172,7 @@ class TokenManager:
                 # Client ID goes here, NOT in Authorization, for this endpoint only.
                 "x-api-key": self.client_id,
                 "Content-Type": "application/json",
+                **default_headers(),
             },
             method="POST",
         )
@@ -163,6 +182,13 @@ class TokenManager:
                 payload = json.loads(resp.read().decode())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:400]
+            if "1010" in detail or "cloudflare" in detail.lower():
+                raise AuthError(
+                    "blocked by the edge before reaching INDstocks "
+                    "(Cloudflare 1010: banned browser signature). This is not a "
+                    "credential problem. Set INDSTOCKS_USER_AGENT to something "
+                    "the edge accepts; the default mimics a browser."
+                ) from exc
             if exc.code == 429 or "lock" in detail.lower():
                 raise LockedOut(
                     f"token generation refused ({exc.code}): {detail}\n"
@@ -182,4 +208,5 @@ class TokenManager:
         return token
 
     def auth_header(self) -> dict:
-        return {"Authorization": self.token()}
+        """Headers for every non-token request: bearer plus the edge-safe UA."""
+        return {"Authorization": self.token(), **default_headers()}
