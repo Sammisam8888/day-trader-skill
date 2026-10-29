@@ -67,12 +67,18 @@ class TestGovernor(unittest.TestCase):
         return _c.Governor(clock=clock, sleep=sleep, day_clock=lambda: 0.0)
 
     def test_burst_up_to_the_rate_then_throttles(self):
+        rate = _c.LIMITS["data"][0]
         g = self.gov()
-        for _ in range(5):          # data allows 5/sec
+        for _ in range(rate):
             g.acquire("data")
         self.assertEqual(self.slept, [])
-        g.acquire("data")           # the sixth must wait
+        g.acquire("data")           # one past the rate must wait
         self.assertTrue(self.slept and self.slept[0] > 0)
+
+    def test_data_rate_stays_under_the_documented_five(self):
+        # At the documented 5/sec the historical endpoint starts returning
+        # success:true with empty candle arrays instead of 429.
+        self.assertLess(_c.LIMITS["data"][0], 5)
 
     def test_orders_get_a_bigger_bucket_than_data(self):
         g = self.gov()
@@ -82,7 +88,7 @@ class TestGovernor(unittest.TestCase):
 
     def test_budgets_are_independent(self):
         g = self.gov()
-        for _ in range(5):
+        for _ in range(_c.LIMITS["data"][0]):
             g.acquire("data")
         g.acquire("order")          # separate bucket, no wait
         self.assertEqual(self.slept, [])
