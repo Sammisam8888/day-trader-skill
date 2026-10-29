@@ -1,0 +1,30 @@
+# Candidates scanned each morning, one NSE symbol per line.
+# Blank lines and lines starting with # are ignored.
+#
+# These are liquid large-caps chosen so an opening-range breakout has real
+# volume behind it. Edit freely -- nothing here is special, and this file is
+# the whole universe until a scanner exists.
+#
+# Keep it short. Every symbol costs candle calls against the 5/sec,
+# 100,000/day Data budget, and five symbols travel per request.
+
+RELIANCE
+TCS
+INFY
+HDFCBANK
+ICICIBANK
+SBIN
+BHARTIARTL
+ITC
+LT
+AXISBANK
+KOTAKBANK
+TATAMOTORS
+TATASTEEL
+MARUTI
+SUNPHARMA
+WIPRO
+HINDUNILVR
+BAJFINANCE
+ADANIPORTS
+TITAN
