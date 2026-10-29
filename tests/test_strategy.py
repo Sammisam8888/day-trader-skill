@@ -73,7 +73,9 @@ class TestBars(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _b.parse_response({"success": False, "message": "nope"}, "5minute")
 
-    def test_batches_five_codes_per_call(self):
+    def test_one_code_per_call_by_default(self):
+        # A five-code request returns all five keys with candles on only two
+        # or three of them, no error. One at a time is reliable.
         calls = []
 
         class C:
@@ -83,10 +85,12 @@ class TestBars(unittest.TestCase):
 
         codes = [f"NSE_{i}" for i in range(12)]
         out = _b.Bars(C()).fetch(codes, t(9, 15), t(15, 30), sleep=lambda s: None)
-        self.assertEqual([len(c) for c in calls[:3]], [5, 5, 2],
-                         "the first pass batches by five")
+        self.assertTrue(all(len(c) == 1 for c in calls), "never batch by default")
         self.assertEqual(len(out), 12)
         self.assertEqual(out["NSE_0"], [], "absent codes become explicit empties")
+
+    def test_never_exceeds_the_api_maximum_if_batching_is_re_enabled(self):
+        self.assertLessEqual(_b.MAX_CODES_PER_CALL, _b.API_MAX_CODES_PER_CALL)
 
     def test_empty_result_is_retried_individually(self):
         # The endpoint answers success:true with no candles when throttled,
