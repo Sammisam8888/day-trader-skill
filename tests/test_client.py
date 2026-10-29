@@ -154,10 +154,10 @@ class TestClient(unittest.TestCase):
 
 
 EQUITY_CSV = """EXCH,SEGMENT,SECURITY_ID,INSTRUMENT_NAME,EXPIRY_CODE,TRADING_SYMBOL,LOT_UNITS,CUSTOM_SYMBOL,EXPIRY_DATE,STRIKE_PRICE,OPTION_TYPE,TICK_SIZE,EXPIRY_FLAG,SEM_EXCH_INSTRUMENT_TYPE,SERIES,SYMBOL_NAME,UNDERLYING_SCRIP_NAME,FREEZE_QTY,UPPER_LIMIT,LOWER_LIMIT,ISIN,GENERAL_FACTOR,DELIVERY_UNIT,INTRADAY_LEVERAGE,HAIRCUT_PERCENTAGE,PLEDGE_ELIGIBLE
-NSE,E,2885,EQUITY,0,RELIANCE,1,Reliance Industries,,,,0.05,,ES,EQ,RELIANCE,,100000,1500.00,1200.00,INE002A01018,0,,5,20,true
-NSE,E,11536,EQUITY,0,TCS,1,Tata Consultancy,,,,0.05,,ES,EQ,TCS,,50000,4000.00,3200.00,INE467B01029,0,,5,20,true
-BSE,E,500325,EQUITY,0,RELIANCE,1,Reliance Industries,,,,0.05,,ES,EQ,RELIANCE,,100000,1500.00,1200.00,INE002A01018,0,,5,20,true
-NSE,E,9999,EQUITY,0,PENNYCO,1,Penny Co,,,,0.01,,ES,BE,PENNYCO,,10000,12.00,8.00,INE999A01011,0,,1,50,false
+NSE,E,2885,EQUITY,0,RELIANCE,1,Reliance Industries,,,,10,,ES,EQ,RELIANCE,,100000,1500.00,1200.00,INE002A01018,0,,5,20,true
+NSE,E,11536,EQUITY,0,TCS,1,Tata Consultancy,,,,10,,ES,EQ,TCS,,50000,4000.00,3200.00,INE467B01029,0,,5,20,true
+BSE,E,500325,EQUITY,0,RELIANCE,1,Reliance Industries,,,,10,,ES,EQ,RELIANCE,,100000,1500.00,1200.00,INE002A01018,0,,5,20,true
+NSE,E,9999,EQUITY,0,PENNYCO,1,Penny Co,,,,1,,ES,BE,PENNYCO,,10000,12.00,8.00,INE999A01011,0,,1,50,false
 """
 
 
@@ -172,12 +172,17 @@ class TestInstruments(unittest.TestCase):
         self.assertEqual(self.load().resolve("RELIANCE").exchange, "NSE")
         self.assertEqual(self.load().resolve("RELIANCE").security_id, "2885")
 
-    def test_carries_the_real_tick_size(self):
+    def test_tick_size_is_converted_from_paise_to_rupees(self):
         inst = self.load()
-        self.assertEqual(inst.resolve("RELIANCE").tick_size, D("0.05"))
-        # Not every NSE equity ticks at 0.05 -- this is why smartorder.py
-        # must be told rather than assuming.
+        # Master says 10 paise; RELIANCE does not move in ten-rupee steps.
+        self.assertEqual(inst.resolve("RELIANCE").tick_size, D("0.10"))
         self.assertEqual(inst.resolve("PENNYCO").tick_size, D("0.01"))
+
+    def test_implausible_tick_raises_rather_than_pricing_off_it(self):
+        bad = EQUITY_CSV.replace(",10,,ES,EQ,TCS", ",99999999,,ES,EQ,TCS")
+        with self.assertRaises(ValueError) as cm:
+            _i.parse(bad)
+        self.assertIn("implausible tick", str(cm.exception))
 
     def test_strips_yahoo_style_suffixes(self):
         self.assertEqual(self.load().resolve("RELIANCE.NS").security_id, "2885")
@@ -203,7 +208,7 @@ class TestInstruments(unittest.TestCase):
         self.assertNotIn("NOTREAL", inst)
 
     def test_missing_tick_falls_back_rather_than_crashing(self):
-        bad = EQUITY_CSV.replace(",0.05,,ES,EQ,TCS", ",,,ES,EQ,TCS")
+        bad = EQUITY_CSV.replace(",10,,ES,EQ,TCS", ",,,ES,EQ,TCS")
         rows = _i.parse(bad)
         tcs = [r for r in rows if r.trading_symbol == "TCS"][0]
         self.assertEqual(tcs.tick_size, D("0.05"))
