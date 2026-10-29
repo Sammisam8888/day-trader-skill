@@ -48,8 +48,11 @@ jobs:
           cd /opt/indstocks/day-trader-skill
           git fetch --quiet origin main
           git reset --hard origin/main
-          python3 -m venv --upgrade-deps .venv 2>/dev/null || true
-          if [ -f requirements.txt ]; then .venv/bin/pip install -q -r requirements.txt; fi
+          # The venv lives OUTSIDE the work tree: anything created inside it
+          # shows up in os.listdir(ROOT) and trips the root-layout test.
+          VENV=/opt/indstocks/venv
+          [ -d "$VENV" ] || python3 -m venv "$VENV"
+          if [ -f requirements.txt ]; then "$VENV/bin/pip" install -q -r requirements.txt; fi
           python3 -m unittest discover -s tests
           # Restart only if the unit exists; early on there is nothing to run yet.
           if systemctl list-unit-files | grep -q '^indstocks-mcp\.service'; then
