@@ -48,6 +48,11 @@ jobs:
           cd /opt/indstocks/day-trader-skill
           git fetch --quiet origin main
           git reset --hard origin/main
+          # Untracked leftovers survive reset --hard. Not `git clean -fdx`:
+          # -x deletes ignored files too, which now includes trader/ -- the
+          # live order history and positions.
+          rm -rf .venv
+          git clean -qfd
           # The venv lives OUTSIDE the work tree: anything created inside it
           # shows up in os.listdir(ROOT) and trips the root-layout test.
           VENV=/opt/indstocks/venv
