@@ -23,6 +23,7 @@ import os
 import sys
 import traceback
 from decimal import Decimal
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -73,6 +74,26 @@ def watchlist() -> list:
 
 
 # ------------------------------------------------------------------ tools
+
+def available_cash(client_obj) -> Optional[Decimal]:
+    """Real intraday buying power from /funds.
+
+    detailed_avl_balance.eq_mis is the equity-intraday figure, which is what
+    an INTRADAY order draws on. Sizing off a configured number instead of
+    this is how a 100,000 default silently sizes a 30,000 account more than
+    three times too large.
+    """
+    try:
+        funds = client_obj.get("/funds")
+    except Exception:                                   # noqa: BLE001
+        return None
+    data = (funds or {}).get("data") or {}
+    bal = data.get("detailed_avl_balance") or {}
+    for key in ("eq_mis", "eq_cnc"):
+        if bal.get(key) is not None:
+            return Decimal(str(bal[key]))
+    return None
+
 
 def t_account(_args):
     funds = client().get("/funds")
@@ -142,7 +163,15 @@ def t_propose_order(args):
         return {"proposed": False, "reason": str(exc)}
 
     limits = limits_from_env()
-    cash = Decimal(str(args.get("cash") or os.environ.get("TRADER_CASH", "100000")))
+    if args.get("cash"):
+        cash, cash_source = Decimal(str(args["cash"])), "supplied"
+    else:
+        live = available_cash(client())
+        if live is None:
+            return {"proposed": False,
+                    "reason": "could not read available funds; refusing to size "
+                              "a position against a guess"}
+        cash, cash_source = live, "live eq_mis balance"
     sizing = risk_mod.size_position(plan, cash, limits)
 
     log = tk_mod.day_state_from_log()
@@ -168,6 +197,7 @@ def t_propose_order(args):
     _state["tickets"][tk.id] = tk
     return {"proposed": True, "ticket_id": tk.id, "ready": tk.ready,
             "ticket": tk.human(), "payload": tk.payload,
+            "cash_used": str(cash), "cash_source": cash_source,
             "risk": "PASS" if verdict.passed else f"BLOCK: {verdict}"}
 
 
