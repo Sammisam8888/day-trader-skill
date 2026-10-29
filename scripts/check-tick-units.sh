@@ -31,23 +31,35 @@ for tick, n in sorted(counts.items()):
 print()
 try:
     mcx = instruments.Instruments(client=c, source="mcx").load()
-    hits = [r for r in mcx._rows if r.symbol_name.startswith("CRUDEOIL")][:3]
-    if hits:
-        print("CRUDEOIL rows (docs say this contract ticks at Rs 1):")
-        for r in hits:
-            print("   %-24s TICK_SIZE=%s  LOT_UNITS=%s" %
-                  (r.trading_symbol, r.tick_size, r.lot_units))
-        t = hits[0].tick_size
-        print()
-        if t == 100:
-            print("VERDICT: paise. Divide TICK_SIZE by 100 before using it as a price.")
-        elif t == 1:
-            print("VERDICT: rupees. The equity values above are literal.")
-        else:
-            print("VERDICT: inconclusive -- CRUDEOIL reads %s, expected 1 or 100." % t)
-            print("Do not place an order until this is settled.")
+
+    # The docs name this exact instrument: security_id 565899 is a CRUDEOIL
+    # FUTURES contract, lot size 100, tick size Rs 1. Options on crude tick
+    # differently, so match the id rather than the symbol.
+    anchor = None
+    try:
+        anchor = mcx.by_id("565899")
+    except KeyError:
+        futs = [r for r in mcx._rows
+                if r.symbol_name.startswith("CRUDEOIL")
+                and "FUT" in (r.segment + r.trading_symbol).upper()
+                and r.lot_units == 100]
+        anchor = futs[0] if futs else None
+
+    if anchor is None:
+        print("could not locate the CRUDEOIL futures anchor in the mcx master")
     else:
-        print("no CRUDEOIL rows found in the mcx master")
+        print("anchor: %s (id=%s) -- docs say lot 100, tick Rs 1" %
+              (anchor.trading_symbol, anchor.security_id))
+        print("   master reports TICK_SIZE=%s  LOT_UNITS=%s" %
+              (anchor.tick_size, anchor.lot_units))
+        print()
+        if anchor.tick_size == 100:
+            print("VERDICT: PAISE. Divide TICK_SIZE by 100 to get rupees.")
+        elif anchor.tick_size == 1:
+            print("VERDICT: RUPEES. The equity values above are literal.")
+        else:
+            print("VERDICT: inconclusive -- reads %s, expected 1 or 100." % anchor.tick_size)
+            print("Do not place an order until this is settled.")
 except Exception as exc:
     print("mcx master unavailable (%s)" % exc)
     print("MCX may not be enabled on this account; that is fine.")
