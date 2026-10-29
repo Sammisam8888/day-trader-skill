@@ -19,7 +19,7 @@ from datetime import date, timedelta
 import session as sess, instruments as inst_mod
 from client import Client
 sym = sys.argv[1]
-day = sess.previous_trading_days(date.today(), 1)[0]
+day = sess.previous_trading_days(sess.now().date() + timedelta(days=1), 1)[0]
 s = sess.Session(day)
 c = Client()
 i = inst_mod.Instruments(client=c, source="equity").load().resolve(sym)
@@ -41,7 +41,7 @@ from datetime import date, timedelta
 import session as sess, instruments as inst_mod
 from client import Client
 sym = sys.argv[1]
-day = sess.previous_trading_days(date.today(), 1)[0]
+day = sess.previous_trading_days(sess.now().date() + timedelta(days=1), 1)[0]
 s = sess.Session(day)
 c = Client()
 m = inst_mod.Instruments(client=c, source="equity").load()
