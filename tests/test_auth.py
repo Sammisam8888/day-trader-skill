@@ -101,12 +101,49 @@ class TestTokenManager(unittest.TestCase):
         self.assertEqual(m.token(), "TKN-1")
         self.assertEqual(len(hits), 1, "a second call would invalidate the first token")
 
+    def test_expiry_follows_the_daily_reset_not_24h(self):
+        import datetime
+        d = lambda s: datetime.datetime.fromisoformat(s).replace(tzinfo=_m.IST).timestamp()
+        # Minted just after midnight: dead at 07:00 the same morning, long
+        # before a 24h clock would have expired it.
+        exp = datetime.datetime.fromtimestamp(_m.expires_at(d("2026-10-30T00:05")), _m.IST)
+        self.assertEqual((exp.hour, exp.day), (7, 30))
+        # Minted after the reset: survives to the next one.
+        exp = datetime.datetime.fromtimestamp(_m.expires_at(d("2026-10-30T07:30")), _m.IST)
+        self.assertEqual((exp.hour, exp.day), (7, 31))
+
+    def test_token_from_last_night_is_not_reused_at_market_open(self):
+        import datetime
+        d = lambda s: datetime.datetime.fromisoformat(s).replace(tzinfo=_m.IST).timestamp()
+        minted = d("2026-10-30T00:05")
+        _m._write_cache({"token": "OVERNIGHT", "issued_at": minted})
+
+        def opener(req, timeout=None):
+            return FakeResp(json.dumps({"token": "MORNING"}).encode())
+
+        real = time.time
+        try:                       # 09:15 IST, market open
+            time.time = lambda: d("2026-10-30T09:15")
+            self.assertEqual(self.mgr(opener).token(), "MORNING")
+        finally:
+            time.time = real
+
     def test_near_expiry_triggers_refresh(self):
+        import datetime
+        d = lambda s: datetime.datetime.fromisoformat(s).replace(tzinfo=_m.IST).timestamp()
+
         def opener(req, timeout=None):
             return FakeResp(json.dumps({"token": "FRESH"}).encode())
 
-        _m._write_cache({"token": "OLD", "issued_at": time.time() - (23.5 * 3600)})
-        self.assertEqual(self.mgr(opener).token(), "FRESH")
+        # Issued at 00:05, so it expires at 07:00. At 06:55 only five minutes
+        # remain, inside the refresh margin.
+        _m._write_cache({"token": "OLD", "issued_at": d("2026-10-30T00:05")})
+        real = time.time
+        try:
+            time.time = lambda: d("2026-10-30T06:55")
+            self.assertEqual(self.mgr(opener).token(), "FRESH")
+        finally:
+            time.time = real
 
     def test_throttle_window_returns_cache_instead_of_calling(self):
         def opener(req, timeout=None):

@@ -31,6 +31,7 @@ import json
 import os
 import struct
 import time
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -57,9 +58,25 @@ def default_headers() -> dict:
     }
 CACHE_PATH = Path(os.environ.get("INDSTOCKS_TOKEN_CACHE", "/var/lib/indstocks/token.json"))
 
-TOKEN_TTL = 24 * 60 * 60
-REFRESH_MARGIN = 60 * 60       # refresh when under an hour remains
+TOKEN_TTL = 24 * 60 * 60       # ceiling; the daily reset usually bites first
+REFRESH_MARGIN = 15 * 60       # refresh when under 15 minutes remains
 MIN_GENERATE_GAP = 60          # server throttle: 1 token per 60s
+
+# Tokens do NOT live 24 rolling hours. The dashboard shows a fixed expiry and
+# states that tokens reset daily; observed reset is 07:00 IST. A token minted
+# at midnight is dead by 07:00, two hours before the market opens -- treating
+# it as fresh for 24h would fail the first call of the session.
+IST = timezone(timedelta(hours=5, minutes=30))
+DAILY_RESET_HOUR = int(os.environ.get("INDSTOCKS_RESET_HOUR", "7"))
+
+
+def expires_at(issued_at: float) -> float:
+    """Epoch seconds at which a token issued at `issued_at` stops working."""
+    issued = datetime.fromtimestamp(issued_at, IST)
+    reset = issued.replace(hour=DAILY_RESET_HOUR, minute=0, second=0, microsecond=0)
+    if reset <= issued:
+        reset += timedelta(days=1)
+    return min(reset.timestamp(), issued_at + TOKEN_TTL)
 
 
 class AuthError(RuntimeError):
@@ -142,8 +159,8 @@ class TokenManager:
         """A live token. Reuses the cached one until it is close to expiry."""
         cached = _read_cache()
         if cached and not force:
-            age = time.time() - cached.get("issued_at", 0)
-            if age < TOKEN_TTL - REFRESH_MARGIN:
+            remaining = expires_at(cached.get("issued_at", 0)) - time.time()
+            if remaining > REFRESH_MARGIN:
                 return cached["token"]
 
         if cached:
