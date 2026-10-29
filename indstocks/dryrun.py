@@ -113,7 +113,13 @@ def main() -> int:
         (triggered if sig.triggered else waiting).append((symbol, sig))
 
     print(f"scanned {len(resolved)} symbols: {len(triggered)} triggered, "
-          f"{len(waiting)} did not, {len(no_data)} no data\n")
+          f"{len(waiting)} did not, {len(no_data)} no data")
+    if no_data:
+        # Not necessarily "did not trade": the endpoint returns an empty
+        # array when throttled too, and these survived the retries.
+        print(f"  no candles after retries: {', '.join(sorted(no_data))}")
+        print("  treat these as UNKNOWN, not as 'no setup'.")
+    print()
 
     for symbol, sig in sorted(waiting, key=lambda x: (x[1].distance is None,
                                                       x[1].distance or 0))[:8]:

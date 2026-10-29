@@ -82,10 +82,57 @@ class TestBars(unittest.TestCase):
                 return {"success": True, "data": {}}
 
         codes = [f"NSE_{i}" for i in range(12)]
-        out = _b.Bars(C()).fetch(codes, t(9, 15), t(15, 30))
-        self.assertEqual([len(c) for c in calls], [5, 5, 2])
+        out = _b.Bars(C()).fetch(codes, t(9, 15), t(15, 30), sleep=lambda s: None)
+        self.assertEqual([len(c) for c in calls[:3]], [5, 5, 2],
+                         "the first pass batches by five")
         self.assertEqual(len(out), 12)
         self.assertEqual(out["NSE_0"], [], "absent codes become explicit empties")
+
+    def test_empty_result_is_retried_individually(self):
+        # The endpoint answers success:true with no candles when throttled,
+        # so an empty array must not be taken at face value.
+        attempts = {"n": 0}
+
+        def payload(codes):
+            return {"success": True, "data": {c: {"candles": [
+                {"ts": int(t(9, 15).timestamp()), "o": 1, "h": 2, "l": 1,
+                 "c": 2, "v": 10}]} for c in codes}}
+
+        class C:
+            def get(self, path, params=None):
+                attempts["n"] += 1
+                codes = params["scrip-codes"].split(",")
+                if attempts["n"] == 1:          # first batch comes back empty
+                    return {"success": True, "data": {}}
+                return payload(codes)
+
+        out = _b.Bars(C()).fetch(["NSE_1", "NSE_2"], t(9, 15), t(15, 30),
+                                 sleep=lambda s: None)
+        self.assertEqual(len(out["NSE_1"]), 1)
+        self.assertEqual(len(out["NSE_2"]), 1)
+
+    def test_codes_still_empty_after_retries_are_surfaced(self):
+        class C:
+            def get(self, path, params=None):
+                return {"success": True, "data": {}}
+
+        bars = _b.Bars(C())
+        bars.fetch(["NSE_1"], t(9, 15), t(15, 30), sleep=lambda s: None)
+        self.assertEqual(bars.unresolved, ["NSE_1"],
+                         "a persistent empty must be reported, not read as 'no setup'")
+
+    def test_a_successful_code_is_not_retried(self):
+        calls = []
+
+        class C:
+            def get(self, path, params=None):
+                calls.append(params["scrip-codes"])
+                return {"success": True, "data": {"NSE_1": {"candles": [
+                    {"ts": int(t(9, 15).timestamp()), "o": 1, "h": 2,
+                     "l": 1, "c": 2, "v": 10}]}}}
+
+        _b.Bars(C()).fetch(["NSE_1"], t(9, 15), t(15, 30), sleep=lambda s: None)
+        self.assertEqual(len(calls), 1)
 
     def test_opening_range_only_counts_candles_inside_the_window(self):
         s = _s.Session(DAY)
