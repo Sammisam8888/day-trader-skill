@@ -1,0 +1,19 @@
+# systemd unit for the MCP server.
+#
+# NOTE: an MCP stdio server is launched BY the client, not run as a daemon.
+# This unit exists so the CI deploy has something to restart and so the
+# server can be smoke-tested on boot. The real wiring is the Claude Desktop
+# config in scripts/claude_desktop_config.example.json.
+[Unit]
+Description=INDstocks MCP server (smoke check)
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/scripts/smoke.py
+User=ubuntu
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "Claude Desktop config for the INDstocks MCP server.",
+    "",
+    "The server must run on the machine whose IP is whitelisted with",
+    "INDstocks, because order endpoints are IP-gated. If Claude Desktop runs",
+    "on your laptop, point this at the Lightsail box over ssh as below.",
+    "",
+    "After adding this, set tool permissions in Claude Desktop:",
+    "  place_order : Needs approval  -- NEVER Always allow",
+    "  flatten     : Needs approval  -- NEVER Always allow",
+    "  account, positions, scan, propose_order, check_protection : Always allow is fine"
+  ],
+  "mcpServers": {
+    "indstocks": {
+      "command": "ssh",
+      "args": [
+        "-i", "/Users/you/.ssh/lightsail.pem",
+        "-o", "BatchMode=yes",
+        "ubuntu@13.127.164.72",
+        "sudo -E /usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/mcp_server.py"
+      ]
+    }
+  }
+}
