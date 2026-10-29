@@ -14,7 +14,7 @@ from client import Client
 
 SYM = (sys.argv[1] if len(sys.argv) > 1 else "TCS").upper()
 WORKS = "RELIANCE"
-day = sess.previous_trading_days(date.today(), 1)[0]
+day = sess.previous_trading_days(sess.now().date() + timedelta(days=1), 1)[0]
 s = sess.Session(day)
 c = Client()
 m = inst_mod.Instruments(client=c, source="equity").load()

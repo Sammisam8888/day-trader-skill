@@ -28,29 +28,30 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from session import IST, epoch_ms, from_candle_ts  # noqa: E402
 
-# The docs allow five codes per call. In practice a five-code request comes
-# back with all five keys present and only two or three carrying candles --
-# no error, success:true, empty arrays for the rest. The same codes fetched
-# one at a time from a clean process return data every time.
+# Five codes per call, as documented.
 #
-# So we ask for ONE code per call. The documented maximum is kept here
-# because the five-per-call limit is still real for anyone who raises this.
-# Cost: twenty symbols at 2/sec is ten seconds, once per scan. Cheap against
-# a scanner that silently cannot see most of its watchlist.
-API_MAX_CODES_PER_CALL = 5
-CODES_PER_CALL = int(os.environ.get("INDSTOCKS_CODES_PER_CALL", "1"))
-MAX_CODES_PER_CALL = min(CODES_PER_CALL, API_MAX_CODES_PER_CALL)
+# An earlier version dropped this to one, on the theory that batching lost
+# data. That was wrong. The symbols returning nothing simply have no intraday
+# candles for that date in the feed: INDmoney's own portfolio API shows TCS
+# 5-minute data ending 2026-10-28 15:25 with nothing for the 29th, while
+# RELIANCE has a full 29th. The batch was faithfully reporting a real gap.
+#
+# The diagnostics that seemed to exonerate those symbols were themselves
+# buggy -- they used date.today() on a UTC host, which before 05:30 IST
+# resolves to the previous day, so they were querying a date that DID have
+# data. A measurement bug that manufactured evidence for the wrong theory.
+MAX_CODES_PER_CALL = min(
+    int(os.environ.get("INDSTOCKS_CODES_PER_CALL", "5")), 5)
 
-# The endpoint answers success:true with an EMPTY candles array when it is
-# unhappy, rather than 429 or an error. Observed directly: NSE_11536 returned
-# 0 candles in one run and 75 for the identical request two minutes later,
-# while a live quote for the same id worked throughout.
+# An empty candles array is ambiguous: it can mean the feed has no data for
+# that instrument on that date (the usual cause, confirmed against a second
+# INDmoney surface), or a transient failure. Nothing in the response
+# distinguishes them -- success:true either way, no error.
 #
-# An empty array is therefore ambiguous -- it means "did not trade" OR
-# "throttled" -- and the two are indistinguishable in the response. We retry
-# empties with backoff and surface anything still empty afterwards, because
-# silently reading a throttle as "no setup here" is how a scanner goes blind
-# to two thirds of its watchlist without ever logging an error.
+# So we retry empties once or twice, then REPORT what is still empty instead
+# of folding it into "no setup". A scanner that cannot see an instrument must
+# say so; silence reads as "nothing triggered here", which is a different
+# claim entirely.
 EMPTY_RETRIES = int(os.environ.get("INDSTOCKS_EMPTY_RETRIES", "3"))
 EMPTY_BACKOFF_S = float(os.environ.get("INDSTOCKS_EMPTY_BACKOFF", "1.5"))
 

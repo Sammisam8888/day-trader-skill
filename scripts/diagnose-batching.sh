@@ -9,13 +9,13 @@ cd "$(dirname "$0")/../indstocks"
 
 python3 - "$@" <<'PY'
 import json, sys, time
-from datetime import date
+from datetime import date, timedelta
 import session as sess, instruments as inst_mod
 from bars import Bars, scrip_code
 from client import Client
 from dryrun import load_watchlist
 
-day = date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else sess.previous_trading_days(date.today(), 1)[0]
+day = date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else sess.previous_trading_days(sess.now().date() + timedelta(days=1), 1)[0]
 s = sess.Session(day)
 c = Client()
 m = inst_mod.Instruments(client=c, source="equity").load()
