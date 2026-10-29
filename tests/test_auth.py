@@ -128,6 +128,36 @@ class TestTokenManager(unittest.TestCase):
             self.mgr(opener).generate()
         self.assertIn("clock", str(cm.exception).lower())
 
+    def test_sends_a_non_urllib_user_agent(self):
+        seen = {}
+
+        def opener(req, timeout=None):
+            seen["ua"] = req.get_header("User-agent")
+            return FakeResp(json.dumps({"token": "T"}).encode())
+
+        self.mgr(opener).generate()
+        self.assertNotIn("urllib", (seen["ua"] or "").lower(),
+                         "the edge rejects Python-urllib with Cloudflare 1010")
+
+    def test_cloudflare_block_is_not_reported_as_a_credential_problem(self):
+        def opener(req, timeout=None):
+            raise urllib.error.HTTPError("u", 403, "Forbidden", {},
+                                         io.BytesIO(b"error code: 1010"))
+
+        with self.assertRaises(_m.AuthError) as cm:
+            self.mgr(opener).generate()
+        msg = str(cm.exception).lower()
+        self.assertIn("not a credential problem", msg)
+        self.assertIn("user_agent", msg.replace("-", "_"))
+
+    def test_auth_header_carries_the_user_agent_too(self):
+        def opener(req, timeout=None):
+            return FakeResp(json.dumps({"token": "T"}).encode())
+
+        h = self.mgr(opener).auth_header()
+        self.assertEqual(h["Authorization"], "T")
+        self.assertIn("User-Agent", h)
+
     def test_missing_token_field_is_an_error(self):
         def opener(req, timeout=None):
             return FakeResp(json.dumps({"status": "success", "data": {}}).encode())
