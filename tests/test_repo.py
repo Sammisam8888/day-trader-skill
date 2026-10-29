@@ -87,7 +87,9 @@ class Repo(unittest.TestCase):
             with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
             rel = os.path.relpath(path, ROOT)
-            if not rel.startswith(os.path.join("tests", "fixtures")):  # fixtures are real data, kept as published
+            vendored = (rel.startswith(os.path.join("tests", "fixtures"))
+                        or rel.startswith(os.path.join("indstocks", "vendor")))
+            if not vendored:  # fixtures and vendor docs are real data, kept as published
                 self.assertNotIn("\u2014", text, rel)
             self.assertNotIn("jakeschincariol" + "@" + "gmail.com", text, rel)  # built, so this file passes too
 
