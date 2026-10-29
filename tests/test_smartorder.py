@@ -7,6 +7,7 @@ _m = load("indstocks", "smartorder")
 SmartOrder = _m.SmartOrder
 SmartOrderError = _m.SmartOrderError
 build_long_day_trade = _m.build_long_day_trade
+build_for_instrument = _m.build_for_instrument
 on_tick = _m.on_tick
 to_tick = _m.to_tick
 
@@ -190,6 +191,36 @@ class TestBuilder(unittest.TestCase):
             entry=D("1500.00"), stop=D("1480.00"), target=D("1540.00"),
         )
         self.assertTrue(o.validate())
+
+
+class TestBuildForInstrument(unittest.TestCase):
+    class Inst:
+        security_id = "2885"
+        tick_size = D("0.10")      # RELIANCE, per the real master
+        exchange = "NSE"
+
+    def test_uses_the_instruments_tick_not_the_default(self):
+        o = build_for_instrument(self.Inst(), qty=10, entry=D("1502.37"),
+                                 stop=D("1488.11"), target=D("1530.63"),
+                                 remarks="orb-v1/sig-9")
+        p = o.payload()
+        self.assertEqual(p["security_id"], "2885")
+        # Every price a multiple of 0.10, not 0.05.
+        for k in ("limit_price", "sl_trigger_price", "sl_limit_price",
+                  "tgt_trigger_price", "tgt_limit_price"):
+            self.assertAlmostEqual((D(str(p[k])) / D("0.10")) % 1, 0, msg=k)
+        self.assertEqual(p["sl_trigger_price"], 1488.10)
+        self.assertEqual(p["sl_limit_price"], 1487.90)
+
+    def test_penny_tick_keeps_two_decimals(self):
+        class Penny:
+            security_id = "9999"
+            tick_size = D("0.01")
+            exchange = "NSE"
+
+        o = build_for_instrument(Penny(), qty=100, entry=D("11.37"),
+                                 stop=D("10.92"), target=D("12.27"))
+        self.assertEqual(o.payload()["sl_trigger_price"], 10.92)
 
 
 if __name__ == "__main__":

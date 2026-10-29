@@ -380,3 +380,38 @@ def build_long_day_trade(
         tick_size=tick_size,
         remarks=remarks,
     ).validate()
+
+
+def build_for_instrument(
+    instrument,
+    *,
+    qty: int,
+    entry: Decimal,
+    stop: Decimal,
+    target: Decimal,
+    slippage_ticks: int = 2,
+    remarks: Optional[str] = None,
+) -> SmartOrder:
+    """Same as build_long_day_trade, but takes security_id and tick size from
+    a resolved Instrument rather than being told.
+
+    This is the form callers should use. The tick-size default of 0.05 in
+    build_long_day_trade is a convenience for tests and is wrong for a large
+    part of the market: the master puts roughly 18,700 NSE instruments at
+    0.01 and RELIANCE at 0.10. An off-tick leg price is rejected outright,
+    which on a stop-loss leg means the protection never reaches the book.
+
+    Duck-typed on purpose (.security_id, .tick_size, .exchange) so this module
+    stays importable without the instruments master.
+    """
+    return build_long_day_trade(
+        security_id=instrument.security_id,
+        qty=qty,
+        entry=entry,
+        stop=stop,
+        target=target,
+        tick_size=instrument.tick_size,
+        slippage_ticks=slippage_ticks,
+        exchange=getattr(instrument, "exchange", "NSE") or "NSE",
+        remarks=remarks,
+    )

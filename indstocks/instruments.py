@@ -29,6 +29,18 @@ from typing import Dict, Iterable, Optional
 
 CACHE_DIR = Path(os.environ.get("INDSTOCKS_CACHE_DIR", "/var/lib/indstocks"))
 
+# The master publishes TICK_SIZE in PAISE, as an integer. Confirmed against
+# the contract the docs name outright: security_id 565899, a CRUDEOIL future
+# the docs describe as ticking at Rs 1, comes back as TICK_SIZE=100.
+#
+# Everything below converts at parse time, so Instrument.tick_size is always
+# rupees and no caller has to remember this. Read as rupees the equity ladder
+# would be 1/5/10/50/100/500 -- eighteen thousand NSE stocks moving in
+# one-rupee steps. In paise it is the ordinary 0.01 to 5.00 ladder.
+PAISE_PER_RUPEE = Decimal(100)
+DEFAULT_TICK_PAISE = Decimal(5)          # Rs 0.05
+PLAUSIBLE_TICK_RANGE = (Decimal("0.0001"), Decimal("100"))   # rupees
+
 
 def _dec(value: str, default: Optional[Decimal] = None) -> Optional[Decimal]:
     try:
@@ -52,7 +64,7 @@ class Instrument:
     trading_symbol: str
     symbol_name: str
     series: str
-    tick_size: Decimal
+    tick_size: Decimal          # RUPEES, converted from the master's paise
     lot_units: int
     freeze_qty: int
     isin: str = ""
@@ -72,9 +84,17 @@ def parse(csv_text: str) -> list[Instrument]:
         sid = (r.get("SECURITY_ID") or "").strip()
         if not sid:
             continue
-        tick = _dec(r.get("TICK_SIZE", ""), Decimal("0.05")) or Decimal("0.05")
-        if tick <= 0:
-            tick = Decimal("0.05")
+        raw = _dec(r.get("TICK_SIZE", ""), DEFAULT_TICK_PAISE) or DEFAULT_TICK_PAISE
+        if raw <= 0:
+            raw = DEFAULT_TICK_PAISE
+        tick = raw / PAISE_PER_RUPEE
+        lo, hi = PLAUSIBLE_TICK_RANGE
+        if not (lo <= tick <= hi):
+            # Rather than silently price an order off a nonsense tick.
+            raise ValueError(
+                f"implausible tick for {r.get('TRADING_SYMBOL')}: "
+                f"raw={raw} -> {tick} rupees. Has the master changed units?"
+            )
         out.append(Instrument(
             exchange=(r.get("EXCH") or "").strip().upper(),
             segment=(r.get("SEGMENT") or "").strip().upper(),
