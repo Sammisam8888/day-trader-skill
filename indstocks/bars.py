@@ -28,7 +28,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from session import IST, epoch_ms, from_candle_ts  # noqa: E402
 
-MAX_CODES_PER_CALL = 5
+# The docs allow five codes per call. In practice a five-code request comes
+# back with all five keys present and only two or three carrying candles --
+# no error, success:true, empty arrays for the rest. The same codes fetched
+# one at a time from a clean process return data every time.
+#
+# So we ask for ONE code per call. The documented maximum is kept here
+# because the five-per-call limit is still real for anyone who raises this.
+# Cost: twenty symbols at 2/sec is ten seconds, once per scan. Cheap against
+# a scanner that silently cannot see most of its watchlist.
+API_MAX_CODES_PER_CALL = 5
+CODES_PER_CALL = int(os.environ.get("INDSTOCKS_CODES_PER_CALL", "1"))
+MAX_CODES_PER_CALL = min(CODES_PER_CALL, API_MAX_CODES_PER_CALL)
 
 # The endpoint answers success:true with an EMPTY candles array when it is
 # unhappy, rather than 429 or an error. Observed directly: NSE_11536 returned
