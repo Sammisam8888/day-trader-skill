@@ -39,7 +39,9 @@ except auth.AuthError as e:
     print("AUTH FAILED:", e); sys.exit(1)
 
 for path in ("/user/profile", "/funds"):
-    req = urllib.request.Request(auth.BASE_URL + path, headers={"Authorization": tok})
+    # auth_header() carries the User-Agent too. A bare Authorization header
+    # gets dropped at the edge with Cloudflare 1010 before INDstocks sees it.
+    req = urllib.request.Request(auth.BASE_URL + path, headers=m.auth_header())
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             body = json.loads(r.read().decode())
