@@ -126,6 +126,44 @@ def cancel_resting_legs(client, security_id: str) -> list:
     return cancelled
 
 
+def cancel_all_unfilled(client) -> dict:
+    """Cancel every resting entry we placed that never triggered.
+
+    DAY validity was supposed to expire these at the close. The broker's
+    order book at 23:32 on 2026-11-04 still showed six of them as open, so
+    it does not, or not reliably. An unfilled trigger from yesterday carries
+    yesterday's levels into today, and the dedupe check reads our log rather
+    than the broker, so it would not see it. Cancel explicitly.
+
+    Returns counts. Only orders tagged auto/ -- nothing of the account
+    owner's.
+    """
+    cancelled, failed = [], []
+    try:
+        rows = (client.get("/order-book") or {}).get("data") or []
+    except Exception as exc:                            # noqa: BLE001
+        log({"event": "error", "reason": f"order book unreadable: {exc}"})
+        return {"cancelled": cancelled, "failed": failed}
+
+    for r in rows if isinstance(rows, list) else []:
+        if not str(r.get("remarks", "")).startswith("auto/"):
+            continue
+        status = str(r.get("status", "")).upper()
+        if status not in ("PENDING", "SL-PENDING", "O-PENDING", "QUEUED",
+                          "CREATED", "INITIATED", "MODIFIED"):
+            continue
+        oid = r.get("id") or r.get("order_id")
+        if not oid:
+            continue
+        try:
+            client.post("/smart/order/cancel", body={"order_id": oid})
+            cancelled.append(oid)
+        except Exception as exc:                        # noqa: BLE001
+            failed.append({"order_id": oid, "reason": str(exc)[:160]})
+        time.sleep(0.3)
+    return {"cancelled": cancelled, "failed": failed}
+
+
 def sell(client, pos: dict) -> dict:
     body = {
         "txn_type": "SELL",
@@ -152,7 +190,12 @@ def run() -> int:
     positions = open_intraday(client)
     if not positions:
         log({"event": "nothing_open"})
-        return 0
+        sweep = cancel_all_unfilled(client)
+        log({"event": "cancelled_unfilled", "count": len(sweep["cancelled"]),
+             "order_ids": sweep["cancelled"], "failed": sweep["failed"]})
+        log({"event": "flatten_done", "failed": 0,
+             "cancel_failed": len(sweep["failed"])})
+        return 1 if sweep["failed"] else 0
 
     # Sell only what the bot bought. Anything else in the position is the
     # account owner's and stays.
@@ -171,7 +214,12 @@ def run() -> int:
     positions = trimmed
     if not positions:
         log({"event": "nothing_ours"})
-        return 0
+        sweep = cancel_all_unfilled(client)
+        log({"event": "cancelled_unfilled", "count": len(sweep["cancelled"]),
+             "order_ids": sweep["cancelled"], "failed": sweep["failed"]})
+        log({"event": "flatten_done", "failed": 0,
+             "cancel_failed": len(sweep["failed"])})
+        return 1 if sweep["failed"] else 0
 
     log({"event": "flattening", "count": len(positions),
          "positions": [(p["name"], p["qty"]) for p in positions]})
@@ -196,8 +244,16 @@ def run() -> int:
                  "action": "CLOSE THIS MANUALLY before the broker squares it off"})
         time.sleep(1)
 
-    log({"event": "flatten_done", "failed": failed})
-    return 1 if failed else 0
+    # Sweep: every resting auto/ order that never triggered, and the legs
+    # of anything just sold. Runs even when nothing was open -- the orders
+    # that matter most here are the ones that never became positions.
+    sweep = cancel_all_unfilled(client)
+    log({"event": "cancelled_unfilled", "count": len(sweep["cancelled"]),
+         "order_ids": sweep["cancelled"], "failed": sweep["failed"]})
+
+    log({"event": "flatten_done", "failed": failed,
+         "cancel_failed": len(sweep["failed"])})
+    return 1 if (failed or sweep["failed"]) else 0
 
 
 if __name__ == "__main__":

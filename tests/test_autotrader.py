@@ -255,6 +255,18 @@ class TestFlatten(unittest.TestCase):
     def test_a_manual_position_is_left_alone(self):
         self.assertIn("left_alone", self.source())
 
+    def test_unfilled_entries_are_cancelled_at_end_of_day(self):
+        text = self.source()
+        self.assertIn("def cancel_all_unfilled", text)
+        # On every exit path, not only when a position was open.
+        self.assertGreaterEqual(text.count("cancel_all_unfilled(client)"), 3)
+
+    def test_sweep_touches_only_our_orders(self):
+        text = self.source()
+        start = text.index("def cancel_all_unfilled")
+        end = text.index("def sell(")
+        self.assertIn('startswith("auto/")', text[start:end])
+
     def test_runs_before_the_brokers_cutoff(self):
         timer = Path(ROOT, "scripts", "flatten.timer").read_text(encoding="utf-8")
         self.assertIn("15:05:00", timer)
