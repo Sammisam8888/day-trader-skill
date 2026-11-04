@@ -30,6 +30,15 @@ from session import IST, Session  # noqa: E402
 
 BROKERAGE_PER_ORDER = Decimal("10")      # flat, per the dashboard
 
+# A trade has to be worth doing after costs. At Rs 10 an order, a round trip
+# is Rs 20 before STT and exchange charges, and on a small account that can
+# exceed the entire gain at the target: a 1-share KOTAKBANK trade risking
+# Rs 2.10 to make Rs 4.30 loses Rs 15.70 WHEN IT WINS.
+#
+# So the gain at target must clear costs by this multiple. Three is not a
+# precise figure -- it is the point where costs stop dominating the outcome.
+MIN_REWARD_TO_COST = Decimal(3)
+
 
 @dataclass
 class Limits:
@@ -39,6 +48,7 @@ class Limits:
     max_position_value: Decimal = Decimal("50000")
     cash_buffer_pct: Decimal = Decimal("10")      # keep this % of cash unspent
     min_reward_to_risk: Decimal = Decimal("1.5")
+    min_reward_to_cost: Decimal = MIN_REWARD_TO_COST
     blocked_symbols: tuple = ()
 
 
@@ -49,10 +59,15 @@ class Sizing:
     position_value: Decimal
     loss_at_stop: Decimal
     round_trip_cost: Decimal
+    gain_at_target: Decimal = Decimal(0)
 
     @property
     def ok(self) -> bool:
         return self.qty > 0
+
+    @property
+    def net_if_target_hits(self) -> Decimal:
+        return self.gain_at_target - self.round_trip_cost
 
 
 def size_position(plan, cash: Decimal, limits: Limits) -> Sizing:
@@ -72,11 +87,13 @@ def size_position(plan, cash: Decimal, limits: Limits) -> Sizing:
     decided_by = min(caps, key=lambda k: caps[k])
 
     if qty <= 0:
-        return Sizing(0, f"{decided_by} allows 0 shares", Decimal(0), Decimal(0), Decimal(0))
+        return Sizing(0, f"{decided_by} allows 0 shares", Decimal(0), Decimal(0),
+                      Decimal(0))
 
     # Two orders per round trip: the entry, and whichever leg closes it.
     cost = BROKERAGE_PER_ORDER * 2
-    return Sizing(qty, decided_by, plan.entry * qty, risk * qty, cost)
+    return Sizing(qty, decided_by, plan.entry * qty, risk * qty, cost,
+                  gain_at_target=(plan.target - plan.entry) * qty)
 
 
 @dataclass
@@ -124,6 +141,18 @@ def check_entry_order(*, symbol: str, plan, sizing: Sizing, session: Session,
         reasons.append(
             f"loss at stop {sizing.loss_at_stop} exceeds max per trade "
             f"{limits.max_loss_per_trade}"
+        )
+
+    # Costs are not a rounding error on a small account: they can exceed the
+    # entire gain at the target, making a winning trade a losing one.
+    if sizing.ok and sizing.gain_at_target < sizing.round_trip_cost * limits.min_reward_to_cost:
+        net = sizing.net_if_target_hits
+        reasons.append(
+            f"not worth the costs: gain at target {sizing.gain_at_target:.2f} "
+            f"vs {sizing.round_trip_cost} brokerage"
+            + (f" -- this LOSES {-net:.2f} even if the target hits"
+               if net <= 0 else
+               f" -- only {net:.2f} net, before STT and exchange charges")
         )
 
     if day.trades_taken >= limits.max_trades_per_day:

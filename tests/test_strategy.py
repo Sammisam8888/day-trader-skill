@@ -286,6 +286,42 @@ class TestSizingAndRisk(unittest.TestCase):
         v = self.gate(limits=_r.Limits(blocked_symbols=("RELIANCE",)))
         self.assertFalse(v.passed)
 
+    def test_todays_real_kotakbank_ticket_is_blocked_on_cost(self):
+        # Live numbers from 2026-11-04 with Rs 889.88 available: 1 share,
+        # trigger 465.50, stop 463.50, target 469.80. Risks Rs 2.10 to make
+        # Rs 4.30 against Rs 20 of brokerage -- it loses when it wins.
+        plan = self.plan(entry="465.50", stop="463.50", target="469.80")
+        sizing = _r.size_position(plan, D("889.88"), _r.Limits())
+        self.assertEqual(sizing.qty, 1)
+        self.assertLess(sizing.net_if_target_hits, 0,
+                        "this trade loses money even on a win")
+        v = self.gate(plan=plan, sizing=sizing)
+        self.assertFalse(v.passed)
+        self.assertIn("LOSES", str(v))
+
+    def test_a_trade_that_clears_costs_comfortably_passes(self):
+        # Rs 500 gain at target against Rs 20 of brokerage.
+        plan = self.plan(entry="1000", stop="950", target="1100")
+        sizing = _r.size_position(plan, D("100000"), _r.Limits())
+        self.assertGreater(sizing.gain_at_target,
+                           sizing.round_trip_cost * _r.MIN_REWARD_TO_COST)
+        self.assertTrue(self.gate(plan=plan, sizing=sizing).passed)
+
+    def test_marginal_trade_is_blocked_even_when_net_is_positive(self):
+        # ITC today: Rs 23.00 at target against Rs 20 of costs. Technically
+        # positive, but costs dominate the outcome.
+        plan = self.plan(entry="283.20", stop="277.60", target="294.70")
+        sizing = _r.size_position(plan, D("889.88"), _r.Limits())
+        self.assertGreater(sizing.net_if_target_hits, 0)
+        v = self.gate(plan=plan, sizing=sizing)
+        self.assertFalse(v.passed)
+        self.assertIn("not worth the costs", str(v))
+
+    def test_gain_at_target_scales_with_quantity(self):
+        plan = self.plan(entry="100", stop="95", target="110")
+        s = _r.size_position(plan, D("100000"), _r.Limits())
+        self.assertEqual(s.gain_at_target, D("10") * s.qty)
+
     def test_getting_out_is_never_blocked_by_day_limits(self):
         self.assertTrue(_r.check_exit_order(symbol="RELIANCE", qty=100,
                                             held_qty=100).passed)
