@@ -64,6 +64,15 @@ class Limits:
     min_reward_to_risk: Decimal = Decimal("1.5")
     min_reward_to_cost: Decimal = MIN_REWARD_TO_COST
     blocked_symbols: tuple = ()
+    # Every setup here is "long breakout on a large cap". On a day the index
+    # drops 1.5% they all stop out together, within minutes: the daily limit
+    # is reached in one move rather than one trade at a time. Fewer
+    # concurrent positions is the only honest answer to a correlated book.
+    max_concurrent_positions: int = 2
+    # Distance from the day's circuit band. A stock at its lower circuit has
+    # no matched sellers and cannot be exited at any price; one near its
+    # upper circuit has no room left for a target to fill.
+    min_circuit_distance_pct: Decimal = Decimal("2")
 
 
 @dataclass(frozen=True)
@@ -143,8 +152,33 @@ class Verdict:
 
 def check_entry_order(*, symbol: str, plan, sizing: Sizing, session: Session,
                       now: datetime, day: DayState, limits: Limits,
-                      cash_for_leverage: Decimal = Decimal(0)) -> Verdict:
+                      cash_for_leverage: Decimal = Decimal(0),
+                      upper_limit: Optional[Decimal] = None,
+                      lower_limit: Optional[Decimal] = None) -> Verdict:
     reasons: List[str] = []
+
+    open_count = len(set(day.open_symbols))
+    if open_count >= limits.max_concurrent_positions:
+        reasons.append(
+            f"already {open_count} open position(s); limit "
+            f"{limits.max_concurrent_positions} because they are all the "
+            f"same bet on the same index"
+        )
+
+    if upper_limit and upper_limit > 0:
+        room = (upper_limit - plan.target) / plan.entry * 100
+        if room < limits.min_circuit_distance_pct:
+            reasons.append(
+                f"target {plan.target} is within {room:.1f}% of the upper "
+                f"circuit {upper_limit}; no room for the move"
+            )
+    if lower_limit and lower_limit > 0:
+        room = (plan.stop - lower_limit) / plan.entry * 100
+        if room < limits.min_circuit_distance_pct:
+            reasons.append(
+                f"stop {plan.stop} is within {room:.1f}% of the lower "
+                f"circuit {lower_limit}; it may not be exitable"
+            )
 
     if symbol.upper() in {s.upper() for s in limits.blocked_symbols}:
         reasons.append(f"{symbol} is on your blocked list")

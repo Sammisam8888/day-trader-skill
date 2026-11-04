@@ -168,7 +168,8 @@ def limits_from_env() -> risk_mod.Limits:
         max_loss_per_trade=Decimal(os.environ.get("TRADER_MAX_LOSS", "500")),
         daily_loss_limit=Decimal(os.environ.get("TRADER_DAILY_LOSS", "1500")),
         max_trades_per_day=int(os.environ.get("TRADER_MAX_TRADES", "3")),
-        max_leverage=Decimal(os.environ.get("TRADER_MAX_LEVERAGE", "1.0")))
+        max_leverage=Decimal(os.environ.get("TRADER_MAX_LEVERAGE", "1.0")),
+        max_concurrent_positions=int(os.environ.get("TRADER_MAX_CONCURRENT", "2")))
 
 
 def run() -> int:
@@ -294,7 +295,9 @@ def run() -> int:
         verdict = risk_mod.check_entry_order(
             symbol=sym, plan=plan, sizing=sizing, session=session,
             now=sess.now(), day=day_state, limits=limits,
-            cash_for_leverage=cash)
+            cash_for_leverage=cash,
+            upper_limit=getattr(inst, "upper_limit", None),
+            lower_limit=getattr(inst, "lower_limit", None))
         if not verdict.passed:
             log({"event": "blocked", "symbol": sym,
                  "reasons": verdict.reasons})

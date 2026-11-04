@@ -20,15 +20,18 @@ class FakeClient:
         return {"data": {}}
 
 
-def parent(oid, name, traded=0, child=None, status="PENDING", sid="1"):
+def parent(oid, name, traded=0, child=None, status="PENDING", sid="1",
+           requested=None):
     return {"id": oid, "name": name, "traded_qty": traded, "status": status,
             "child_order_id": child, "security_id": sid,
+            "requested_qty": requested if requested is not None else traded,
             "remarks": f"auto/{name}/2026-11-04"}
 
 
-def child(oid, parent_id, status="PENDING", sid="1"):
+def child(oid, parent_id, status="PENDING", sid="1", qty=None):
     return {"id": oid, "name": "leg", "status": status, "security_id": sid,
-            "parent_order_id": parent_id, "remarks": "auto/x/2026-11-04"}
+            "parent_order_id": parent_id, "requested_qty": qty,
+            "remarks": "auto/x/2026-11-04"}
 
 
 class TestProtection(unittest.TestCase):
@@ -63,6 +66,28 @@ class TestProtection(unittest.TestCase):
         self.assertEqual(_w.check(c)["alerts"], [])
 
 
+class TestPartialFills(unittest.TestCase):
+    def test_leg_larger_than_fill_is_a_short_risk(self):
+        # Ordered 17, 10 filled, the OCO leg is still for 17.
+        c = FakeClient([parent("P1", "RELIANCE", traded=10, child="C1",
+                               requested=17),
+                        child("C1", "P1", qty=17)])
+        a = _w.check(c)["alerts"]
+        self.assertEqual(a[0]["level"], "PARTIAL_FILL")
+        self.assertIn("short 7", a[0]["action"])
+
+    def test_full_fill_with_matching_leg_is_quiet(self):
+        c = FakeClient([parent("P1", "RELIANCE", traded=17, child="C1",
+                               requested=17),
+                        child("C1", "P1", qty=17)])
+        self.assertEqual(_w.check(c)["alerts"], [])
+
+    def test_leg_without_a_quantity_field_does_not_false_alarm(self):
+        c = FakeClient([parent("P1", "RELIANCE", traded=17, child="C1"),
+                        child("C1", "P1")])
+        self.assertEqual(_w.check(c)["alerts"], [])
+
+
 class TestDuplicates(unittest.TestCase):
     def test_two_resting_orders_in_one_symbol_is_flagged(self):
         c = FakeClient([parent("P1", "RELIANCE", sid="2885"),
@@ -85,6 +110,23 @@ class TestDuplicates(unittest.TestCase):
         c = FakeClient([parent("P1", "RELIANCE", sid="2885"),
                         parent("P2", "RELIANCE", sid="2885", status="CANCELLED")])
         self.assertEqual(_w.check(c)["alerts"], [])
+
+
+class TestPush(unittest.TestCase):
+    def test_no_topic_means_no_network(self):
+        old = _w.NTFY_TOPIC
+        _w.NTFY_TOPIC = ""
+        try:
+            _w.push("t", "b")      # must not raise, must not call out
+        finally:
+            _w.NTFY_TOPIC = old
+
+    def test_unprotected_is_the_most_urgent(self):
+        with open(os.path.join(ROOT, "indstocks", "watcher.py"),
+                  encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn('"UNPROTECTED": 0', text)
+        self.assertIn('priority="urgent" if top["level"] == "UNPROTECTED"', text)
 
 
 class TestItNeverTrades(unittest.TestCase):
