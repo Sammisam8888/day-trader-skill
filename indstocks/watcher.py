@@ -200,6 +200,21 @@ def check(client) -> dict:
                 "action": "cancel the extras; if all fire the position multiplies",
             })
 
+    # Orders from a previous session still resting. DAY validity does not
+    # reliably clear them, and a stale trigger carries stale levels.
+    today = sess.now().strftime("%Y-%m-%d")
+    stale = [r for r in ours
+             if str(r.get("status", "")).upper() in LIVE
+             and today not in str(r.get("remarks", ""))]
+    if stale:
+        alerts.append({
+            "level": "STALE_ORDERS",
+            "count": len(stale),
+            "order_ids": [r.get("id") for r in stale],
+            "remarks": sorted({str(r.get("remarks")) for r in stale}),
+            "action": "cancel these; their levels are from another day",
+        })
+
     open_positions = positions(client)
     now = sess.now()
     session = sess.session_for(now)
@@ -236,7 +251,7 @@ def run() -> int:
         for a in state["alerts"]:
             log({"event": "ALERT", **a})
         worst = {"UNPROTECTED": 0, "PARTIAL_FILL": 1, "NEAR_CLOSE": 2,
-                 "DUPLICATE": 3}
+                 "DUPLICATE": 3, "STALE_ORDERS": 4}
         top = min(state["alerts"], key=lambda a: worst.get(a["level"], 9))
         push(f"{top['level']}: {top.get('name') or 'positions'}",
              top.get("action", ""),

@@ -112,6 +112,28 @@ class TestDuplicates(unittest.TestCase):
         self.assertEqual(_w.check(c)["alerts"], [])
 
 
+class TestStaleOrders(unittest.TestCase):
+    def test_yesterdays_resting_order_is_flagged(self):
+        # 23:32 on 2026-11-04: six ITC orders from that day still open.
+        # Seen from the next morning, they are stale.
+        r = parent("P1", "ITC", sid="1660")
+        r["remarks"] = "auto/ITC/2026-11-03"       # not today
+        a = _w.check(FakeClient([r]))["alerts"]
+        self.assertEqual(a[0]["level"], "STALE_ORDERS")
+        self.assertIn("another day", a[0]["action"])
+
+    def test_todays_resting_order_is_not_stale(self):
+        import session as sess
+        r = parent("P1", "ITC", sid="1660")
+        r["remarks"] = f"auto/ITC/{sess.now():%Y-%m-%d}"
+        self.assertEqual(_w.check(FakeClient([r]))["alerts"], [])
+
+    def test_a_dead_order_from_yesterday_is_not_stale(self):
+        r = parent("P1", "ITC", sid="1660", status="CANCELLED")
+        r["remarks"] = "auto/ITC/2026-11-03"
+        self.assertEqual(_w.check(FakeClient([r]))["alerts"], [])
+
+
 class TestPush(unittest.TestCase):
     def test_no_topic_means_no_network(self):
         old = _w.NTFY_TOPIC
