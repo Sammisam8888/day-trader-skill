@@ -55,10 +55,28 @@ MAX_CODES_PER_CALL = min(
 EMPTY_RETRIES = int(os.environ.get("INDSTOCKS_EMPTY_RETRIES", "3"))
 EMPTY_BACKOFF_S = float(os.environ.get("INDSTOCKS_EMPTY_BACKOFF", "1.5"))
 
+# A trading session is 09:15 to 15:30 = 375 minutes. The daily, weekly and
+# monthly intervals are expressed in session minutes so closes_at and
+# is_complete_at keep working without a special case.
+SESSION_MINUTES = 375
+
 INTERVAL_MINUTES = {
     "1minute": 1, "2minute": 2, "3minute": 3, "4minute": 4, "5minute": 5,
     "10minute": 10, "15minute": 15, "30minute": 30, "60minute": 60,
     "120minute": 120, "180minute": 180, "240minute": 240,
+    "1day": SESSION_MINUTES,
+    "1week": SESSION_MINUTES * 5,
+    "1month": SESSION_MINUTES * 21,
+}
+
+# Max window the API accepts per call, by interval. A wider request silently
+# returns the maximum window rather than erroring, so paging is the caller's
+# job and asking for more than this quietly loses the earlier part.
+MAX_RANGE_DAYS = {
+    **{k: 7 for k in ("1minute", "2minute", "3minute", "4minute", "5minute",
+                      "10minute", "15minute", "30minute")},
+    **{k: 15 for k in ("60minute", "120minute", "180minute", "240minute")},
+    "1day": 365, "1week": 365, "1month": 365,
 }
 
 
