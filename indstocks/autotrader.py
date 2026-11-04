@@ -58,6 +58,43 @@ def log(record: dict) -> None:
     print(json.dumps(record, default=str), flush=True)
 
 
+def todays_placements() -> dict:
+    """What THIS runner already placed today, from its own log.
+
+    Each timer firing is a fresh process. Without reading its own history a
+    run starts from zero, re-places the symbols the previous run placed, and
+    the per-day trade limit is enforced five times a day instead of once.
+
+    Read from our log rather than ticket.py's: that file belongs to the
+    interactive path and this runner never writes it, which is exactly how
+    the duplicates happened.
+    """
+    path = STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
+    symbols, risk, placed = [], Decimal(0), 0
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("event") != "placed":
+                continue
+            placed += 1
+            sym = rec.get("symbol")
+            if sym:
+                symbols.append(sym)
+            try:
+                risk += Decimal(str(rec.get("risk") or 0))
+            except Exception:                           # noqa: BLE001
+                pass
+    except OSError:
+        pass
+    return {"trades_taken": placed, "risk_committed": risk,
+            "open_symbols": tuple(symbols)}
+
+
 def halted() -> str | None:
     """A file anyone can touch to stop the next run before it trades."""
     if KILL_SWITCH.exists():
@@ -139,7 +176,7 @@ def run() -> int:
              "realised_pnl": str(pnl), "limit": str(limits.daily_loss_limit)})
         return 0
 
-    day_log = tk_mod.day_state_from_log()
+    day_log = todays_placements()
     if day_log["trades_taken"] >= limits.max_trades_per_day:
         log({"event": "halted", "reason": "trade limit reached",
              "taken": day_log["trades_taken"]})
@@ -169,6 +206,13 @@ def run() -> int:
         if placed >= budget:
             log({"event": "stop", "reason": "trade budget spent"})
             break
+        if sym in day_state.open_symbols:
+            # Already placed today, by this run or an earlier one. A second
+            # resting order in the same name doubles the position if both
+            # trigger.
+            log({"event": "skip", "symbol": sym,
+                 "reason": "already placed today"})
+            continue
         if halted():
             log({"event": "halted", "reason": "kill switch during run"})
             break

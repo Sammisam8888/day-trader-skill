@@ -101,6 +101,78 @@ class TestCapitalIsSpentAcrossTheRun(unittest.TestCase):
         self.assertLessEqual(spent, cash, "the fix: never over-commit")
 
 
+class TestCrossRunMemory(unittest.TestCase):
+    """Each timer firing is a new process; the day's limits are per DAY."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self._old = _a.STATE_DIR
+        _a.STATE_DIR = Path(self.tmp.name)
+
+    def tearDown(self):
+        _a.STATE_DIR = self._old
+        self.tmp.cleanup()
+
+    def test_empty_log_means_nothing_placed(self):
+        s = _a.todays_placements()
+        self.assertEqual(s["trades_taken"], 0)
+        self.assertEqual(s["open_symbols"], ())
+
+    def test_counts_placements_from_an_earlier_run(self):
+        import json
+        from decimal import Decimal as D
+        import session as sess
+        path = _a.STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in [
+            {"event": "run_start"},
+            {"event": "placed", "symbol": "RELIANCE", "risk": "158.10"},
+            {"event": "blocked", "symbol": "WIPRO"},
+            {"event": "run_end"},
+            {"event": "placed", "symbol": "ITC", "risk": "51.30"},
+        ]) + "\n", encoding="utf-8")
+
+        s = _a.todays_placements()
+        self.assertEqual(s["trades_taken"], 2)
+        self.assertEqual(set(s["open_symbols"]), {"RELIANCE", "ITC"})
+        self.assertEqual(s["risk_committed"], D("209.40"))
+
+    def test_only_placed_events_count(self):
+        import json
+        import session as sess
+        path = _a.STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in [
+            {"event": "would_place", "symbol": "RELIANCE", "risk": "158.10"},
+            {"event": "blocked", "symbol": "ITC", "risk": "51.30"},
+            {"event": "order_failed", "symbol": "SBIN", "risk": "10"},
+        ]) + "\n", encoding="utf-8")
+        self.assertEqual(_a.todays_placements()["trades_taken"], 0,
+                         "a shadow decision is not a placement")
+
+    def test_a_corrupt_line_does_not_lose_the_rest(self):
+        import json
+        import session as sess
+        path = _a.STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
+        path.write_text(
+            "not json\n"
+            + json.dumps({"event": "placed", "symbol": "ITC", "risk": "51.30"})
+            + "\n", encoding="utf-8")
+        self.assertEqual(_a.todays_placements()["trades_taken"], 1)
+
+    def test_runner_reads_its_own_log_not_the_ticket_log(self):
+        with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
+                  encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("day_log = todays_placements()", text)
+        self.assertNotIn("day_log = tk_mod.day_state_from_log()", text)
+
+    def test_a_symbol_placed_today_is_skipped(self):
+        with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
+                  encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("already placed today", text)
+
+
 class TestOperatorControls(unittest.TestCase):
     def test_go_live_script_offers_halt_and_resume(self):
         text = Path(ROOT, "scripts", "go-live.sh").read_text(encoding="utf-8")
