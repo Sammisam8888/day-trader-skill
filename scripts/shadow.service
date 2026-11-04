@@ -1,0 +1,9 @@
+[Unit]
+Description=Shadow trading scan (decides, logs, places nothing)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/shadow.py
+User=root
