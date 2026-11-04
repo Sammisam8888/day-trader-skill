@@ -26,9 +26,10 @@ from typing import List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import charges as charges_mod  # noqa: E402
 from session import IST, Session  # noqa: E402
 
-BROKERAGE_PER_ORDER = Decimal("10")      # flat, per the dashboard
+BROKERAGE_PER_ORDER = charges_mod.BROKERAGE_PER_ORDER
 
 # A trade has to be worth doing after costs. At Rs 10 an order, a round trip
 # is Rs 20 before STT and exchange charges, and on a small account that can
@@ -90,8 +91,10 @@ def size_position(plan, cash: Decimal, limits: Limits) -> Sizing:
         return Sizing(0, f"{decided_by} allows 0 shares", Decimal(0), Decimal(0),
                       Decimal(0))
 
-    # Two orders per round trip: the entry, and whichever leg closes it.
-    cost = BROKERAGE_PER_ORDER * 2
+    # Every statutory charge, not just brokerage: STT, exchange, SEBI, IPFT,
+    # stamp duty and GST. On a small position GST alone is most of the gap
+    # between the flat Rs 20 this used to assume and the real figure.
+    cost = charges_mod.cost_of_plan(plan.entry, plan.target, qty).total
     return Sizing(qty, decided_by, plan.entry * qty, risk * qty, cost,
                   gain_at_target=(plan.target - plan.entry) * qty)
 
