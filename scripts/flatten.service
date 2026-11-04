@@ -1,0 +1,9 @@
+[Unit]
+Description=Close all intraday positions before the broker does
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/flatten.py
+User=root
