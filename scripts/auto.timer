@@ -1,0 +1,19 @@
+# Scans a few times through the entry window: a breakout that forms at 11:00
+# is missed by a single 09:31 run.
+#
+# Install:
+#   sudo cp scripts/auto.{timer,service} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now auto.timer
+[Unit]
+Description=Autonomous trading scan, through the entry window
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 09:31:00 Asia/Kolkata
+OnCalendar=Mon-Fri *-*-* 10:00:00 Asia/Kolkata
+OnCalendar=Mon-Fri *-*-* 10:30:00 Asia/Kolkata
+OnCalendar=Mon-Fri *-*-* 11:30:00 Asia/Kolkata
+OnCalendar=Mon-Fri *-*-* 13:00:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target
