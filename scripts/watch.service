@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch fills, stops and duplicates
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/watcher.py
+User=root

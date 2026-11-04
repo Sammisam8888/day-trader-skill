@@ -1,0 +1,10 @@
+# Every 5 minutes through the session. Reports only; it never trades.
+[Unit]
+Description=Position and protection watcher
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 09:15..15:30/5:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target
