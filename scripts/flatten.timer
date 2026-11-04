@@ -1,0 +1,15 @@
+# Closes open intraday positions before the broker's own square-off.
+#
+# 15:05 leaves time for a market order to fill and for a retry, ahead of the
+# broker's 15:20 cutoff and its Rs 50 + GST charge. 15:12 is a second pass
+# for anything the first attempt could not close.
+[Unit]
+Description=Flatten intraday positions before the close
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 15:05:00 Asia/Kolkata
+OnCalendar=Mon-Fri *-*-* 15:12:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target

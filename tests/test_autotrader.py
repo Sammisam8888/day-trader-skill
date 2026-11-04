@@ -187,3 +187,44 @@ class TestOperatorControls(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFlatten(unittest.TestCase):
+    """The exit side. Narrow by design: it may only ever sell."""
+
+    def source(self):
+        with open(os.path.join(ROOT, "indstocks", "flatten.py"),
+                  encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_it_only_ever_sells(self):
+        text = self.source()
+        self.assertIn('"txn_type": "SELL"', text)
+        self.assertNotIn('"txn_type": "BUY"', text,
+                         "the flatten job must never open a position")
+
+    def test_quantity_comes_from_the_broker_not_from_our_log(self):
+        # Selling what we think we hold, rather than what we do hold, is how
+        # a flatten turns into a short position.
+        text = self.source()
+        self.assertIn("/portfolio/positions", text)
+        self.assertIn('pos["qty"]', text)
+
+    def test_only_positive_quantities_are_closed(self):
+        self.assertIn("if qty > 0", self.source(),
+                      "a zero or negative net qty must not be sold")
+
+    def test_resting_legs_are_cancelled_before_selling(self):
+        text = self.source()
+        cancel_at = text.index("cancelled = cancel_resting_legs")
+        sell_at = text.index("resp = sell(client, pos)")
+        self.assertLess(cancel_at, sell_at,
+                        "a sell is rejected while the OCO still holds the shares")
+
+    def test_a_failed_sell_is_loud(self):
+        self.assertIn("CLOSE THIS MANUALLY", self.source())
+
+    def test_runs_before_the_brokers_cutoff(self):
+        timer = Path(ROOT, "scripts", "flatten.timer").read_text(encoding="utf-8")
+        self.assertIn("15:05:00", timer)
+        self.assertIn("15:12:00", timer, "a second pass for anything that failed")
