@@ -344,6 +344,50 @@ class TestSizingAndRisk(unittest.TestCase):
         s = _r.size_position(plan, D("100000"), _r.Limits())
         self.assertEqual(s.gain_at_target, D("10") * s.qty)
 
+    def test_todays_68k_on_25k_is_blocked_at_default_leverage(self):
+        # 2026-11-04, live: three orders put 68,338 of RELIANCE against
+        # 25,189 of cash. MIS margin absorbed 2.7x without objection.
+        cash = D("25189.88")
+        plan = self.plan(entry="1314.2", stop="1304.9", target="1332.8")
+        third = _r.size_position(plan, cash, _r.Limits())
+        # Two orders already held, a third proposed.
+        day = _r.DayState(exposure=third.position_value * 2)
+        v = self.gate(plan=plan, sizing=third, day=day, cash_for_leverage=cash)
+        self.assertFalse(v.passed)
+        self.assertIn("leverage", str(v))
+
+    def test_first_order_within_cash_passes(self):
+        cash = D("25189.88")
+        plan = self.plan(entry="1314.2", stop="1304.9", target="1332.8")
+        s = _r.size_position(plan, cash, _r.Limits())
+        self.assertLessEqual(s.position_value, cash)
+        self.assertTrue(self.gate(plan=plan, sizing=s, cash_for_leverage=cash).passed)
+
+    def test_position_cap_derives_from_cash_not_a_fixed_50000(self):
+        # The old default of 50,000 was already 2x leverage on a 25k account.
+        plan = self.plan(entry="1000", stop="990", target="1020")
+        s = _r.size_position(plan, D("25000"), _r.Limits())
+        self.assertLessEqual(s.position_value, D("25000"))
+
+    def test_raising_max_leverage_is_explicit(self):
+        cash = D("25000")
+        plan = self.plan(entry="1000", stop="990", target="1020")
+        s = _r.size_position(plan, cash, _r.Limits(max_leverage=D("3")))
+        self.assertGreater(s.position_value, cash,
+                           "3x must be possible when deliberately chosen")
+
+    def test_unrealised_loss_counts_against_the_daily_limit(self):
+        # Down 2,400 on open positions, limit 2,500: a new 158 of risk
+        # would carry the day past the limit. Realised P&L is still zero.
+        day = _r.DayState(unrealised_pnl=D("-2400"))
+        v = self.gate(day=day, limits=_r.Limits(daily_loss_limit=D("2500")))
+        self.assertFalse(v.passed)
+        self.assertIn("open positions are down", str(v))
+
+    def test_unrealised_profit_does_not_block(self):
+        day = _r.DayState(unrealised_pnl=D("500"))
+        self.assertTrue(self.gate(day=day).passed)
+
     def test_getting_out_is_never_blocked_by_day_limits(self):
         self.assertTrue(_r.check_exit_order(symbol="RELIANCE", qty=100,
                                             held_qty=100).passed)

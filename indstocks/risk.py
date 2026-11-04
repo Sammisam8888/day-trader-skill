@@ -40,13 +40,26 @@ BROKERAGE_PER_ORDER = charges_mod.BROKERAGE_PER_ORDER
 # precise figure -- it is the point where costs stop dominating the outcome.
 MIN_REWARD_TO_COST = Decimal(3)
 
+# How much position value may be held per rupee of actual cash. INTRADAY
+# (MIS) product carries broker leverage -- roughly 5x on liquid large caps --
+# so the margin balance will happily fund several times the cash. On
+# 2026-11-04 three duplicate orders put 68,338 of RELIANCE against 25,189 of
+# margin, 2.7x, and nothing objected: leverage absorbed it silently.
+#
+# 1.0 means never hold more position value than cash. Raising it is a
+# deliberate decision about borrowed money, not a tuning parameter.
+MAX_LEVERAGE = Decimal(os.environ.get("TRADER_MAX_LEVERAGE", "1.0"))
+
 
 @dataclass
 class Limits:
     max_loss_per_trade: Decimal = Decimal("500")
+    max_leverage: Decimal = MAX_LEVERAGE
     daily_loss_limit: Decimal = Decimal("1500")
     max_trades_per_day: int = 3
-    max_position_value: Decimal = Decimal("50000")
+    # None means "derive it from cash and max_leverage" rather than a fixed
+    # figure that silently permits leverage on a small account.
+    max_position_value: Optional[Decimal] = None
     cash_buffer_pct: Decimal = Decimal("10")      # keep this % of cash unspent
     min_reward_to_risk: Decimal = Decimal("1.5")
     min_reward_to_cost: Decimal = MIN_REWARD_TO_COST
@@ -77,11 +90,17 @@ def size_position(plan, cash: Decimal, limits: Limits) -> Sizing:
     if risk <= 0:
         return Sizing(0, "invalid risk per share", Decimal(0), Decimal(0), Decimal(0))
 
-    spendable = cash * (Decimal(100) - limits.cash_buffer_pct) / Decimal(100)
+    # Both caps scale with max_leverage, so the knob means what it says. At
+    # the default of 1.0 neither cap ever exceeds cash.
+    buying_power = cash * limits.max_leverage
+    spendable = buying_power * (Decimal(100) - limits.cash_buffer_pct) / Decimal(100)
+    position_cap = (limits.max_position_value
+                    if limits.max_position_value is not None
+                    else buying_power)
 
     caps = {
         "max loss per trade": int(limits.max_loss_per_trade / risk),
-        "position cap": int(limits.max_position_value / plan.entry),
+        "position cap": int(position_cap / plan.entry),
         "cash after buffer": int(spendable / plan.entry),
     }
     qty = min(caps.values())
@@ -105,6 +124,11 @@ class DayState:
     trades_taken: int = 0
     risk_committed: Decimal = Decimal(0)
     open_symbols: tuple = ()
+    # Position value already held or committed, for the leverage cap.
+    exposure: Decimal = Decimal(0)
+    # Open-position P&L. A loss that has not been realised is still a loss,
+    # and a daily limit that ignores it is not a daily limit.
+    unrealised_pnl: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True)
@@ -118,7 +142,8 @@ class Verdict:
 
 
 def check_entry_order(*, symbol: str, plan, sizing: Sizing, session: Session,
-                      now: datetime, day: DayState, limits: Limits) -> Verdict:
+                      now: datetime, day: DayState, limits: Limits,
+                      cash_for_leverage: Decimal = Decimal(0)) -> Verdict:
     reasons: List[str] = []
 
     if symbol.upper() in {s.upper() for s in limits.blocked_symbols}:
@@ -156,6 +181,25 @@ def check_entry_order(*, symbol: str, plan, sizing: Sizing, session: Session,
             + (f" -- this LOSES {-net:.2f} even if the target hits"
                if net <= 0 else
                f" -- only {net:.2f} net, before STT and exchange charges")
+        )
+
+    # Leverage: total held plus this order, against actual cash.
+    exposure = day.exposure + sizing.position_value
+    ceiling = cash_for_leverage * limits.max_leverage
+    if cash_for_leverage > 0 and exposure > ceiling:
+        reasons.append(
+            f"leverage: this would hold {exposure:.0f} of position against "
+            f"{cash_for_leverage:.0f} cash "
+            f"({exposure / cash_for_leverage:.2f}x, limit {limits.max_leverage}x)"
+        )
+
+    # Unrealised losses count against the daily limit. They are the only kind
+    # you have while a position is still open.
+    total_pnl = day.unrealised_pnl
+    if total_pnl < 0 and -total_pnl + sizing.loss_at_stop > limits.daily_loss_limit:
+        reasons.append(
+            f"open positions are down {-total_pnl:.0f}; adding {sizing.loss_at_stop:.0f} "
+            f"of risk would pass the daily limit {limits.daily_loss_limit}"
         )
 
     if day.trades_taken >= limits.max_trades_per_day:

@@ -129,19 +129,46 @@ def available_cash(client) -> Decimal | None:
     return None
 
 
-def realised_pnl(client) -> Decimal:
+def day_pnl(client) -> tuple:
+    """(realised, unrealised). Both matter.
+
+    The daily loss limit previously read realised only, so an account down
+    several thousand on open positions still looked flat and kept trading.
+    An unrealised loss is the only kind you have while a position is open.
+    """
     try:
         data = (client.get("/funds") or {}).get("data") or {}
-        return Decimal(str(data.get("realized_pnl") or 0))
+        return (Decimal(str(data.get("realized_pnl") or 0)),
+                Decimal(str(data.get("unrealized_pnl") or 0)))
+    except Exception:                                   # noqa: BLE001
+        return Decimal(0), Decimal(0)
+
+
+def held_exposure(client) -> Decimal:
+    """Position value already held, for the leverage cap."""
+    try:
+        data = (client.get("/portfolio/positions") or {}).get("data") or {}
     except Exception:                                   # noqa: BLE001
         return Decimal(0)
+    rows = data if isinstance(data, list) else (
+        data.get("positions") or data.get("net_positions") or [])
+    total = Decimal(0)
+    for r in rows or []:
+        try:
+            qty = abs(int(r.get("net_qty", r.get("quantity", r.get("qty", 0)))))
+            price = Decimal(str(r.get("avg_price") or r.get("buy_avg_price") or 0))
+        except (TypeError, ValueError):
+            continue
+        total += price * qty
+    return total
 
 
 def limits_from_env() -> risk_mod.Limits:
     return risk_mod.Limits(
         max_loss_per_trade=Decimal(os.environ.get("TRADER_MAX_LOSS", "500")),
         daily_loss_limit=Decimal(os.environ.get("TRADER_DAILY_LOSS", "1500")),
-        max_trades_per_day=int(os.environ.get("TRADER_MAX_TRADES", "3")))
+        max_trades_per_day=int(os.environ.get("TRADER_MAX_TRADES", "3")),
+        max_leverage=Decimal(os.environ.get("TRADER_MAX_LEVERAGE", "1.0")))
 
 
 def run() -> int:
@@ -170,10 +197,20 @@ def run() -> int:
 
     # Losses already taken today, from the broker rather than our own log:
     # a position closed outside this system still spends the daily budget.
-    pnl = realised_pnl(client)
-    if pnl <= -limits.daily_loss_limit:
+    realised, unrealised = day_pnl(client)
+    combined = realised + unrealised
+    if combined <= -limits.daily_loss_limit:
         log({"event": "halted", "reason": "daily loss limit reached",
-             "realised_pnl": str(pnl), "limit": str(limits.daily_loss_limit)})
+             "realised_pnl": str(realised), "unrealised_pnl": str(unrealised),
+             "combined": str(combined), "limit": str(limits.daily_loss_limit)})
+        return 0
+
+    exposure = held_exposure(client)
+    if cash > 0 and exposure >= cash * limits.max_leverage:
+        log({"event": "halted", "reason": "leverage ceiling already reached",
+             "exposure": str(exposure), "cash": str(cash),
+             "ratio": str(round(exposure / cash, 2)),
+             "limit": str(limits.max_leverage)})
         return 0
 
     day_log = todays_placements()
@@ -182,7 +219,9 @@ def run() -> int:
              "taken": day_log["trades_taken"]})
         return 0
 
-    log({"event": "run_start", "cash": str(cash), "realised_pnl": str(pnl),
+    log({"event": "run_start", "cash": str(cash), "realised_pnl": str(realised),
+         "unrealised_pnl": str(unrealised), "exposure": str(exposure),
+         "max_leverage": str(limits.max_leverage),
          "trades_taken": day_log["trades_taken"],
          "phase": session.phase(now)})
 
@@ -191,7 +230,9 @@ def run() -> int:
     day_state = risk_mod.DayState(
         trades_taken=day_log["trades_taken"],
         risk_committed=day_log["risk_committed"],
-        open_symbols=day_log["open_symbols"])
+        open_symbols=day_log["open_symbols"],
+        exposure=exposure,
+        unrealised_pnl=unrealised)
 
     placed = 0
     budget = limits.max_trades_per_day - day_log["trades_taken"]
@@ -252,7 +293,8 @@ def run() -> int:
 
         verdict = risk_mod.check_entry_order(
             symbol=sym, plan=plan, sizing=sizing, session=session,
-            now=sess.now(), day=day_state, limits=limits)
+            now=sess.now(), day=day_state, limits=limits,
+            cash_for_leverage=cash)
         if not verdict.passed:
             log({"event": "blocked", "symbol": sym,
                  "reasons": verdict.reasons})
@@ -299,7 +341,9 @@ def run() -> int:
             day_state = risk_mod.DayState(
                 trades_taken=day_state.trades_taken + 1,
                 risk_committed=day_state.risk_committed + sizing.loss_at_stop,
-                open_symbols=tuple(day_state.open_symbols) + (sym,))
+                open_symbols=tuple(day_state.open_symbols) + (sym,),
+                exposure=day_state.exposure + sizing.position_value,
+                unrealised_pnl=day_state.unrealised_pnl)
         except Exception as exc:                        # noqa: BLE001
             # A failed order is never retried without a fresh check: the
             # failure may be margin, a band, or a position already open.

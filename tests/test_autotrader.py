@@ -173,6 +173,28 @@ class TestCrossRunMemory(unittest.TestCase):
         self.assertIn("already placed today", text)
 
 
+class TestLeverageAndUnrealised(unittest.TestCase):
+    def source(self):
+        with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
+                  encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_daily_limit_reads_unrealised_too(self):
+        text = self.source()
+        self.assertIn("unrealized_pnl", text)
+        self.assertIn("combined = realised + unrealised", text)
+
+    def test_held_exposure_is_measured_before_placing(self):
+        text = self.source()
+        self.assertIn("held_exposure(client)", text)
+        self.assertIn("leverage ceiling already reached", text)
+
+    def test_leverage_default_is_one(self):
+        _r = load("indstocks", "risk")
+        from decimal import Decimal as D
+        self.assertEqual(_r.Limits().max_leverage, D("1.0"))
+
+
 class TestOperatorControls(unittest.TestCase):
     def test_go_live_script_offers_halt_and_resume(self):
         text = Path(ROOT, "scripts", "go-live.sh").read_text(encoding="utf-8")
