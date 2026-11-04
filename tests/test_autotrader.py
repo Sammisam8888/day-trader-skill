@@ -48,6 +48,59 @@ class TestFailsClosed(unittest.TestCase):
         self.assertNotIn("for attempt in", text)
 
 
+class TestCapitalIsSpentAcrossTheRun(unittest.TestCase):
+    """Three orders must not each claim the whole account."""
+
+    def source(self, name):
+        with open(os.path.join(ROOT, "indstocks", name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_autotrader_sizes_against_remaining_not_total(self):
+        text = self.source("autotrader.py")
+        self.assertIn("size_position(plan, remaining_cash", text)
+        self.assertNotIn("size_position(plan, cash", text)
+
+    def test_shadow_sizes_against_remaining_too(self):
+        text = self.source("shadow.py")
+        self.assertIn("size_position(plan, remaining_cash", text)
+        self.assertNotIn("size_position(plan, cash", text)
+
+    def test_both_decrement_after_committing(self):
+        for name in ("autotrader.py", "shadow.py"):
+            self.assertIn("remaining_cash -= sizing.position_value",
+                          self.source(name), name)
+
+    def test_the_arithmetic_that_was_wrong(self):
+        # 2026-11-04: three tickets at 22,341 + 22,447 + 21,753 against a
+        # 25,000 balance, each sized as though it were the only one.
+        from decimal import Decimal as D
+        _r = load("indstocks", "risk")
+        _st = load("indstocks", "strategy")
+
+        def plan(entry, stop, target):
+            e, s, t_ = D(entry), D(stop), D(target)
+            return _st.ExitPlan(e, s, t_, e - s, (t_ - e) / (e - s))
+
+        cash = D("25000")
+        limits = _r.Limits()
+        total = D(0)
+        for args in (("1314.2", "1304.9", "1332.8"),
+                     ("2494.1", "2478.4", "2525.5"),
+                     ("1144.9", "1137.8", "1159.1")):
+            total += _r.size_position(plan(*args), cash, limits).position_value
+        self.assertGreater(total, cash * 2, "the bug: 2.6x the account")
+
+        remaining = cash
+        spent = D(0)
+        for args in (("1314.2", "1304.9", "1332.8"),
+                     ("2494.1", "2478.4", "2525.5"),
+                     ("1144.9", "1137.8", "1159.1")):
+            s = _r.size_position(plan(*args), remaining, limits)
+            spent += s.position_value
+            remaining -= s.position_value
+        self.assertLessEqual(spent, cash, "the fix: never over-commit")
+
+
 class TestOperatorControls(unittest.TestCase):
     def test_go_live_script_offers_halt_and_resume(self):
         text = Path(ROOT, "scripts", "go-live.sh").read_text(encoding="utf-8")

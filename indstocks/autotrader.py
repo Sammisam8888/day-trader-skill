@@ -159,6 +159,12 @@ def run() -> int:
     placed = 0
     budget = limits.max_trades_per_day - day_log["trades_taken"]
 
+    # Capital is spent across the run, not per decision. Sizing each order
+    # against the full balance means three orders can commit three times the
+    # account: the first fills, the rest are rejected for margin, and which
+    # ones survive is decided by the exchange rather than by us.
+    remaining_cash = cash
+
     for sym in watchlist():
         if placed >= budget:
             log({"event": "stop", "reason": "trade budget spent"})
@@ -193,8 +199,11 @@ def run() -> int:
             log({"event": "skip", "symbol": sym, "reason": str(exc)[:160]})
             continue
 
-        sizing = risk_mod.size_position(plan, cash, limits)
+        sizing = risk_mod.size_position(plan, remaining_cash, limits)
         if not sizing.ok:
+            log({"event": "unsized", "symbol": sym,
+                 "reason": sizing.limit_hit,
+                 "remaining_cash": str(remaining_cash)})
             continue
 
         verdict = risk_mod.check_entry_order(
@@ -223,9 +232,12 @@ def run() -> int:
                   "net_if_target": str(sizing.net_if_target_hits),
                   "payload": payload}
 
+        record["remaining_cash_before"] = str(remaining_cash)
+
         if not LIVE:
             log({"event": "would_place", **record})
             placed += 1
+            remaining_cash -= sizing.position_value
             continue
 
         try:
@@ -237,6 +249,9 @@ def run() -> int:
             log({"event": "placed", "parent_order_id": parent,
                  "child_order_id": child, **record})
             placed += 1
+            # A resting trigger reserves nothing at the broker until it
+            # fires, but it can still fire, so treat it as spent.
+            remaining_cash -= sizing.position_value
             day_state = risk_mod.DayState(
                 trades_taken=day_state.trades_taken + 1,
                 risk_committed=day_state.risk_committed + sizing.loss_at_stop,
