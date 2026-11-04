@@ -101,6 +101,7 @@ def run() -> int:
                       "trades": limits.max_trades_per_day}})
 
     proposed = 0
+    remaining_cash = cash
     for sym in watchlist():
         rec = {"ts": sess.now().isoformat(), "symbol": sym}
         try:
@@ -141,7 +142,7 @@ def run() -> int:
             write({**rec, "event": "no_plan", "reason": str(exc)})
             continue
 
-        sizing = risk_mod.size_position(plan, cash, limits)
+        sizing = risk_mod.size_position(plan, remaining_cash, limits)
         rec.update({"entry": str(plan.entry), "stop": str(plan.stop),
                     "target": str(plan.target), "qty": sizing.qty,
                     "limit_hit": sizing.limit_hit,
@@ -171,8 +172,11 @@ def run() -> int:
             write({**rec, "event": "rejected_locally", "reason": str(exc)})
             continue
 
+        rec["remaining_cash"] = str(remaining_cash)
         write({**rec, "event": "would_place" if verdict.passed else "blocked"})
-        proposed += verdict.passed
+        if verdict.passed:
+            proposed += 1
+            remaining_cash -= sizing.position_value
 
     path = write({"ts": sess.now().isoformat(), "event": "run_end",
                   "would_have_placed": proposed})
