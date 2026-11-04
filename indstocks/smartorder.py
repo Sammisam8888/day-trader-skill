@@ -14,6 +14,7 @@ No network. No credentials. Pure logic, so it can be unit-tested offline.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Literal, Optional
@@ -27,6 +28,15 @@ OrderType = Literal["LIMIT", "MARKET", "TRIGGER"]
 DEFAULT_ALGO_ID = {"NSE": "99999", "MCX": "99999", "BSE": "9999999999999999"}
 
 MAX_REMARKS = 100
+
+# The OCO stop leg is a stop-LIMIT: it triggers at sl_trigger and then
+# rests as a limit at sl_limit. The API offers no stop-market leg. So the
+# gap between the two is the widest move the stop can fill through. Two
+# ticks is Rs 0.20 on RELIANCE -- a stock that gaps 1% on news sails
+# straight past it and the "stop" never fills. The band is now a percentage
+# of price. 1% survives most gaps on a large cap; 0 would reproduce the
+# old behaviour and is not a sane choice.
+STOP_BAND_PCT = Decimal(os.environ.get("TRADER_STOP_BAND_PCT", "1.0"))
 
 
 class SmartOrderError(ValueError):
@@ -360,8 +370,12 @@ def build_long_day_trade(
     band = tick_size * slippage_ticks
 
     sl_trigger = to_tick(stop, tick_size, mode="down")
-    sl_limit = to_tick(sl_trigger - band, tick_size, mode="down")
+    # The STOP limit is the one that must survive a gap: a wide band.
+    sl_limit = to_tick(sl_trigger * (Decimal(1) - STOP_BAND_PCT / 100),
+                       tick_size, mode="down")
     tgt_trigger = to_tick(target, tick_size, mode="up")
+    # The TARGET limit only needs to clear the spread: a narrow band is
+    # correct, because a wide one gives away profit on the fill.
     tgt_limit = to_tick(tgt_trigger + band, tick_size, mode="up")
 
     return SmartOrder(
@@ -457,7 +471,8 @@ def build_trigger_for_instrument(
     trigger_limit = to_tick(trigger + band, tick, mode="up")
 
     sl_trigger = to_tick(stop, tick, mode="down")
-    sl_limit = to_tick(sl_trigger - band, tick, mode="down")
+    sl_limit = to_tick(sl_trigger * (Decimal(1) - STOP_BAND_PCT / 100),
+                       tick, mode="down")
     tgt_trigger = to_tick(target, tick, mode="up")
     tgt_limit = to_tick(tgt_trigger + band, tick, mode="up")
 

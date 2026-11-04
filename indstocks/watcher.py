@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.request
 from decimal import Decimal
 from pathlib import Path
 
@@ -44,6 +45,25 @@ DEAD = {"CANCELLED", "REJECTED", "FAILED", "EXPIRED", "ABORTED",
         "PARTIALLY FILLED - CANCELLED", "PARTIALLY FILLED - EXPIRED"}
 LIVE = {"PENDING", "SL-PENDING", "O-PENDING", "QUEUED", "CREATED",
         "INITIATED", "MODIFIED", "PROCESSING"}
+
+
+# Push alerts to a phone via ntfy.sh. Free, no account: pick a topic name
+# nobody will guess, subscribe in the ntfy app, and set it here. A log file
+# on a server nobody is reading is not an alert.
+NTFY_TOPIC = os.environ.get("TRADER_NTFY_TOPIC", "").strip()
+
+
+def push(title: str, body: str, priority: str = "high") -> None:
+    if not NTFY_TOPIC:
+        return
+    try:
+        req = urllib.request.Request(
+            f"https://ntfy.sh/{NTFY_TOPIC}", data=body.encode("utf-8"),
+            headers={"Title": title, "Priority": priority,
+                     "Tags": "warning"}, method="POST")
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as exc:                            # noqa: BLE001
+        log({"event": "push_failed", "reason": str(exc)[:120]})
 
 
 def log(record: dict) -> None:
@@ -89,6 +109,24 @@ def positions(client) -> list:
     return out
 
 
+def flatten_outcome() -> tuple:
+    """(ran, failed_count) from today's log."""
+    path = STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
+    ran, failed = False, 0
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("job") == "flatten" and rec.get("event") == "flatten_done":
+                ran = True
+                failed = int(rec.get("failed") or 0)
+    except OSError:
+        pass
+    return ran, failed
+
+
 def check(client) -> dict:
     rows = order_rows(client)
     ours = [r for r in rows if "auto/" in str(r.get("remarks", ""))
@@ -122,6 +160,28 @@ def check(client) -> dict:
                 "filled_qty": traded, "child_status": cstatus or "missing",
                 "action": "shares held with no stop -- place one or flatten now",
             })
+            continue
+
+        # Partial fill: the child leg was created for the full order. If it
+        # fires for more shares than were bought, the excess is a SHORT sale.
+        try:
+            child_qty = int(child.get("requested_qty") or 0)
+        except (TypeError, ValueError):
+            child_qty = 0
+        try:
+            requested = int(r.get("requested_qty") or 0)
+        except (TypeError, ValueError):
+            requested = 0
+        if child_qty and traded < child_qty:
+            alerts.append({
+                "level": "PARTIAL_FILL",
+                "name": r.get("name"), "order_id": r.get("id"),
+                "filled_qty": traded, "requested_qty": requested,
+                "child_qty": child_qty,
+                "action": f"stop/target leg is for {child_qty} but only {traded} "
+                          f"are held; if it fires you are short "
+                          f"{child_qty - traded}. Modify the leg to {traded}.",
+            })
 
     # Several resting orders in one symbol: all of them can fire.
     resting = {}
@@ -144,10 +204,20 @@ def check(client) -> dict:
     now = sess.now()
     session = sess.session_for(now)
     if open_positions and session and now >= session.flat_by:
+        # Past flat-by with something open. Did the flatten job run at all?
+        ran, failed = flatten_outcome()
+        if not ran:
+            reason = "the flatten job did NOT run"
+        elif failed:
+            reason = f"the flatten job ran but {failed} sell(s) failed"
+        else:
+            reason = "flatten reported done but positions remain"
         alerts.append({
             "level": "NEAR_CLOSE",
             "positions": [(p["name"], p["qty"]) for p in open_positions],
-            "action": "square off before the broker charges for it",
+            "flatten": reason,
+            "action": "square off in the app NOW; the broker charges "
+                      "Rs 50+GST per position at 15:20",
         })
 
     return {"resting": sum(len(g) for g in resting.values()),
@@ -165,6 +235,12 @@ def run() -> int:
     if state["alerts"]:
         for a in state["alerts"]:
             log({"event": "ALERT", **a})
+        worst = {"UNPROTECTED": 0, "PARTIAL_FILL": 1, "NEAR_CLOSE": 2,
+                 "DUPLICATE": 3}
+        top = min(state["alerts"], key=lambda a: worst.get(a["level"], 9))
+        push(f"{top['level']}: {top.get('name') or 'positions'}",
+             top.get("action", ""),
+             priority="urgent" if top["level"] == "UNPROTECTED" else "high")
     else:
         log({"event": "ok", "resting": state["resting"],
              "open_positions": len(state["positions"])})

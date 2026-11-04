@@ -388,6 +388,31 @@ class TestSizingAndRisk(unittest.TestCase):
         day = _r.DayState(unrealised_pnl=D("500"))
         self.assertTrue(self.gate(day=day).passed)
 
+    def test_third_concurrent_position_is_blocked(self):
+        day = _r.DayState(open_symbols=("RELIANCE", "TCS"))
+        v = self.gate(symbol="INFY", day=day)
+        self.assertFalse(v.passed)
+        self.assertIn("same bet on the same index", str(v))
+
+    def test_second_concurrent_position_passes(self):
+        day = _r.DayState(open_symbols=("RELIANCE",))
+        self.assertTrue(self.gate(symbol="TCS", day=day).passed)
+
+    def test_target_near_upper_circuit_is_blocked(self):
+        # Entry 108, target 118, upper circuit 119: 0.9% of room.
+        v = self.gate(upper_limit=D("119"))
+        self.assertFalse(v.passed)
+        self.assertIn("upper circuit", str(v))
+
+    def test_stop_near_lower_circuit_is_blocked(self):
+        # Stop 103, lower circuit 102: may not be exitable.
+        v = self.gate(lower_limit=D("102"))
+        self.assertFalse(v.passed)
+        self.assertIn("lower circuit", str(v))
+
+    def test_comfortable_circuit_distance_passes(self):
+        self.assertTrue(self.gate(upper_limit=D("200"), lower_limit=D("50")).passed)
+
     def test_getting_out_is_never_blocked_by_day_limits(self):
         self.assertTrue(_r.check_exit_order(symbol="RELIANCE", qty=100,
                                             held_qty=100).passed)

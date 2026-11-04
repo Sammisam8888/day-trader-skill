@@ -178,7 +178,7 @@ class TestBuilder(unittest.TestCase):
         )
         p = o.payload()
         self.assertEqual(p["sl_trigger_price"], 358.30)
-        self.assertEqual(p["sl_limit_price"], 358.20)
+        self.assertEqual(p["sl_limit_price"], 354.70)      # 1% below trigger
         self.assertEqual(p["tgt_trigger_price"], 370.05)
         self.assertEqual(p["tgt_limit_price"], 370.15)
         self.assertEqual(p["product"], "INTRADAY")
@@ -192,6 +192,52 @@ class TestBuilder(unittest.TestCase):
             entry=D("1500.00"), stop=D("1480.00"), target=D("1540.00"),
         )
         self.assertTrue(o.validate())
+
+
+class TestStopSurvivesAGap(unittest.TestCase):
+    """The OCO stop is stop-LIMIT. The band between trigger and limit is the
+    widest gap it can fill through."""
+
+    class Inst:
+        security_id = "2885"
+        tick_size = D("0.10")
+        exchange = "NSE"
+
+    def test_stop_band_is_about_one_percent(self):
+        o = build_trigger_for_instrument(
+            self.Inst(), qty=10, range_high=D("1170.50"), stop=D("1163.00"),
+            target=D("1197.20"), cmp=D("1160.00"))
+        p = o.payload()
+        band = (D(str(p["sl_trigger_price"])) - D(str(p["sl_limit_price"])))
+        pct = band / D(str(p["sl_trigger_price"])) * 100
+        self.assertGreater(pct, D("0.9"))
+        self.assertLess(pct, D("1.1"))
+
+    def test_a_one_percent_gap_still_fills(self):
+        # RELIANCE at 1310 gaps to 1298 on news: 0.9% through the trigger.
+        o = build_trigger_for_instrument(
+            self.Inst(), qty=10, range_high=D("1314.00"), stop=D("1304.90"),
+            target=D("1332.80"), cmp=D("1310.00"))
+        p = o.payload()
+        gap_price = D("1298.00")
+        self.assertLess(D(str(p["sl_limit_price"])), gap_price,
+                        "the limit must sit below where the gap lands")
+
+    def test_the_old_two_tick_band_would_not_have(self):
+        # What was live on 2026-11-04: sl_limit 0.20 below trigger.
+        old_limit = D("1304.90") - D("0.20")
+        self.assertGreater(old_limit, D("1298.00"),
+                           "a 0.9% gap would have sailed past a two-tick limit")
+
+    def test_target_band_stays_narrow(self):
+        # Widening the target limit gives away profit; only the stop needs
+        # room to fill through a gap.
+        o = build_trigger_for_instrument(
+            self.Inst(), qty=10, range_high=D("1170.50"), stop=D("1163.00"),
+            target=D("1197.20"), cmp=D("1160.00"))
+        p = o.payload()
+        self.assertEqual(D(str(p["tgt_limit_price"])) - D(str(p["tgt_trigger_price"])),
+                         D("0.20"))
 
 
 class TestBuildForInstrument(unittest.TestCase):
@@ -211,7 +257,7 @@ class TestBuildForInstrument(unittest.TestCase):
                   "tgt_trigger_price", "tgt_limit_price"):
             self.assertAlmostEqual((D(str(p[k])) / D("0.10")) % 1, 0, msg=k)
         self.assertEqual(p["sl_trigger_price"], 1488.10)
-        self.assertEqual(p["sl_limit_price"], 1487.90)
+        self.assertEqual(p["sl_limit_price"], 1473.20)     # 1% below trigger
 
     def test_penny_tick_keeps_two_decimals(self):
         class Penny:
@@ -245,7 +291,7 @@ class TestTriggerOrder(unittest.TestCase):
     def test_legs_ride_along_with_the_resting_order(self):
         p = self.build().payload()
         self.assertEqual(p["sl_trigger_price"], 1163.00)
-        self.assertEqual(p["sl_limit_price"], 1162.80)
+        self.assertEqual(p["sl_limit_price"], 1151.30)     # 1% below trigger
         self.assertEqual(p["tgt_trigger_price"], 1197.20)
         self.assertEqual(p["tgt_limit_price"], 1197.40)
 

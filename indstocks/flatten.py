@@ -42,6 +42,37 @@ def log(record: dict) -> None:
     print(json.dumps(record, default=str), flush=True)
 
 
+def bot_filled_today(client) -> dict:
+    """security_id -> shares the bot actually bought today.
+
+    The flatten must sell only what this system opened. A position the
+    account owner bought by hand in the same name belongs to them, and a
+    flatten that sells it is a bug with a bill attached. Read fills from the
+    order book rather than our log: the log says what was placed, the book
+    says what traded.
+    """
+    filled = {}
+    try:
+        rows = (client.get("/order-book") or {}).get("data") or []
+    except Exception:                                   # noqa: BLE001
+        return filled
+    for r in rows if isinstance(rows, list) else []:
+        if not str(r.get("remarks", "")).startswith("auto/"):
+            continue
+        if r.get("parent_order_id"):
+            continue                                    # a leg, not an entry
+        if str(r.get("txn_type", "")).upper() != "BUY":
+            continue
+        try:
+            traded = int(r.get("traded_qty") or 0)
+        except (TypeError, ValueError):
+            continue
+        if traded > 0:
+            sid = str(r.get("security_id"))
+            filled[sid] = filled.get(sid, 0) + traded
+    return filled
+
+
 def open_intraday(client) -> list:
     """Positions the broker says are open, with a net quantity."""
     try:
@@ -121,6 +152,25 @@ def run() -> int:
     positions = open_intraday(client)
     if not positions:
         log({"event": "nothing_open"})
+        return 0
+
+    # Sell only what the bot bought. Anything else in the position is the
+    # account owner's and stays.
+    ours = bot_filled_today(client)
+    trimmed = []
+    for pos in positions:
+        bot_qty = ours.get(pos["security_id"], 0)
+        if bot_qty <= 0:
+            log({"event": "left_alone", "name": pos["name"], "qty": pos["qty"],
+                 "reason": "not opened by this system"})
+            continue
+        if bot_qty < pos["qty"]:
+            log({"event": "trimmed", "name": pos["name"], "held": pos["qty"],
+                 "selling": bot_qty, "reason": "rest was bought manually"})
+        trimmed.append({**pos, "qty": min(bot_qty, pos["qty"])})
+    positions = trimmed
+    if not positions:
+        log({"event": "nothing_ours"})
         return 0
 
     log({"event": "flattening", "count": len(positions),

@@ -246,6 +246,15 @@ class TestFlatten(unittest.TestCase):
     def test_a_failed_sell_is_loud(self):
         self.assertIn("CLOSE THIS MANUALLY", self.source())
 
+    def test_sells_only_what_the_bot_bought(self):
+        text = self.source()
+        self.assertIn("bot_filled_today", text)
+        self.assertIn('startswith("auto/")', text)
+        self.assertIn("min(bot_qty, pos[\"qty\"])", text)
+
+    def test_a_manual_position_is_left_alone(self):
+        self.assertIn("left_alone", self.source())
+
     def test_runs_before_the_brokers_cutoff(self):
         timer = Path(ROOT, "scripts", "flatten.timer").read_text(encoding="utf-8")
         self.assertIn("15:05:00", timer)
