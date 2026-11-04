@@ -99,6 +99,23 @@ class TestItNeverTrades(unittest.TestCase):
         timer = Path(ROOT, "scripts", "watch.timer").read_text(encoding="utf-8")
         self.assertIn("/5:00", timer)
 
+    def test_every_timer_spec_is_valid_systemd(self):
+        # An invalid OnCalendar is only rejected at `systemctl enable` time,
+        # on the server, which is a poor place to discover a typo.
+        import shutil
+        import subprocess
+        if not shutil.which("systemd-analyze"):
+            self.skipTest("systemd-analyze not available")
+        for timer in Path(ROOT, "scripts").glob("*.timer"):
+            for line in timer.read_text(encoding="utf-8").splitlines():
+                if not line.startswith("OnCalendar="):
+                    continue
+                spec = line[len("OnCalendar="):].replace(" Asia/Kolkata", "")
+                r = subprocess.run(["systemd-analyze", "calendar", spec],
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0,
+                                 f"{timer.name}: invalid spec {spec!r}")
+
 
 if __name__ == "__main__":
     unittest.main()

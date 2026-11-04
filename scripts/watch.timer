@@ -1,9 +1,17 @@
 # Every 5 minutes through the session. Reports only; it never trades.
+#
+# Hours 09-15, minute 0 stepping by 5. The range form "09:15..15:30/5:00"
+# is NOT valid systemd and is rejected at enable time; verify any change
+# with `systemd-analyze calendar "<spec>"` before deploying it.
+#
+# This fires from 09:00 to 15:55, slightly wider than the session. The
+# script itself returns immediately outside market hours, so the extra
+# firings cost nothing and the schedule stays simple.
 [Unit]
 Description=Position and protection watcher
 
 [Timer]
-OnCalendar=Mon-Fri *-*-* 09:15..15:30/5:00 Asia/Kolkata
+OnCalendar=Mon-Fri *-*-* 09..15:00/5:00 Asia/Kolkata
 Persistent=false
 
 [Install]
