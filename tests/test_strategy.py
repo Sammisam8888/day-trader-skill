@@ -8,6 +8,7 @@ _s = load("indstocks", "session")
 _b = load("indstocks", "bars")
 _st = load("indstocks", "strategy")
 _r = load("indstocks", "risk")
+_ch = load("indstocks", "charges")
 
 IST = _s.IST
 DAY = date(2026, 10, 30)          # a Friday, not an NSE holiday
@@ -236,9 +237,26 @@ class TestSizingAndRisk(unittest.TestCase):
         self.assertEqual(s.limit_hit, "cash after buffer")
         self.assertEqual(s.qty, 41)                   # 4500 / 108
 
-    def test_round_trip_cost_counts_two_orders(self):
-        self.assertEqual(_r.size_position(self.plan(), D("100000"), _r.Limits())
-                         .round_trip_cost, D("20"))
+    def test_round_trip_cost_includes_statutory_charges(self):
+        c = _r.size_position(self.plan(), D("100000"), _r.Limits()).round_trip_cost
+        self.assertGreater(c, D("20"), "brokerage alone understates the cost")
+
+    def test_gst_is_the_bulk_of_the_gap_above_brokerage(self):
+        c = _ch.cost_of_plan(D("465.50"), D("469.80"), 1)
+        self.assertEqual(c.brokerage, D("20"))
+        self.assertEqual(c.gst, D("3.61"))
+        self.assertEqual(c.total, D("23.77"))
+
+    def test_stt_is_charged_on_the_sell_leg_only(self):
+        c = _ch.round_trip(D("10000"), D("20000"))
+        self.assertEqual(c.stt, D("5.00"))          # 0.025% of the sell side
+
+    def test_breakeven_is_impossible_on_a_tiny_position(self):
+        # Rs 889 of buying power needs a 5% intraday move just to break even.
+        self.assertGreater(_ch.breakeven_pct(D("465.50"), 1), D("5"))
+
+    def test_breakeven_is_reasonable_on_a_real_position(self):
+        self.assertLess(_ch.breakeven_pct(D("465.50"), 53), D("0.2"))
 
     def test_stop_too_far_refuses_rather_than_shrinking(self):
         wide = self.plan(entry="108", stop="8", target="208")
@@ -307,15 +325,19 @@ class TestSizingAndRisk(unittest.TestCase):
                            sizing.round_trip_cost * _r.MIN_REWARD_TO_COST)
         self.assertTrue(self.gate(plan=plan, sizing=sizing).passed)
 
-    def test_marginal_trade_is_blocked_even_when_net_is_positive(self):
-        # ITC today: Rs 23.00 at target against Rs 20 of costs. Technically
-        # positive, but costs dominate the outcome.
+    def test_itc_looked_profitable_on_brokerage_alone_and_is_not(self):
+        # ITC today: Rs 23.00 at target. Against brokerage alone (Rs 20) that
+        # reads as a small win. Against the real charges (Rs 23.81) it is a
+        # loss, which is exactly why the flat estimate was dangerous.
         plan = self.plan(entry="283.20", stop="277.60", target="294.70")
         sizing = _r.size_position(plan, D("889.88"), _r.Limits())
-        self.assertGreater(sizing.net_if_target_hits, 0)
+        self.assertEqual(sizing.gain_at_target, D("23.00"))
+        self.assertGreater(sizing.round_trip_cost, D("20"))
+        self.assertLess(sizing.net_if_target_hits, 0,
+                        "loses money even when the target hits")
         v = self.gate(plan=plan, sizing=sizing)
         self.assertFalse(v.passed)
-        self.assertIn("not worth the costs", str(v))
+        self.assertIn("LOSES", str(v))
 
     def test_gain_at_target_scales_with_quantity(self):
         plan = self.plan(entry="100", stop="95", target="110")
