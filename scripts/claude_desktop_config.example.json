@@ -18,7 +18,7 @@
         "-i", "/Users/you/.ssh/lightsail.pem",
         "-o", "BatchMode=yes",
         "ubuntu@13.127.164.72",
-        "sudo -E /usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/mcp_server.py"
+        "sudo /opt/indstocks/day-trader-skill/scripts/mcp-server.sh"
       ]
     }
   }
