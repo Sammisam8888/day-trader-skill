@@ -176,6 +176,16 @@ class TestCrossRunMemory(unittest.TestCase):
 class TestReconcile(unittest.TestCase):
     """A manually cancelled order is not a trade taken."""
 
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self._old = _a.STATE_DIR
+        _a.STATE_DIR = Path(self.tmp.name)
+
+    def tearDown(self):
+        _a.STATE_DIR = self._old
+        self.tmp.cleanup()
+
     class C:
         def __init__(self, book):
             self.book = book
