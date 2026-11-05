@@ -187,16 +187,46 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestDashboardIsReadOnly(unittest.TestCase):
-    def test_no_post_handler_and_localhost_only(self):
+class TestDashboardCannotTrade(unittest.TestCase):
+    """The dashboard may halt, resume and edit limits. It may never place,
+    modify or cancel an order."""
+
+    def source(self):
         with open(os.path.join(ROOT, "indstocks", "dashboard.py"),
                   encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertNotIn("do_POST", text)
-        self.assertNotIn(".post(", text)
+            return fh.read()
+
+    def test_no_broker_write_anywhere(self):
+        text = self.source()
+        self.assertNotIn(".post(", text, "the dashboard makes no API writes")
+        # Exact write routes. /order-book is a read and is allowed.
+        for route in ('"/order"', '"/smart/order"', "/order/cancel",
+                      "/order/modify", "/smart/order/cancel"):
+            self.assertNotIn(route, text, route)
+
+    def test_only_three_post_routes(self):
+        text = self.source()
+        start = text.index("def do_POST")
+        end = text.index("def log_message", start)
+        body = text[start:end]
+        for route in ("/halt", "/resume", "/limits"):
+            self.assertIn(f'path == "{route}"', body)
+        self.assertIn("unknown action", body)
+
+    def test_never_binds_all_interfaces(self):
+        text = self.source()
         self.assertIn("refusing to bind the dashboard to all interfaces", text)
-        # Tailscale addresses are 100.64.0.0/10; anything else is refused.
         self.assertIn('ip.startswith("100.")', text)
+
+    def test_leverage_edit_is_capped(self):
+        self.assertIn("leverage above 5x refused", self.source())
+
+    def test_limits_are_validated_before_the_file_is_touched(self):
+        text = self.source()
+        start = text.index("def write_limits")
+        read_at = text.index("ENV_FILE.read_text", start)
+        val_at = text.index("not a number", start)
+        self.assertLess(val_at, read_at, "validate first, then write")
 
     def test_bind_refuses_all_interfaces(self):
         import os as _os
