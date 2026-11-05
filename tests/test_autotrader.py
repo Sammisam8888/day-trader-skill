@@ -163,7 +163,7 @@ class TestCrossRunMemory(unittest.TestCase):
         with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
                   encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn("day_log = todays_placements()", text)
+        self.assertIn("day_log = reconcile_with_broker(client, todays_placements())", text)
         self.assertNotIn("day_log = tk_mod.day_state_from_log()", text)
 
     def test_a_symbol_placed_today_is_skipped(self):
@@ -171,6 +171,48 @@ class TestCrossRunMemory(unittest.TestCase):
                   encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn("already placed today", text)
+
+
+class TestReconcile(unittest.TestCase):
+    """A manually cancelled order is not a trade taken."""
+
+    class C:
+        def __init__(self, book):
+            self.book = book
+
+        def get(self, path, params=None):
+            return {"data": self.book}
+
+    def placements(self):
+        return {"trades_taken": 2, "risk_committed": 0,
+                "open_symbols": ("RELIANCE", "ITC"),
+                "records": [{"symbol": "RELIANCE", "parent_order_id": "P1",
+                             "risk": "158"},
+                            {"symbol": "ITC", "parent_order_id": "P2",
+                             "risk": "51"}]}
+
+    def test_cancelled_with_nothing_traded_is_dropped(self):
+        # 2026-11-05 09:32: RELIANCE cancelled by hand before it triggered.
+        book = [{"id": "P1", "status": "CANCELLED", "traded_qty": 0},
+                {"id": "P2", "status": "PENDING", "traded_qty": 0}]
+        out = _a.reconcile_with_broker(self.C(book), self.placements())
+        self.assertEqual(out["trades_taken"], 1)
+        self.assertEqual(out["open_symbols"], ("ITC",))
+
+    def test_cancelled_after_a_partial_fill_still_counts(self):
+        book = [{"id": "P1", "status": "PARTIALLY FILLED - CANCELLED",
+                 "traded_qty": 5}]
+        out = _a.reconcile_with_broker(
+            self.C(book), {"records": [{"symbol": "RELIANCE",
+                                        "parent_order_id": "P1", "risk": "158"}]})
+        self.assertEqual(out["trades_taken"], 1, "shares were bought")
+
+    def test_unreadable_book_keeps_the_log(self):
+        class Broken:
+            def get(self, path, params=None):
+                raise RuntimeError("down")
+        out = _a.reconcile_with_broker(Broken(), self.placements())
+        self.assertEqual(out["trades_taken"], 2, "conservative on error")
 
 
 class TestLeverageAndUnrealised(unittest.TestCase):
