@@ -443,6 +443,7 @@ def run() -> int:
                   "position_value": str(value),
                   "leverage": str(round(value / cash, 2)) if cash else "0",
                   "range_high": str(high), "range_low": str(low),
+                  "tick": str(inst.tick_size),
                   "ltp_at_placement": str(ltp),
                   "why": (f"opening range {session.open:%H:%M}-"
                           f"{session.opening_range_end:%H:%M} was {low}-{high}; "

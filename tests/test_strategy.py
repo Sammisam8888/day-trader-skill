@@ -36,7 +36,7 @@ class TestSession(unittest.TestCase):
         s = _s.Session(DAY)
         for hh, mm, expected in (
             (9, 0, "pre_open"), (9, 20, "opening_range"), (9, 30, "entry_window"),
-            (14, 0, "entry_window"), (14, 45, "no_new_entries"),
+            (12, 0, "entry_window"), (12, 45, "no_new_entries"),
             (15, 20, "flatten"), (15, 45, "closed"),
         ):
             self.assertEqual(s.phase(t(hh, mm)), expected, f"{hh}:{mm}")

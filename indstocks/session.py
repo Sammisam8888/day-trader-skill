@@ -22,7 +22,11 @@ OPENING_RANGE_MINUTES = 15
 # No new entries after this. A breakout at 14:00 has no room to work before
 # the flat-by time, and INTRADAY product is auto-squared-off by the broker
 # anyway -- better to close deliberately than be closed.
-LAST_ENTRY = time(14, 30)
+# 2026-11-05: all three fills came after 13:35 on a rally that faded within
+# the hour. A breakout at 14:00 has 75 minutes to work before the flatten;
+# one at 10:30 has five hours. Afternoon breakouts are the ones that get
+# sold into the close at whatever price is there.
+LAST_ENTRY = time(12, 30)
 FLAT_BY = time(15, 15)
 
 # NSE trading holidays. 2026 confirmed; extend each year. A date missing here
