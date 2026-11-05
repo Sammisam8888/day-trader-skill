@@ -67,6 +67,56 @@ def max_concurrent() -> int:
 
 def max_leverage() -> Decimal:
     return Decimal(setting("TRADER_MAX_LEVERAGE", "1.0"))
+
+
+def resting_ttl_min() -> int:
+    """Minutes a resting entry may wait for its trigger. 0 = forever."""
+    return int(setting("TRADER_RESTING_TTL_MIN", "30"))
+
+
+def placed_at(order_id: str) -> datetime | None:
+    """When we placed this order, from our own log (the broker's
+    created_at field is not consistently present)."""
+    try:
+        lines = (STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for ln in lines:
+        if order_id not in ln:
+            continue
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            continue
+        if r.get("event") == "placed" and str(r.get("parent_order_id")) == order_id:
+            try:
+                return datetime.fromisoformat(r["ts"])
+            except (KeyError, ValueError):
+                return None
+    return None
+
+
+def expire_stale(client, rows: list, now: datetime) -> int:
+    """Cancel resting entries older than the TTL, so the scanner can move
+    on to a name that is actually moving."""
+    ttl = resting_ttl_min()
+    if ttl <= 0:
+        return 0
+    n = 0
+    for r in resting_entries(rows):
+        oid = str(r.get("id") or r.get("order_id"))
+        t0 = placed_at(oid)
+        if t0 is None:
+            continue
+        if t0.tzinfo is None:
+            t0 = t0.replace(tzinfo=sess.IST)
+        age = (now - t0).total_seconds() / 60
+        if age >= ttl and cancel_entry(client, r):
+            n += 1
+            log({"event": "expired", "name": r.get("name"), "order_id": oid,
+                 "reason": f"resting {age:.0f} min without a fill, ttl {ttl} min"})
+            time.sleep(0.2)
+    return n
 MANUAL_TARGET_PCT = Decimal(os.environ.get("TRADER_MANUAL_TARGET_PCT", "1.0"))
 MANUAL_STOP_PCT = Decimal(os.environ.get("TRADER_MANUAL_STOP_PCT", "0.5"))
 PENDING = ("PENDING", "SL-PENDING", "O-PENDING", "QUEUED", "CREATED",
@@ -196,6 +246,12 @@ def tick(client, now: datetime) -> dict:
     if not session.accepts_new_entries(now) and out["resting"]:
         out["cancelled"] = cancel_all_entries(client, rows, "past last-entry time")
         return out
+
+    # 0. a resting order that has waited too long is not going to fire
+    out["cancelled"] += expire_stale(client, rows, now)
+    if out["cancelled"]:
+        rows = order_book(client)
+        out["resting"] = len(resting_entries(rows))
 
     # 1. cancel on fill: by count, and by exposure. A resting order that
     #    would push held value past cash x leverage is cancelled even when

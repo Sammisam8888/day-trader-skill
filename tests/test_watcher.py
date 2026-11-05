@@ -217,7 +217,7 @@ class TestDashboardOnlyReducesExposure(unittest.TestCase):
         start = text.index("def do_POST")
         end = text.index("def log_message", start)
         body = text[start:end]
-        for route in ("/halt", "/resume", "/limits", "/cancel", "/exit", "/chat"):
+        for route in ("/halt", "/resume", "/limits", "/cancel", "/exit", "/chat", "/term"):
             self.assertIn(f'path == "{route}"', body)
         self.assertIn("unknown action", body)
 
