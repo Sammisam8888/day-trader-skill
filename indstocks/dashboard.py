@@ -395,6 +395,7 @@ EDITABLE = (
     ("TRADER_MAX_RESTING", "max resting orders at once", "number"),
     ("TRADER_RESTING_TTL_MIN", "cancel a resting order after N minutes (0 = never)", "number"),
     ("TRADER_MIN_ORDER_VALUE", "smallest order value (Rs)", "number"),
+    ("TRADER_MIN_REWARD_TO_COST", "gain at target must be N x charges (min 1)", "number"),
     ("TRADER_MANUAL_TARGET_PCT", "manual position: sell when up %", "number"),
     ("TRADER_MANUAL_STOP_PCT", "manual position: sell when down %", "number"),
 )
@@ -687,6 +688,8 @@ def write_limits(form: dict) -> str:
             return f"{label}: must not be negative"
         if key == "TRADER_MAX_LEVERAGE" and val > 5:
             return "leverage above 5x refused"
+        if key == "TRADER_MIN_REWARD_TO_COST" and val < 1:
+            return "reward-to-cost below 1 means taking trades that lose when they win; refused"
         if key in ("TRADER_MAX_TRADES", "TRADER_MAX_CONCURRENT", "TRADER_MAX_RESTING", "TRADER_RESTING_TTL_MIN"):
             val = int(val)
         new[key] = str(val)

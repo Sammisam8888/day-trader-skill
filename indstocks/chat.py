@@ -144,7 +144,8 @@ def act_limits(**kv) -> str:
             "max_trades": "TRADER_MAX_TRADES", "max_concurrent": "TRADER_MAX_CONCURRENT",
             "max_leverage": "TRADER_MAX_LEVERAGE", "max_resting": "TRADER_MAX_RESTING",
             "manual_target_pct": "TRADER_MANUAL_TARGET_PCT",
-            "manual_stop_pct": "TRADER_MANUAL_STOP_PCT"}
+            "manual_stop_pct": "TRADER_MANUAL_STOP_PCT",
+            "reward_to_cost": "TRADER_MIN_REWARD_TO_COST", "resting_ttl_min": "TRADER_RESTING_TTL_MIN"}
     updates = {}
     for k, v in kv.items():
         if k not in keys or v is None:
@@ -157,6 +158,8 @@ def act_limits(**kv) -> str:
             return f"{k}: must not be negative"
         if k == "max_leverage" and d > 5:
             return "leverage above 5x refused"
+        if k == "reward_to_cost" and d < 1:
+            return "reward-to-cost below 1 refused: that takes trades that lose when they win"
         if k in ("max_trades", "max_concurrent", "max_resting"):
             d = int(d)
         updates[keys[k]] = str(d)
@@ -309,12 +312,13 @@ def handle_command(text: str, client) -> str | None:
         if sym in ("did", "was", "is", "not", "no", "nothing", "it", "this", "that", None):
             sym = None
         return act_why(sym)
-    m = re.search(r"(max loss|daily loss|max trades|max concurrent|max positions|leverage|max resting|target pct|stop pct)\s*(?:to|=|at)?\s*" + NUM, t)
+    m = re.search(r"(max loss|daily loss|max trades|max concurrent|max positions|leverage|max resting|target pct|stop pct|reward to cost|cost gate|ttl)\s*(?:to|=|at)?\s*" + NUM, t)
     if m:
         key = {"max loss": "max_loss", "daily loss": "daily_loss", "max trades": "max_trades",
                "max concurrent": "max_concurrent", "max positions": "max_concurrent",
                "leverage": "max_leverage", "max resting": "max_resting",
-               "target pct": "manual_target_pct", "stop pct": "manual_stop_pct"}[m.group(1)]
+               "target pct": "manual_target_pct", "stop pct": "manual_stop_pct",
+               "reward to cost": "reward_to_cost", "cost gate": "reward_to_cost", "ttl": "resting_ttl_min"}[m.group(1)]
         return act_limits(**{key: m.group(2)})
     if re.fullmatch(r"(help|\?|what can you do|commands)\b.*", t):
         return HELP

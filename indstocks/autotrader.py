@@ -253,7 +253,11 @@ def limits_from_env() -> risk_mod.Limits:
         daily_loss_limit=Decimal(os.environ.get("TRADER_DAILY_LOSS", "1500")),
         max_trades_per_day=int(os.environ.get("TRADER_MAX_TRADES", "3")),
         max_leverage=Decimal(os.environ.get("TRADER_MAX_LEVERAGE", "1.0")),
-        max_concurrent_positions=int(os.environ.get("TRADER_MAX_CONCURRENT", "2")))
+        max_concurrent_positions=int(os.environ.get("TRADER_MAX_CONCURRENT", "2")),
+        # Gain at target must clear charges by this multiple. 1.0 means
+        # "any net-positive trade"; below 1.0 is refused in risk.py.
+        min_reward_to_cost=Decimal(os.environ.get("TRADER_MIN_REWARD_TO_COST", "2")),
+        min_reward_to_risk=Decimal(os.environ.get("TRADER_MIN_RR", "1.5")))
 
 
 def run() -> int:
