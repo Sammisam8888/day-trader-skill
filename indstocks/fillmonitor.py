@@ -46,7 +46,27 @@ from flatten import cancel_resting_legs, open_intraday, sell  # noqa: E402
 STATE_DIR = Path(os.environ.get("TRADER_STATE_DIR", "/var/lib/indstocks/auto"))
 HALT_FILE = Path(os.environ.get("TRADER_KILL_SWITCH", "/etc/indstocks.halt"))
 POLL_S = float(os.environ.get("TRADER_FILL_POLL_S", "5"))
-MAX_CONCURRENT = int(os.environ.get("TRADER_MAX_CONCURRENT", "2"))
+ENV_FILE = Path(os.environ.get("TRADER_ENV_FILE", "/etc/indstocks.env"))
+
+
+def setting(key: str, default: str) -> str:
+    """Read a TRADER_* value fresh each tick, so a limit changed on the
+    dashboard applies without a restart."""
+    try:
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return os.environ.get(key, default)
+
+
+def max_concurrent() -> int:
+    return int(setting("TRADER_MAX_CONCURRENT", "2"))
+
+
+def max_leverage() -> Decimal:
+    return Decimal(setting("TRADER_MAX_LEVERAGE", "1.0"))
 MANUAL_TARGET_PCT = Decimal(os.environ.get("TRADER_MANUAL_TARGET_PCT", "1.0"))
 MANUAL_STOP_PCT = Decimal(os.environ.get("TRADER_MANUAL_STOP_PCT", "0.5"))
 PENDING = ("PENDING", "SL-PENDING", "O-PENDING", "QUEUED", "CREATED",
@@ -61,6 +81,14 @@ def log(record: dict) -> None:
               encoding="utf-8") as fh:
         fh.write(json.dumps(record, default=str) + "\n")
     print(json.dumps(record, default=str), flush=True)
+
+
+def funds(client):
+    try:
+        bal = ((client.get("/funds") or {}).get("data") or {}).get("detailed_avl_balance") or {}
+        return Decimal(str(bal["eq_mis"]))
+    except Exception:                                   # noqa: BLE001
+        return None
 
 
 def order_book(client) -> list:
@@ -169,10 +197,30 @@ def tick(client, now: datetime) -> dict:
         out["cancelled"] = cancel_all_entries(client, rows, "past last-entry time")
         return out
 
-    # 1. cancel on fill
-    if len(held) >= MAX_CONCURRENT and out["resting"]:
+    # 1. cancel on fill: by count, and by exposure. A resting order that
+    #    would push held value past cash x leverage is cancelled even when
+    #    the count is under the cap.
+    cap = max_concurrent()
+    if len(held) >= cap and out["resting"]:
         out["cancelled"] = cancel_all_entries(
-            client, rows, f"{len(held)} position(s) open, cap {MAX_CONCURRENT}")
+            client, rows, f"{len(held)} position(s) open, cap {cap}")
+    elif out["resting"]:
+        held_value = sum(Decimal(str(p.get("avg_price") or 0)) * p["qty"] for p in positions)
+        cash = funds(client)
+        if cash is not None and held_value > 0:
+            ceiling = cash * max_leverage()
+            for r in resting_entries(rows):
+                try:
+                    value = Decimal(str(r.get("trigger_price") or r.get("requested_price") or 0)) \
+                        * int(r.get("requested_qty") or 0)
+                except Exception:                       # noqa: BLE001
+                    continue
+                if held_value + value > ceiling and cancel_entry(client, r):
+                    out["cancelled"] += 1
+                    log({"event": "cancelled_on_fill", "name": r.get("name"),
+                         "order_id": r.get("id") or r.get("order_id"),
+                         "reason": f"held {held_value:.0f} + this {value:.0f} > "
+                                   f"{ceiling:.0f} ({max_leverage()}x of cash {cash:.0f})"})
 
     # 2. protect positions that have no sell order of their own
     protected = protected_ids(rows)
@@ -208,7 +256,7 @@ def tick(client, now: datetime) -> dict:
 def run() -> int:
     client = Client()
     log({"event": "fillmonitor_start", "poll_s": POLL_S,
-         "max_concurrent": MAX_CONCURRENT})
+         "max_concurrent": max_concurrent()})
     last = None
     while True:
         now = sess.now()

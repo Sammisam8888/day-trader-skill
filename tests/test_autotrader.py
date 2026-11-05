@@ -61,7 +61,11 @@ class TestCapitalIsSpentAcrossTheRun(unittest.TestCase):
         text = self.source("autotrader.py")
         self.assertIn("size_position(plan, per_order_cash", text)
         self.assertNotIn("size_position(plan, cash", text)
-        self.assertIn("per_order_cash = ((cash - held_cash) / free_slots)", text)
+        self.assertIn("per_order_cash = (free_cash / slots)", text)
+        # 2026-11-05: max_concurrent=20 split 26k into 1,387 per order and
+        # every name sized to zero. The slot is floored at a viable value.
+        self.assertIn("viable_slots = max(int(free_cash / MIN_ORDER_VALUE), 1)", text)
+        self.assertIn("slots = min(free_slots, viable_slots)", text)
 
     def test_resting_orders_do_not_occupy_slots(self):
         text = self.source("autotrader.py")

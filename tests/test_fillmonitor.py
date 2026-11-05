@@ -13,6 +13,7 @@ from _load import ROOT, load  # noqa: E402
 
 os.environ["TRADER_STATE_DIR"] = tempfile.mkdtemp()
 os.environ["TRADER_MAX_CONCURRENT"] = "2"
+os.environ["TRADER_ENV_FILE"] = os.path.join(tempfile.mkdtemp(), "none")
 _f = load("indstocks", "fillmonitor")
 _s = load("indstocks", "session")
 
@@ -24,7 +25,11 @@ class Broker:
         self.book, self.positions, self.ltp = list(book), list(positions), ltp or {}
         self.posts = []
 
+    cash = "25000"
+
     def get(self, path, params=None):
+        if path == "/funds":
+            return {"data": {"detailed_avl_balance": {"eq_mis": self.cash}}}
         if path == "/order-book":
             return {"data": self.book}
         if path == "/portfolio/positions":
@@ -40,9 +45,10 @@ class Broker:
         return {"data": {"order_id": "X"}}
 
 
-def entry(oid, sid, name, traded=0, status="PENDING"):
+def entry(oid, sid, name, traded=0, status="PENDING", price="100", qty=10):
     return {"id": oid, "security_id": sid, "name": name, "txn_type": "BUY",
-            "status": status, "traded_qty": traded, "requested_qty": 10,
+            "status": status, "traded_qty": traded, "requested_qty": qty,
+            "trigger_price": price,
             "remarks": f"auto/{name}/2026-11-05", "order_type": "TRIGGER"}
 
 
@@ -97,6 +103,28 @@ class TestCancelOnFill(unittest.TestCase):
                    positions=[pos("1", "A", 10, "100"), pos("2", "B", 10, "50")])
         _f.tick(b, MID)
         self.assertEqual(b.posts, [], "legs are what protect the fills")
+
+
+class TestCancelOnExposure(unittest.TestCase):
+    def test_resting_order_that_would_breach_leverage_is_cancelled(self):
+        # One fill of 20,000 held; a resting 13,000 would make 33,000 > 25,000.
+        b = Broker(book=[entry("P1", "1", "A", traded=10, price="2000"), leg("L1", "P1", "1"),
+                         entry("P2", "2", "B", price="1300", qty=10),
+                         entry("P3", "3", "C", price="400", qty=10)],      # 4,000 fits
+                   positions=[pos("1", "A", 10, "2000")])
+        out = _f.tick(b, MID)
+        self.assertEqual(out["cancelled"], 1)
+        self.assertEqual([body["order_id"] for _, body in b.posts], ["P2"])
+
+    def test_limits_are_read_fresh_each_tick(self):
+        path = str(_f.ENV_FILE)
+        with open(path, "w") as fh:
+            fh.write("TRADER_MAX_CONCURRENT=1\n")
+        try:
+            self.assertEqual(_f.max_concurrent(), 1)
+        finally:
+            os.unlink(path)
+        self.assertEqual(_f.max_concurrent(), 2)
 
 
 class TestManualPositions(unittest.TestCase):
