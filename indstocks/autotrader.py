@@ -43,6 +43,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = Path(os.environ.get("TRADER_STATE_DIR", "/var/lib/indstocks/auto"))
 KILL_SWITCH = Path(os.environ.get("TRADER_KILL_SWITCH", "/etc/indstocks.halt"))
 
+# Smallest order worth placing. Below this the Rs 10 brokerage a side plus
+# statutory charges eat the whole move. Rs 10k at a 0.5% target is Rs 50
+# gross against ~Rs 24 of charges: thin, but a trade.
+MIN_ORDER_VALUE = Decimal(os.environ.get("TRADER_MIN_ORDER_VALUE", "10000"))
+
 # Off unless explicitly switched on. A misread config must fail closed.
 LIVE = os.environ.get("TRADER_LIVE", "").strip().lower() in ("1", "true", "yes")
 
@@ -337,11 +342,21 @@ def run() -> int:
     # at once, the position still fits inside cash at 1.0x leverage. The
     # only overshoot is the race between a fill and the cancel, a few
     # seconds, which intraday margin absorbs.
+    # ...but a slot has to be big enough to be a trade. On 2026-11-05 a
+    # max_concurrent of 20 split Rs 26k into Rs 1,387 per order: under one
+    # share of TITAN, and under the Rs 24 charge floor for everything else,
+    # so every name sized to zero. The slot count bounds the COUNT; the
+    # per-order cash is floored at TRADER_MIN_ORDER_VALUE, and the fill
+    # monitor prunes resting orders by exposure once fills land.
     held_cash = day_state.exposure
+    free_cash = max(cash - held_cash, Decimal(0))
     free_slots = max(limits.max_concurrent_positions - len(set(day_state.open_symbols)), 0)
-    per_order_cash = ((cash - held_cash) / free_slots) if free_slots else Decimal(0)
+    viable_slots = max(int(free_cash / MIN_ORDER_VALUE), 1) if free_cash > 0 else 0
+    slots = min(free_slots, viable_slots)
+    per_order_cash = (free_cash / slots) if slots else Decimal(0)
     log({"event": "sizing", "cash": str(cash), "held": str(held_cash),
-         "free_slots": free_slots, "per_order": str(round(per_order_cash, 2))})
+         "free_slots": free_slots, "viable_slots": viable_slots,
+         "per_order": str(round(per_order_cash, 2))})
 
     for sym in watchlist():
         if placed >= budget:

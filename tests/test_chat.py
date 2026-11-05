@@ -154,7 +154,7 @@ class TestLimitsAndMisc(unittest.TestCase):
     def test_set_max_positions(self):
         r = _c.handle_command("set max positions to 3", Broker())
         self.assertIn("TRADER_MAX_CONCURRENT=3", r)
-        self.assertIn("TRADER_MAX_CONCURRENT=3", Path(os.environ["TRADER_ENV_FILE"]).read_text())
+        self.assertIn("TRADER_MAX_CONCURRENT=3", _c.ENV_FILE.read_text())
 
     def test_leverage_over_five_refused(self):
         self.assertIn("refused", _c.handle_command("leverage 10", Broker()))
