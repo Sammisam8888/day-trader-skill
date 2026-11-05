@@ -1,0 +1,13 @@
+[Unit]
+Description=Read-only trading dashboard (localhost only)
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/dashboard.py
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target
