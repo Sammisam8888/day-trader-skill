@@ -185,3 +185,14 @@ class TestItNeverTrades(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDashboardIsReadOnly(unittest.TestCase):
+    def test_no_post_handler_and_localhost_only(self):
+        with open(os.path.join(ROOT, "indstocks", "dashboard.py"),
+                  encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertNotIn("do_POST", text)
+        self.assertNotIn(".post(", text)
+        self.assertIn('HTTPServer(("127.0.0.1"', text)
+        self.assertNotIn('"0.0.0.0"', text)
