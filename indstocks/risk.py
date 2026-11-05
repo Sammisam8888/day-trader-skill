@@ -206,8 +206,10 @@ def check_entry_order(*, symbol: str, plan, sizing: Sizing, session: Session,
         )
 
     # Costs are not a rounding error on a small account: they can exceed the
-    # entire gain at the target, making a winning trade a losing one.
-    if sizing.ok and sizing.gain_at_target < sizing.round_trip_cost * limits.min_reward_to_cost:
+    # entire gain at the target, making a winning trade a losing one. The
+    # multiple is the owner's to set, but never below 1: a trade that loses
+    # when it wins is not a trade at any setting.
+    if sizing.ok and sizing.gain_at_target < sizing.round_trip_cost * max(limits.min_reward_to_cost, Decimal(1)):
         net = sizing.net_if_target_hits
         reasons.append(
             f"not worth the costs: gain at target {sizing.gain_at_target:.2f} "
