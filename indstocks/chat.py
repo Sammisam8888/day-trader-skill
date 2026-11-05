@@ -423,6 +423,92 @@ def handle_model(text: str, client, key: str) -> str:
     return "\n".join(out_lines) or "(no reply)"
 
 
+# ------------------------------------------------------------------ claude cli
+# The server already has a logged-in Claude Code session (it is how the MCP
+# server was registered). `claude -p` runs a one-shot prompt on that login,
+# so no API key is needed. It runs as the login's user, not root.
+
+CLI_USER = os.environ.get("TRADER_CHAT_USER", "ubuntu")
+CLI_TIMEOUT = int(os.environ.get("TRADER_CHAT_TIMEOUT", "120"))
+
+
+def find_claude() -> str | None:
+    home = Path(f"/home/{CLI_USER}")
+    for cand in (os.environ.get("TRADER_CLAUDE_BIN"),
+                 home / ".local/bin/claude", home / ".npm-global/bin/claude",
+                 home / ".claude/local/claude", "/usr/local/bin/claude", "/usr/bin/claude"):
+        if cand and Path(cand).exists():
+            return str(cand)
+    try:
+        r = subprocess.run(["sudo", "-u", CLI_USER, "-H", "bash", "-lc", "command -v claude"],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() or None
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+CLI_SYSTEM = """You are the control desk for an automated NSE intraday trading bot on the
+owner's own INDstocks account. Be brief and concrete; rupees, not vibes. Never invent orders,
+prices or fills: everything you know is in STATE below. Round-trip charges are about Rs 43 per
+filled trade; break-even is roughly 0.11% of position value.
+
+Reply with ONE JSON object and nothing else:
+{"reply": "<what to say to the owner, plain text>", "actions": [ {"name": ..., "args": {...}} ]}
+"actions" may be empty. Available actions and args:
+  stop {reason}            resume {}            set_scan_interval {minutes: 2-60}
+  set_limits {max_loss, daily_loss, max_trades, max_concurrent, max_leverage, max_resting,
+              manual_target_pct, manual_stop_pct}   (only the ones to change)
+  cancel_all {}            sell {symbol, qty?}  buy {symbol, qty}   (buy is capped at half of cash)
+Only act when the owner clearly asks for an action. Questions get actions: [].
+"""
+
+
+def _run_cli(prompt: str) -> str:
+    exe = find_claude()
+    if not exe:
+        raise RuntimeError("claude CLI not found on this box")
+    cmd = ["sudo", "-u", CLI_USER, "-H", exe, "-p", prompt, "--output-format", "json",
+           "--tools", ""]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=CLI_TIMEOUT,
+                       cwd=f"/home/{CLI_USER}")
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout)[-300:])
+    try:
+        return json.loads(r.stdout).get("result") or ""
+    except ValueError:
+        return r.stdout
+
+
+def _parse_json_reply(raw: str) -> dict:
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        raw = raw[raw.find("{"):]
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end < 0:
+        return {"reply": raw, "actions": []}
+    try:
+        return json.loads(raw[start:end + 1])
+    except ValueError:
+        return {"reply": raw, "actions": []}
+
+
+def handle_cli(text: str, client) -> str:
+    state = act_status(client) + "\n\nToday's decisions:\n" + act_why(None)
+    recent = "\n".join(f"{h['role']}: {h['text'][:300]}" for h in history(10)
+                        if h.get("role") in ("user", "assistant"))
+    prompt = (CLI_SYSTEM + "\nSTATE:\n" + state + "\n\nRECENT CHAT:\n" + recent
+              + "\n\nOWNER: " + text)
+    got = _parse_json_reply(_run_cli(prompt))
+    lines = [str(got.get("reply") or "").strip()]
+    for a in got.get("actions") or []:
+        try:
+            lines.append(f"[{a.get('name')}] " + run_tool(a.get("name"), a.get("args") or {}, client))
+        except Exception as exc:                        # noqa: BLE001
+            lines.append(f"[{a.get('name')}] failed: {str(exc)[:200]}")
+    return "\n".join(ln for ln in lines if ln) or "(no reply)"
+
+
 def handle(text: str, client) -> str:
     chat_log("user", text)
     try:
@@ -431,9 +517,11 @@ def handle(text: str, client) -> str:
             key = read_env().get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
             if key:
                 reply = handle_model(text, client, key)
+            elif find_claude():
+                reply = handle_cli(text, client)
             else:
-                reply = ("I didn't recognise that as a command, and no AI key is saved yet "
-                         "(Controls -> Anthropic API key).\n\n" + HELP)
+                reply = ("I didn't recognise that as a command, and there is no Claude login "
+                         "or API key on this box.\n\n" + HELP)
     except Exception as exc:                            # noqa: BLE001
         reply = f"Failed: {str(exc)[:300]}"
     chat_log("assistant", reply)

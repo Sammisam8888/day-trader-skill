@@ -403,7 +403,7 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     if not msgs:
         p.append("<div class='bub bot'>Hi. Tell me <b>stop</b>, <b>continue</b>, <b>scan every 5 minutes</b>, "
                  "<b>buy 10 RELIANCE</b>, <b>sell all</b>, <b>cancel all</b>, <b>status</b> or <b>why HDFCBANK</b>."
-                 + ("" if has_key else " Save an Anthropic API key in Controls and you can just talk to me.")
+                 + ("" if (has_key or chat_mod.find_claude()) else " No Claude login found on the server, so only commands work.")
                  + "</div>")
     for m in msgs:
         role = m.get("role")
@@ -416,7 +416,7 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
              f"<input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=chat>"
              "<input type=text name=text placeholder='stop / continue / buy 10 RELIANCE / why ITC / status' required>"
              "<button class=btn-save style='width:auto;margin:0'>Send</button></form>"
-             f"<div class=meta style='margin-top:8px'>{'AI replies on' if has_key else 'Command mode (no AI key saved)'}"
+             f"<div class=meta style='margin-top:8px'>{'AI replies via API key' if has_key else ('AI replies via the server Claude login' if chat_mod.find_claude() else 'Command mode only')}"
              f" &middot; scan every {e(lim.get('TRADER_SCAN_MINUTES', '10'))} min</div></section>")
     p.append("<section data-pane=pos>")
     # ---- P&L card ----

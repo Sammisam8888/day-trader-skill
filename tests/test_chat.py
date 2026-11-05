@@ -164,9 +164,29 @@ class TestLimitsAndMisc(unittest.TestCase):
         self.assertIn("cash 25000", r)
         self.assertIn("LIVE", r)
 
-    def test_free_text_without_key_gets_help(self):
+    def test_free_text_with_nothing_to_answer_gets_help(self):
+        _c.find_claude = lambda: None
         r = _c.handle("what do you think about nifty today", Broker())
-        self.assertIn("no AI key", r)
+        self.assertIn("no Claude login", r)
+
+    def test_free_text_goes_to_the_cli_and_actions_run(self):
+        _c.find_claude = lambda: "/x/claude"
+        _c._run_cli = lambda prompt: '{"reply": "Stopping as asked.", "actions": [{"name": "stop", "args": {"reason": "owner asked"}}]}'
+        r = _c.handle("please stop for now", Broker())
+        self.assertIn("Stopping as asked.", r)
+        self.assertIn("[stop] Stopped", r)
+        self.assertTrue(os.path.exists(os.environ["TRADER_KILL_SWITCH"]))
+        os.unlink(os.environ["TRADER_KILL_SWITCH"])
+
+    def test_cli_reply_in_a_code_fence_still_parses(self):
+        got = _c._parse_json_reply('```json\n{"reply": "hi", "actions": []}\n```')
+        self.assertEqual(got["reply"], "hi")
+
+    def test_cli_runs_as_the_login_user_with_no_tools(self):
+        import inspect
+        src = inspect.getsource(_c._run_cli)
+        self.assertIn('"sudo", "-u", CLI_USER', src)
+        self.assertIn('"--tools", ""', src)
 
     def test_unrecognised_is_none_for_the_grammar(self):
         self.assertIsNone(_c.handle_command("hello there", Broker()))
