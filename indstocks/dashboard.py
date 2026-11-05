@@ -35,6 +35,35 @@ ENV_FILE = Path("/etc/indstocks.env")
 HALT_FILE = Path(os.environ.get("TRADER_KILL_SWITCH", "/etc/indstocks.halt"))
 PORT = int(os.environ.get("TRADER_DASHBOARD_PORT", "8080"))
 
+# Where to listen. 127.0.0.1 always. The Tailscale address too, when one
+# exists: it is private to the account owner's devices and never routed
+# from the public internet, so it is the same trust boundary as localhost.
+# 0.0.0.0 is refused outright -- there is no setting for it.
+BIND = os.environ.get("TRADER_DASHBOARD_BIND", "auto")
+
+
+def tailscale_ip() -> str | None:
+    try:
+        r = subprocess.run(["tailscale", "ip", "-4"], capture_output=True,
+                           text=True, timeout=5)
+        ip = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
+        return ip if ip.startswith("100.") else None
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def bind_addresses() -> list:
+    if BIND == "auto":
+        out = ["127.0.0.1"]
+        ts = tailscale_ip()
+        if ts:
+            out.append(ts)
+        return out
+    if BIND in ("0.0.0.0", "", "*", "::"):
+        raise SystemExit("refusing to bind the dashboard to all interfaces; "
+                         "this box holds broker credentials")
+    return [BIND]
+
 
 def e(x) -> str:
     return html.escape("" if x is None else str(x))
@@ -262,11 +291,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    # 127.0.0.1 only. Never 0.0.0.0: the box holds broker credentials.
-    srv = HTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"dashboard on http://127.0.0.1:{PORT} (localhost only; use an ssh tunnel)",
-          flush=True)
-    srv.serve_forever()
+    import threading
+    servers = []
+    for addr in bind_addresses():
+        srv = HTTPServer((addr, PORT), Handler)
+        servers.append(srv)
+        print(f"dashboard on http://{addr}:{PORT}", flush=True)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    if not servers:
+        return 1
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
