@@ -41,7 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import session as sess                                 # noqa: E402
 from client import Client                               # noqa: E402
-from flatten import cancel_resting_legs, open_intraday, sell  # noqa: E402
+from flatten import cancel_order, cancel_resting_legs, open_intraday, sell  # noqa: E402
 
 STATE_DIR = Path(os.environ.get("TRADER_STATE_DIR", "/var/lib/indstocks/auto"))
 HALT_FILE = Path(os.environ.get("TRADER_KILL_SWITCH", "/etc/indstocks.halt"))
@@ -202,7 +202,7 @@ def cancel_entry(client, row: dict) -> bool:
     but it is cancelled too so the book shows nothing dangling."""
     oid = row.get("id") or row.get("order_id")
     try:
-        client.post("/smart/order/cancel", body={"order_id": oid})
+        cancel_order(client, oid)
     except Exception as exc:                            # noqa: BLE001
         log({"event": "cancel_failed", "order_id": oid, "reason": str(exc)[:200]})
         return False

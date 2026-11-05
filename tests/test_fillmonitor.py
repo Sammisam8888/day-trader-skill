@@ -200,6 +200,25 @@ class TestNearClose(unittest.TestCase):
         self.assertEqual(b.posts, [])
 
 
+class TestCancelPayload(unittest.TestCase):
+    def test_segment_is_sent(self):
+        # 2026-11-05 13:50: {"order_id": ...} alone is a 400 at the broker.
+        b = Broker(book=[entry("P1", "1", "A")])
+        _f.cancel_entry(b, b.book[0])
+        self.assertEqual(b.posts, [("/smart/order/cancel",
+                                    {"order_id": "P1", "segment": "EQUITY"})])
+
+    def test_every_cancel_in_the_codebase_goes_through_one_function(self):
+        import glob
+        hits = []
+        for path in glob.glob(os.path.join(ROOT, "indstocks", "*.py")):
+            with open(path, encoding="utf-8") as fh:
+                for i, ln in enumerate(fh, 1):
+                    if 'post("/smart/order/cancel"' in ln:
+                        hits.append(f"{os.path.basename(path)}:{i}")
+        self.assertEqual(hits, ["flatten.py:" + hits[0].split(":")[1]] if hits else [], hits)
+
+
 class TestService(unittest.TestCase):
     def test_unit_file_and_deploy(self):
         with open(os.path.join(ROOT, "scripts", "fillmonitor.service")) as fh:
