@@ -13,8 +13,10 @@ with its OCO stop/target leg and the reason it was placed), today's
 decisions, the limits in force, and the timers.
 
 Writes: halt / resume / limits, CANCEL (an entry and its linked leg
-together) and EXIT (market-sell an open intraday position). Both of the
-order routes only ever reduce exposure; there is no route that opens one.
+together), EXIT (market-sell an open intraday position), and CHAT, which
+routes through chat.py: stop, continue, scan interval, limits, cancel,
+sell, and a capped market BUY (at most half of cash). Every write goes
+through the same code the timers use.
 """
 
 from __future__ import annotations
@@ -100,7 +102,7 @@ def limits() -> dict:
     out = {}
     try:
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-            if line.startswith("TRADER_") and "=" in line:
+            if (line.startswith("TRADER_") or line.startswith("ANTHROPIC_API_KEY")) and "=" in line:
                 k, v = line.split("=", 1)
                 out[k] = v
     except OSError:
@@ -303,6 +305,13 @@ details summary{cursor:pointer;color:var(--acc);font-size:13px;padding:6px 0}
 .flash{background:#1b3a26;color:var(--ok);padding:10px;border-radius:8px;margin-bottom:10px;font-size:14px}
 .flash.err{background:#3d1d1d;color:var(--bad)}
 pre{background:var(--bg);padding:8px;font-size:11px;overflow:auto;border-radius:6px;margin:0}
+.chatbox{display:flex;flex-direction:column;gap:8px;padding:4px 0 12px;min-height:40vh}
+.bub{max-width:88%;padding:10px 12px;border-radius:14px;font-size:14px;line-height:1.45;white-space:pre-wrap;word-break:break-word}
+.bub.me{align-self:flex-end;background:#1d3a5c;border-bottom-right-radius:4px}
+.bub.bot{align-self:flex-start;background:var(--card);border:1px solid var(--line);border-bottom-left-radius:4px}
+.bub .t{font-size:10px;color:var(--mut);margin-top:4px;text-align:right}
+.chatform{display:flex;gap:8px;position:sticky;bottom:70px}
+.chatform input[type=text]{flex:1}
 .nav{position:fixed;bottom:0;left:0;right:0;background:#0f1218;border-top:1px solid var(--line);display:flex;justify-content:space-around;padding:10px 0 14px;font-size:12px;color:var(--mut)}
 .nav a{color:inherit;text-decoration:none;text-align:center;padding:0 10px}.nav a.on{color:var(--acc)}.nav a span{display:block;font-size:18px}
 @media(min-width:720px){.wrap,.top{max-width:720px;margin:0 auto}}
@@ -325,6 +334,7 @@ TABS_JS = """
     a.addEventListener('click', function(ev){ ev.preventDefault(); show(a.dataset.tab); });
   });
   show(tab);
+  var cb=document.getElementById('chatbox'); if(cb && tab==='chat'){ window.scrollTo(0, document.body.scrollHeight); }
   setTimeout(function(){ location.reload(); }, 60000);
 })();
 """
@@ -374,7 +384,8 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
          f"<title>trader</title><style>{CSS}</style>",
          f"<div class=top><div class=head><h1>autotrader</h1><div class=muted style='font-size:13px'>"
          f"{e(now.strftime('%a %d %b %H:%M'))}</div></div>"
-         f"<div class=tabs><a data-tab=pos href='?tab=pos&day={e(day)}'>Positions</a>"
+         f"<div class=tabs><a data-tab=chat href='?tab=chat&day={e(day)}'>Chat</a>"
+         f"<a data-tab=pos href='?tab=pos&day={e(day)}'>Positions</a>"
          f"<a data-tab=orders href='?tab=orders&day={e(day)}'>Orders</a>"
          f"<a data-tab=decisions href='?tab=decisions&day={e(day)}'>Decisions</a>"
          f"<a data-tab=controls href='?tab=controls&day={e(day)}'>Controls</a></div>"
@@ -384,6 +395,29 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     if flash:
         p.append(f"<div class='flash{' err' if flash_err else ''}'>{e(flash)}</div>")
 
+    # ---- chat ----
+    import chat as chat_mod
+    has_key = bool(lim.get("ANTHROPIC_API_KEY"))
+    p.append("<section data-pane=chat><div class=chatbox id=chatbox>")
+    msgs = chat_mod.history(60)
+    if not msgs:
+        p.append("<div class='bub bot'>Hi. Tell me <b>stop</b>, <b>continue</b>, <b>scan every 5 minutes</b>, "
+                 "<b>buy 10 RELIANCE</b>, <b>sell all</b>, <b>cancel all</b>, <b>status</b> or <b>why HDFCBANK</b>."
+                 + ("" if has_key else " Save an Anthropic API key in Controls and you can just talk to me.")
+                 + "</div>")
+    for m in msgs:
+        role = m.get("role")
+        if role == "system":
+            continue
+        cls = "me" if role == "user" else "bot"
+        p.append(f"<div class='bub {cls}'>{e(m.get('text', '')).replace(chr(10), '<br>')}"
+                 f"<div class=t>{e((m.get('ts') or '')[11:16])}</div></div>")
+    p.append("</div><form method=post action=/chat class=chatform autocomplete=off>"
+             f"<input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=chat>"
+             "<input type=text name=text placeholder='stop / continue / buy 10 RELIANCE / why ITC / status' required>"
+             "<button class=btn-save style='width:auto;margin:0'>Send</button></form>"
+             f"<div class=meta style='margin-top:8px'>{'AI replies on' if has_key else 'Command mode (no AI key saved)'}"
+             f" &middot; scan every {e(lim.get('TRADER_SCAN_MINUTES', '10'))} min</div></section>")
     p.append("<section data-pane=pos>")
     # ---- P&L card ----
     rp = Decimal(str(f.get("realized_pnl") or 0)) if "error" not in f else Decimal(0)
@@ -547,6 +581,8 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     for key, label, typ in EDITABLE:
         p.append(f"<label>{e(label)}</label><input type={typ} step=any name={e(key)} "
                  f"value='{e(lim.get(key, ''))}' placeholder='default'>")
+    p.append(f"<label>Anthropic API key (for chat; leave blank to keep{' the saved one' if lim.get('ANTHROPIC_API_KEY') else ''})</label>"
+             f"<input type=password name=ANTHROPIC_API_KEY placeholder='{'saved' if lim.get('ANTHROPIC_API_KEY') else 'sk-ant-...'}'>")
     p.append(f"<div class=toggle><input type=checkbox id=live name=TRADER_LIVE value=true"
              f"{' checked' if live_flag else ''}><label for=live style='margin:0'>LIVE &mdash; place real orders "
              f"(unticked = shadow, decides and logs only)</label></div>"
@@ -556,9 +592,10 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
 
     p.append(f"<h2>Timers</h2><div class=card><pre>{e(timers())}</pre></div>")
     p.append("<div class='sub' style='margin:20px 0'>Reachable only over Tailscale or localhost. "
-             "Cancel and Exit only ever reduce exposure; nothing here can open a position.</div>"
+             "Cancel and Exit reduce exposure; the only way to open a position from here is a chat 'buy', capped at half of cash.</div>"
              "</section></div>"
-             f"<div class=nav><a data-tab=pos href='?tab=pos&day={e(day)}'><span>&#8377;</span>Positions</a>"
+             f"<div class=nav><a data-tab=chat href='?tab=chat&day={e(day)}'><span>&#128172;</span>Chat</a>"
+             f"<a data-tab=pos href='?tab=pos&day={e(day)}'><span>&#8377;</span>Positions</a>"
              f"<a data-tab=orders href='?tab=orders&day={e(day)}'><span>&#9776;</span>Orders</a>"
              f"<a data-tab=decisions href='?tab=decisions&day={e(day)}'><span>&#9881;</span>Decisions</a>"
              f"<a data-tab=controls href='?tab=controls&day={e(day)}'><span>&#9211;</span>Controls</a></div>"
@@ -585,6 +622,11 @@ def write_limits(form: dict) -> str:
             val = int(val)
         new[key] = str(val)
     new["TRADER_LIVE"] = "true" if (form.get("TRADER_LIVE") or [""])[0] == "true" else "false"
+    key = (form.get("ANTHROPIC_API_KEY") or [""])[0].strip()
+    if key:
+        if not key.startswith("sk-ant-") or len(key) < 40:
+            return "that does not look like an Anthropic API key"
+        new["ANTHROPIC_API_KEY"] = key
 
     try:
         lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
@@ -653,6 +695,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/limits":
                 problem = write_limits(form)
                 flash, err = (problem, True) if problem else ("Limits saved. They apply from the next scan.", False)
+            elif path == "/chat":
+                import chat as chat_mod
+                text = (form.get("text") or [""])[0].strip()[:500]
+                if text:
+                    chat_mod.handle(text, Client())
+                flash = ""
             elif path == "/cancel":
                 oid = (form.get("order_id") or [""])[0].strip()
                 if not oid:
@@ -673,7 +721,7 @@ class Handler(BaseHTTPRequestHandler):
             flash, err = f"failed: {exc}", True
         from urllib.parse import urlencode
         tab = (form.get("tab") or ["pos"])[0]
-        if tab not in ("pos", "orders", "decisions", "controls"):
+        if tab not in ("chat", "pos", "orders", "decisions", "controls"):
             tab = "pos"
         q = urlencode({"tab": tab, "day": self._day(form), "flash": flash[:300], "err": "1" if err else "0"})
         self.send_response(303)
