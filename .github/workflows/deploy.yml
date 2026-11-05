@@ -60,9 +60,20 @@ jobs:
           if [ -f requirements.txt ]; then "$VENV/bin/pip" install -q -r requirements.txt; fi
           python3 -m unittest discover -s tests
           # Restart only if the unit exists; early on there is nothing to run yet.
-          if systemctl list-unit-files | grep -q '^indstocks-mcp\.service'; then
-            sudo systemctl restart indstocks-mcp
-            sleep 2
-            systemctl is-active --quiet indstocks-mcp || { journalctl -u indstocks-mcp -n 50 --no-pager; exit 1; }
-          fi
+          for unit in indstocks-mcp dashboard fillmonitor; do
+            if systemctl list-unit-files | grep -q "^$unit\.service"; then
+              sudo systemctl restart "$unit"
+              sleep 2
+              systemctl is-active --quiet "$unit" || { journalctl -u "$unit" -n 50 --no-pager; exit 1; }
+            fi
+          done
+          # Long-running services are installed from the repo so a new one
+          # (like fillmonitor) comes up on the next deploy without a hand step.
+          for unit in dashboard fillmonitor; do
+            if [ ! -f /etc/systemd/system/$unit.service ]; then
+              sudo cp scripts/$unit.service /etc/systemd/system/$unit.service
+              sudo systemctl daemon-reload
+              sudo systemctl enable --now $unit
+            fi
+          done
           REMOTE

@@ -94,6 +94,8 @@ def open_intraday(client) -> list:
             out.append({"security_id": str(r.get("security_id")),
                         "name": r.get("name") or r.get("trading_symbol") or "?",
                         "qty": qty,
+                        "avg_price": r.get("avg_price") or r.get("buy_avg_price")
+                        or r.get("average_price") or 0,
                         "exchange": r.get("exchange") or "NSE"})
     return out
 
@@ -197,21 +199,25 @@ def run() -> int:
              "cancel_failed": len(sweep["failed"])})
         return 1 if sweep["failed"] else 0
 
-    # Sell only what the bot bought. Anything else in the position is the
-    # account owner's and stays.
-    ours = bot_filled_today(client)
-    trimmed = []
-    for pos in positions:
-        bot_qty = ours.get(pos["security_id"], 0)
-        if bot_qty <= 0:
-            log({"event": "left_alone", "name": pos["name"], "qty": pos["qty"],
-                 "reason": "not opened by this system"})
-            continue
-        if bot_qty < pos["qty"]:
-            log({"event": "trimmed", "name": pos["name"], "held": pos["qty"],
-                 "selling": bot_qty, "reason": "rest was bought manually"})
-        trimmed.append({**pos, "qty": min(bot_qty, pos["qty"])})
-    positions = trimmed
+    # Every INTRADAY position goes, manual ones included: the account owner
+    # asked for all intraday exposure to be managed and closed before the
+    # broker's own square-off (which charges Rs 50 + GST). Delivery (CNC)
+    # holdings are not positions here and are never touched. Set
+    # TRADER_FLATTEN_ALL=false to restore "only what the bot bought".
+    if os.environ.get("TRADER_FLATTEN_ALL", "true").lower() not in ("1", "true", "yes"):
+        ours = bot_filled_today(client)
+        trimmed = []
+        for pos in positions:
+            bot_qty = ours.get(pos["security_id"], 0)
+            if bot_qty <= 0:
+                log({"event": "left_alone", "name": pos["name"], "qty": pos["qty"],
+                     "reason": "not opened by this system"})
+                continue
+            if bot_qty < pos["qty"]:
+                log({"event": "trimmed", "name": pos["name"], "held": pos["qty"],
+                     "selling": bot_qty, "reason": "rest was bought manually"})
+            trimmed.append({**pos, "qty": min(bot_qty, pos["qty"])})
+        positions = trimmed
     if not positions:
         log({"event": "nothing_ours"})
         sweep = cancel_all_unfilled(client)

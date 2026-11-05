@@ -55,20 +55,27 @@ class TestCapitalIsSpentAcrossTheRun(unittest.TestCase):
         with open(os.path.join(ROOT, "indstocks", name), encoding="utf-8") as fh:
             return fh.read()
 
-    def test_autotrader_sizes_against_remaining_not_total(self):
+    def test_autotrader_sizes_per_free_slot(self):
+        # Resting orders are free, so many may rest at once; what bounds
+        # the FILLED total is sizing each at (cash - held) / free slots.
         text = self.source("autotrader.py")
-        self.assertIn("size_position(plan, remaining_cash", text)
+        self.assertIn("size_position(plan, per_order_cash", text)
         self.assertNotIn("size_position(plan, cash", text)
+        self.assertIn("per_order_cash = ((cash - held_cash) / free_slots)", text)
+
+    def test_resting_orders_do_not_occupy_slots(self):
+        text = self.source("autotrader.py")
+        self.assertIn('"open_symbols": tuple(filled), "resting_symbols": tuple(resting)', text)
+        self.assertNotIn("remaining_cash -= sizing.position_value", text)
 
     def test_shadow_sizes_against_remaining_too(self):
         text = self.source("shadow.py")
         self.assertIn("size_position(plan, remaining_cash", text)
         self.assertNotIn("size_position(plan, cash", text)
 
-    def test_both_decrement_after_committing(self):
-        for name in ("autotrader.py", "shadow.py"):
-            self.assertIn("remaining_cash -= sizing.position_value",
-                          self.source(name), name)
+    def test_shadow_decrements_after_committing(self):
+        self.assertIn("remaining_cash -= sizing.position_value",
+                      self.source("shadow.py"))
 
     def test_the_arithmetic_that_was_wrong(self):
         # 2026-11-04: three tickets at 22,341 + 22,447 + 21,753 against a
@@ -206,8 +213,19 @@ class TestReconcile(unittest.TestCase):
         book = [{"id": "P1", "status": "CANCELLED", "traded_qty": 0},
                 {"id": "P2", "status": "PENDING", "traded_qty": 0}]
         out = _a.reconcile_with_broker(self.C(book), self.placements())
+        # P2 is still resting: not a trade, not an open symbol, but
+        # remembered so it is not placed twice.
+        self.assertEqual(out["trades_taken"], 0)
+        self.assertEqual(out["open_symbols"], ())
+        self.assertEqual(out["resting_symbols"], ("ITC",))
+
+    def test_a_fill_is_a_trade_and_an_open_symbol(self):
+        book = [{"id": "P1", "status": "SUCCESS", "traded_qty": 17},
+                {"id": "P2", "status": "PENDING", "traded_qty": 0}]
+        out = _a.reconcile_with_broker(self.C(book), self.placements())
         self.assertEqual(out["trades_taken"], 1)
-        self.assertEqual(out["open_symbols"], ("ITC",))
+        self.assertEqual(out["open_symbols"], ("RELIANCE",))
+        self.assertEqual(out["resting_symbols"], ("ITC",))
 
     def test_cancelled_after_a_partial_fill_still_counts(self):
         book = [{"id": "P1", "status": "PARTIALLY FILLED - CANCELLED",
@@ -298,14 +316,16 @@ class TestFlatten(unittest.TestCase):
     def test_a_failed_sell_is_loud(self):
         self.assertIn("CLOSE THIS MANUALLY", self.source())
 
-    def test_sells_only_what_the_bot_bought(self):
+    def test_flattens_every_intraday_position_by_default(self):
+        # 2026-11-05: the owner asked for manual intraday positions to be
+        # managed too. Only INTRADAY product rows are positions here; CNC
+        # holdings never are.
         text = self.source()
+        self.assertIn('TRADER_FLATTEN_ALL", "true"', text)
+        self.assertIn('("INTRADAY", "MIS", "")', text)
+        # The old behaviour is still there behind the flag.
         self.assertIn("bot_filled_today", text)
-        self.assertIn('startswith("auto/")', text)
-        self.assertIn("min(bot_qty, pos[\"qty\"])", text)
-
-    def test_a_manual_position_is_left_alone(self):
-        self.assertIn("left_alone", self.source())
+        self.assertIn("left_alone", text)
 
     def test_unfilled_entries_are_cancelled_at_end_of_day(self):
         text = self.source()
