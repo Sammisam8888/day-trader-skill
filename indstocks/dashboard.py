@@ -417,8 +417,10 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     live_flag = lim.get("TRADER_LIVE", "false").lower() in ("1", "true", "yes")
     whys = placed_records(log)
 
-    pos = [r for r in data["positions"] if isinstance(r, dict) and "error" not in r
-           and int(r.get("net_qty", r.get("quantity", r.get("qty", 0))) or 0) != 0]
+    allpos = [r for r in data["positions"] if isinstance(r, dict) and "error" not in r]
+    pos = [r for r in allpos if int(r.get("net_qty", r.get("quantity", r.get("qty", 0))) or 0) != 0]
+    closed = [r for r in allpos if int(r.get("net_qty", 0) or 0) == 0
+              and (int(r.get("sell_qty") or 0) > 0 or int(r.get("buy_qty") or 0) > 0)]
     pairs = pair_orders([r for r in data["orders"] if "error" not in r])
     live_pairs = [(a, b) for a, b in pairs if str(a.get("status", "")).upper() not in DEAD]
     dead_pairs = [(a, b) for a, b in pairs if str(a.get("status", "")).upper() in DEAD]
@@ -472,14 +474,36 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
              f"<div class=meta style='margin-top:8px'>{'AI replies via API key' if has_key else ('AI replies via the server Claude login' if chat_mod.find_claude() else 'Command mode only')}"
              f" &middot; scan every {e(lim.get('TRADER_SCAN_MINUTES', '10'))} min</div></section>")
     p.append("<section data-pane=pos>")
-    # ---- P&L card ----
-    rp = Decimal(str(f.get("realized_pnl") or 0)) if "error" not in f else Decimal(0)
-    up = Decimal(str(f.get("unrealized_pnl") or 0)) if "error" not in f else Decimal(0)
-    tot = rp + up
-    p.append(f"<div class=card><div class=pnl>Today's Intraday P&amp;L"
-             f"<div class='v {'ok' if tot >= 0 else 'bad'}'>{'' if tot < 0 else '+'}&#8377;{money(tot)}</div>"
-             f"<div class=meta>realised <b class='{'ok' if rp >= 0 else 'bad'}'>{money(rp)}</b> &middot; "
-             f"unrealised <b class='{'ok' if up >= 0 else 'bad'}'>{money(up)}</b></div></div></div>")
+    # ---- P&L card: realised (closed), open (mark-to-LTP), charges, net ----
+    import charges as charges_mod
+    rp = sum((Decimal(str(r.get("realized_profit") or 0)) for r in allpos), Decimal(0))
+    up = Decimal(0)
+    for r in pos:
+        q = int(r.get("net_qty", 0) or 0)
+        avg = Decimal(str(r.get("avg_price") or 0))
+        ltp = px.get(str(r.get("security_id")), avg)
+        up += (ltp - avg) * q
+    # charges: every round trip closed today, plus the exit still owed on open positions
+    fees = Decimal(0)
+    for r in allpos:
+        bq, sq = int(r.get("buy_qty") or 0), int(r.get("sell_qty") or 0)
+        bv = Decimal(str(r.get("buy_avg") or 0)) * bq
+        sv = Decimal(str(r.get("sell_avg") or 0)) * sq
+        if bq and sq:
+            fees += charges_mod.round_trip(bv * min(bq, sq) / bq, sv * min(bq, sq) / sq).total
+        q = int(r.get("net_qty", 0) or 0)
+        if q:
+            avg = Decimal(str(r.get("avg_price") or 0))
+            ltp = px.get(str(r.get("security_id")), avg)
+            fees += charges_mod.round_trip(avg * q, ltp * q).total
+    net = rp + up - fees
+    def c(v): return "ok" if v >= 0 else "bad"
+    p.append(f"<div class=card><div class=pnl>Today's net, after charges"
+             f"<div class='v {c(net)}'>{'+' if net >= 0 else ''}&#8377;{money(net)}</div></div>"
+             f"<div class=g3 style='margin-top:10px'><div><div class=k>Realised (closed)</div><div class='v {c(rp)}'>{'+' if rp >= 0 else ''}&#8377;{money(rp)}</div></div>"
+             f"<div><div class=k>Open (at LTP)</div><div class='v {c(up)}'>{'+' if up >= 0 else ''}&#8377;{money(up)}</div></div>"
+             f"<div><div class=k>Charges (est.)</div><div class='v bad'>-&#8377;{money(fees)}</div></div></div>"
+             f"<div class=meta style='margin-top:8px'>Broker says realised {money(f.get('realized_pnl'))} &middot; unrealised {money(f.get('unrealized_pnl'))} (before charges)</div></div>")
     if "error" in f:
         p.append(f"<div class='card bad'>{e(f['error'])}</div>")
 
@@ -519,6 +543,31 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
                  f"<input type=hidden name=security_id value='{e(sid)}'><input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=pos>"
                  f"<button class=btn-x>&#10162; Insta Exit</button></form>"
                  f"<a class=btn data-tab=orders href='?tab=orders&day={e(day)}'>Manage</a></div></div>")
+    if closed:
+        p.append(f"<h2>Closed today ({len(closed)})</h2>")
+        for r in closed:
+            q = min(int(r.get("buy_qty") or 0), int(r.get("sell_qty") or 0))
+            b_avg, s_avg = Decimal(str(r.get("buy_avg") or 0)), Decimal(str(r.get("sell_avg") or 0))
+            rpnl = Decimal(str(r.get("realized_profit") or 0))
+            fee = charges_mod.round_trip(b_avg * q, s_avg * q).total if q else Decimal(0)
+            name = r.get("name") or r.get("symbol") or r.get("security_id")
+            why = next((w for w in whys.values() if (w.get("symbol") or "").upper() == str(r.get("symbol") or "").upper()), {})
+            how = ""
+            if why:
+                stop, tgt = Decimal(why["stop"]), Decimal(why["target"])
+                how = ("stop-loss hit" if s_avg <= stop + (stop * Decimal("0.002")) else
+                       "target hit" if s_avg >= tgt - (tgt * Decimal("0.002")) else "sold before stop/target")
+            p.append(f"<div class=card><div class=head><div style='display:flex;gap:10px'>"
+                     f"<div class=logo>{e(str(name)[:2].upper())}</div><div><div class=nm>{e(name)}</div>"
+                     f"<div class=meta>Qty {q} &middot; <span class='st {'dead' if rpnl < 0 else 'fill'}'>{e(how) or 'traded'}</span></div></div></div>"
+                     f"<div style='text-align:right'><div class='v {c(rpnl)}' style='font-size:18px;font-weight:700'>{'+' if rpnl >= 0 else ''}&#8377;{money(rpnl)}</div>"
+                     f"<div class=meta>net {'+' if rpnl - fee >= 0 else ''}&#8377;{money(rpnl - fee)}</div></div></div>"
+                     f"<div class=g3><div><div class=k>Avg. Buy</div><div class=v>&#8377;{money(b_avg)}</div></div>"
+                     f"<div><div class=k>Avg. Sell</div><div class=v>&#8377;{money(s_avg)}</div></div>"
+                     f"<div><div class=k>Charges</div><div class=v>&#8377;{money(fee)}</div></div></div>"
+                     + (f"<div class=why><b>Plan was:</b> buy {e(why.get('entry'))} &rarr; stop {e(why.get('stop'))} / target {e(why.get('target'))}. "
+                        f"{e(why.get('why', ''))}</div>" if why else "")
+                     + "</div>")
     if pos and cash:
         lev = held_value / cash
         p.append(f"<div class=meta style='margin:-4px 0 8px'>Held &#8377;{money(held_value)} against cash "
