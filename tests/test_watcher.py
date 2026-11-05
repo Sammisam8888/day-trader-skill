@@ -188,8 +188,9 @@ if __name__ == "__main__":
 
 
 class TestDashboardOnlyReducesExposure(unittest.TestCase):
-    """The dashboard may halt, resume, edit limits, CANCEL an order pair
-    and EXIT a position. It may never place or modify an entry."""
+    """The dashboard may halt, resume, edit limits, CANCEL an order pair,
+    EXIT a position, and relay chat commands. dashboard.py itself never
+    places an entry; the chat's capped market buy lives in chat.py."""
 
     def source(self):
         with open(os.path.join(ROOT, "indstocks", "dashboard.py"),
@@ -216,7 +217,7 @@ class TestDashboardOnlyReducesExposure(unittest.TestCase):
         start = text.index("def do_POST")
         end = text.index("def log_message", start)
         body = text[start:end]
-        for route in ("/halt", "/resume", "/limits", "/cancel", "/exit"):
+        for route in ("/halt", "/resume", "/limits", "/cancel", "/exit", "/chat"):
             self.assertIn(f'path == "{route}"', body)
         self.assertIn("unknown action", body)
 
