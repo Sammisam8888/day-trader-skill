@@ -231,3 +231,74 @@ class TestService(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTrailingStop(unittest.TestCase):
+    """Breakeven at +1R, then trail 1R below price. Never down."""
+    E, S, T, TICK = Decimal("759.20"), Decimal("755.70"), Decimal("766.50"), Decimal("0.05")
+
+    def test_under_one_r_does_not_move(self):
+        self.assertIsNone(_f.new_stop(self.E, self.S, Decimal("761.00"), self.TICK, self.S))
+
+    def test_at_one_r_locks_breakeven(self):
+        # R = 3.50; +1R = 762.70
+        self.assertEqual(_f.new_stop(self.E, self.S, Decimal("762.70"), self.TICK, self.S),
+                         Decimal("759.20"))
+
+    def test_beyond_one_and_a_half_r_trails(self):
+        # +2R = 766.20 -> stop at ltp - 1R = 762.70
+        self.assertEqual(_f.new_stop(self.E, self.S, Decimal("766.20"), self.TICK, self.S),
+                         Decimal("762.70"))
+
+    def test_never_moves_down(self):
+        self.assertIsNone(_f.new_stop(self.E, self.S, Decimal("762.70"), self.TICK,
+                                      current_sl=Decimal("763.00")))
+
+    def test_rounds_down_to_tick(self):
+        got = _f.new_stop(Decimal("100"), Decimal("99"), Decimal("102.333"), Decimal("0.05"), Decimal("99"))
+        self.assertEqual(got, Decimal("101.30"))
+
+    def test_modify_payload_has_segment_algo_and_both_legs(self):
+        b = Broker()
+        leg = {"id": "L1", "tgt_limit_price": "767.00"}
+        _f.modify_leg(b, leg, Decimal("759.20"), self.TICK, self.T)
+        path, body = b.posts[0]
+        self.assertEqual(path, "/smart/order/modify")
+        self.assertEqual(body["segment"], "EQUITY")
+        self.assertEqual(body["algo_id"], "99999")
+        self.assertEqual(body["sl_trigger_price"], 759.20)
+        self.assertLess(body["sl_limit_price"], 759.20)
+        self.assertEqual(body["tgt_trigger_price"], 766.50)
+
+    def test_manage_stops_end_to_end(self):
+        import json as _j
+        d = _f.STATE_DIR / f"{_s.now():%Y-%m-%d}.jsonl"
+        with open(d, "a") as fh:
+            fh.write(_j.dumps({"ts": "x", "event": "placed", "parent_order_id": "PX", "symbol": "HDFCBANK",
+                               "entry": "759.20", "stop": "755.70", "target": "766.50", "tick": "0.05"}) + "\n")
+        b = Broker(book=[entry("PX", "1333", "HDFC Bank", traded=31),
+                         {**leg("LX", "PX", "1333"), "name": "HDFC Bank", "sl_trigger_price": "755.70"}],
+                   positions=[pos("1333", "HDFC Bank", 31, "759.30")],
+                   ltp={"1333": "763.00"})
+        out = _f.tick(b, MID)
+        self.assertEqual(out["moved"], 1)
+        self.assertEqual(b.posts[0][0], "/smart/order/modify")
+        self.assertEqual(b.posts[0][1]["sl_trigger_price"], 759.20)
+
+
+class TestInvalidateByPrice(unittest.TestCase):
+    def test_resting_order_below_range_low_is_cancelled(self):
+        import json as _j
+        d = _f.STATE_DIR / f"{_s.now():%Y-%m-%d}.jsonl"
+        with open(d, "a") as fh:
+            fh.write(_j.dumps({"ts": "x", "event": "placed", "parent_order_id": "PR", "symbol": "ITC",
+                               "entry": "410.10", "stop": "408.00", "target": "414.30",
+                               "range_low": "405.90"}) + "\n")
+        b = Broker(book=[entry("PR", "1660", "ITC")], ltp={"1660": "405.00"})
+        n = _f.invalidate_by_price(b, b.book, {"1660": Decimal("405.00")})
+        self.assertEqual(n, 1)
+        self.assertEqual(b.posts[0][1]["order_id"], "PR")
+
+    def test_inside_the_range_is_kept(self):
+        b = Broker(book=[entry("PR", "1660", "ITC")])
+        self.assertEqual(_f.invalidate_by_price(b, b.book, {"1660": Decimal("407.00")}), 0)

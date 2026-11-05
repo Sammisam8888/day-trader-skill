@@ -326,10 +326,10 @@ button,.btn{white-space:nowrap;padding:12px 10px;border:1px solid var(--line);bo
 .btn-x{color:var(--bad);border-color:#4a2a2a}.btn-save{background:var(--acc);color:#000;border:0}.btn-halt{background:var(--bad);color:#fff;border:0}.btn-resume{background:var(--ok);color:#000;border:0}
 .leg{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .pill{display:inline-block;padding:2px 9px;border-radius:12px;font-size:11px;font-weight:600;background:#262b35;color:var(--fg)}
-.pill.placed,.pill.sold,.pill.ok,.pill.cancelled_on_fill{background:#1b3a26;color:var(--ok)}
+.pill.placed,.pill.sold,.pill.ok,.pill.cancelled_on_fill,.pill.stop_moved{background:#1b3a26;color:var(--ok)}
 .pill.blocked,.pill.ALERT,.pill.rejected_locally,.pill.halted,.pill.sell_failed,.pill.cancel_failed,.pill.error{background:#3d1d1d;color:var(--bad)}
 .pill.would_place,.pill.run_start,.pill.run_end,.pill.reconciled_out,.pill.state,.pill.sizing{background:#1d2d44;color:var(--acc)}
-.pill.unsized,.pill.skip,.pill.no_data,.pill.stop{background:#2d2a1a;color:var(--warn)}
+.pill.unsized,.pill.skip,.pill.no_data,.pill.stop,.pill.invalidated,.pill.expired{background:#2d2a1a;color:var(--warn)}
 .row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
 .row:last-child{border-bottom:0}.row .l{flex:1;min-width:0}.row .r{text-align:right;white-space:nowrap}
 .sym{font-weight:700}.sub{font-size:12px;color:var(--mut);margin-top:2px;word-break:break-word}
@@ -397,6 +397,8 @@ EDITABLE = (
     ("TRADER_RESTING_TTL_MIN", "cancel a resting order after N minutes (0 = never)", "number"),
     ("TRADER_MIN_ORDER_VALUE", "smallest order value (Rs)", "number"),
     ("TRADER_MIN_REWARD_TO_COST", "gain at target must be N x charges (min 1)", "number"),
+    ("TRADER_BREAKEVEN_R", "move stop to entry after +N R", "number"),
+    ("TRADER_TRAIL_R", "then trail the stop N R below price", "number"),
     ("TRADER_MANUAL_TARGET_PCT", "manual position: sell when up %", "number"),
     ("TRADER_MANUAL_STOP_PCT", "manual position: sell when down %", "number"),
 )
