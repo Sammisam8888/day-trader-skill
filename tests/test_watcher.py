@@ -5,6 +5,8 @@ from pathlib import Path
 from _load import ROOT, load
 
 _w = load("indstocks", "watcher")
+_s = load("indstocks", "session")
+TODAY = _s.now().strftime("%Y-%m-%d")
 
 
 class FakeClient:
@@ -25,13 +27,13 @@ def parent(oid, name, traded=0, child=None, status="PENDING", sid="1",
     return {"id": oid, "name": name, "traded_qty": traded, "status": status,
             "child_order_id": child, "security_id": sid,
             "requested_qty": requested if requested is not None else traded,
-            "remarks": f"auto/{name}/2026-11-04"}
+            "remarks": f"auto/{name}/{TODAY}"}
 
 
 def child(oid, parent_id, status="PENDING", sid="1", qty=None):
     return {"id": oid, "name": "leg", "status": status, "security_id": sid,
             "parent_order_id": parent_id, "requested_qty": qty,
-            "remarks": "auto/x/2026-11-04"}
+            "remarks": f"auto/x/{TODAY}"}
 
 
 class TestProtection(unittest.TestCase):

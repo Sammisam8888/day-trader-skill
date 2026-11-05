@@ -58,6 +58,59 @@ def log(record: dict) -> None:
     print(json.dumps(record, default=str), flush=True)
 
 
+DEAD_AT_BROKER = {"CANCELLED", "REJECTED", "FAILED", "EXPIRED", "ABORTED"}
+
+
+def reconcile_with_broker(client, placements: dict) -> dict:
+    """Drop placements the broker says never happened.
+
+    The log records what was ATTEMPTED. A parent order that the account
+    owner cancelled by hand, or that the exchange rejected, with nothing
+    traded, is not a trade taken and not an open symbol -- yet the log
+    alone would count it as both, consume the day's budget on it, and
+    refuse to re-place the symbol for the rest of the session.
+
+    Reads the order book once. If that fails, the log stands: a
+    conservative error.
+    """
+    try:
+        rows = (client.get("/order-book") or {}).get("data") or []
+    except Exception:                                   # noqa: BLE001
+        return placements
+    if not isinstance(rows, list):
+        return placements
+
+    status_by_id = {}
+    for r in rows:
+        oid = str(r.get("id") or r.get("order_id") or "")
+        if oid:
+            try:
+                traded = int(r.get("traded_qty") or 0)
+            except (TypeError, ValueError):
+                traded = 0
+            status_by_id[oid] = (str(r.get("status", "")).upper(), traded)
+
+    kept_symbols, kept_risk, kept_count = [], Decimal(0), 0
+    for rec in placements.get("records", []):
+        oid = str(rec.get("parent_order_id") or "")
+        status, traded = status_by_id.get(oid, ("", 0))
+        if status in DEAD_AT_BROKER and traded == 0:
+            log({"event": "reconciled_out", "symbol": rec.get("symbol"),
+                 "parent_order_id": oid, "broker_status": status,
+                 "reason": "dead at the broker with nothing traded; "
+                           "not counted as a trade or an open symbol"})
+            continue
+        kept_count += 1
+        if rec.get("symbol"):
+            kept_symbols.append(rec["symbol"])
+        try:
+            kept_risk += Decimal(str(rec.get("risk") or 0))
+        except Exception:                               # noqa: BLE001
+            pass
+    return {"trades_taken": kept_count, "risk_committed": kept_risk,
+            "open_symbols": tuple(kept_symbols)}
+
+
 def todays_placements() -> dict:
     """What THIS runner already placed today, from its own log.
 
@@ -70,7 +123,7 @@ def todays_placements() -> dict:
     the duplicates happened.
     """
     path = STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
-    symbols, risk, placed = [], Decimal(0), 0
+    symbols, risk, placed, records = [], Decimal(0), 0, []
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
@@ -82,6 +135,7 @@ def todays_placements() -> dict:
             if rec.get("event") != "placed":
                 continue
             placed += 1
+            records.append(rec)
             sym = rec.get("symbol")
             if sym:
                 symbols.append(sym)
@@ -92,7 +146,7 @@ def todays_placements() -> dict:
     except OSError:
         pass
     return {"trades_taken": placed, "risk_committed": risk,
-            "open_symbols": tuple(symbols)}
+            "open_symbols": tuple(symbols), "records": records}
 
 
 def halted() -> str | None:
@@ -214,7 +268,7 @@ def run() -> int:
              "limit": str(limits.max_leverage)})
         return 0
 
-    day_log = todays_placements()
+    day_log = reconcile_with_broker(client, todays_placements())
     if day_log["trades_taken"] >= limits.max_trades_per_day:
         log({"event": "halted", "reason": "trade limit reached",
              "taken": day_log["trades_taken"]})
