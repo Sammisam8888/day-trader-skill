@@ -194,5 +194,16 @@ class TestDashboardIsReadOnly(unittest.TestCase):
             text = fh.read()
         self.assertNotIn("do_POST", text)
         self.assertNotIn(".post(", text)
-        self.assertIn('HTTPServer(("127.0.0.1"', text)
-        self.assertNotIn('"0.0.0.0"', text)
+        self.assertIn("refusing to bind the dashboard to all interfaces", text)
+        # Tailscale addresses are 100.64.0.0/10; anything else is refused.
+        self.assertIn('ip.startswith("100.")', text)
+
+    def test_bind_refuses_all_interfaces(self):
+        import os as _os
+        _os.environ["TRADER_DASHBOARD_BIND"] = "0.0.0.0"
+        try:
+            mod = load("indstocks", "dashboard")
+            with self.assertRaises(SystemExit):
+                mod.bind_addresses()
+        finally:
+            _os.environ.pop("TRADER_DASHBOARD_BIND", None)
