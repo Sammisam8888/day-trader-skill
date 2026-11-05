@@ -197,11 +197,11 @@ class TestDashboardOnlyReducesExposure(unittest.TestCase):
                   encoding="utf-8") as fh:
             return fh.read()
 
-    def test_the_only_api_write_is_cancel(self):
+    def test_no_direct_api_writes(self):
         text = self.source()
         posts = [ln for ln in text.splitlines() if ".post(" in ln]
-        self.assertEqual(len(posts), 1, posts)
-        self.assertIn('"/smart/order/cancel"', posts[0])
+        self.assertEqual(posts, [], "writes go through flatten.cancel_order / sell")
+        self.assertIn("from flatten import cancel_order", text)
         for route in ('"/order"', '"/smart/order"', "/order/modify",
                       "/smart/order/modify"):
             self.assertNotIn(route, text, route)

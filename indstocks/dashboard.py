@@ -245,6 +245,7 @@ def dash_log(record: dict) -> None:
 
 def cancel_pair(client, order_id: str) -> str:
     """Cancel an entry and its linked leg. Only ids present in today's book."""
+    from flatten import cancel_order
     rows = (client.get("/order-book") or {}).get("data") or []
     rows = [r for r in rows if isinstance(r, dict)]
     ids = {str(r.get("id") or r.get("order_id")): r for r in rows}
@@ -257,7 +258,7 @@ def cancel_pair(client, order_id: str) -> str:
         if str(ids.get(oid, {}).get("status", "")).upper() in DEAD:
             continue
         try:
-            client.post("/smart/order/cancel", body={"order_id": oid})
+            cancel_order(client, oid)
             done.append(oid)
         except Exception as exc:                        # noqa: BLE001
             failed.append(f"{oid}: {str(exc)[:80]}")

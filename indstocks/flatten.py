@@ -100,6 +100,15 @@ def open_intraday(client) -> list:
     return out
 
 
+def cancel_order(client, order_id: str, segment: str = "EQUITY") -> None:
+    """The one place a cancel is sent. `segment` is MANDATORY on
+    /smart/order/cancel: without it the broker answers 400 "Invalid request
+    payload", which on 2026-11-05 left 16 orders resting after three fills
+    while the fill monitor retried every five seconds."""
+    client.post("/smart/order/cancel", body={"order_id": str(order_id),
+                                             "segment": segment})
+
+
 def cancel_resting_legs(client, security_id: str) -> list:
     """Cancel OCO/GTT legs holding these shares, or the sell is rejected."""
     cancelled = []
@@ -120,7 +129,7 @@ def cancel_resting_legs(client, security_id: str) -> list:
         if not oid:
             continue
         try:
-            client.post("/smart/order/cancel", body={"order_id": oid})
+            cancel_order(client, oid)
             cancelled.append(oid)
         except Exception as exc:                        # noqa: BLE001
             log({"event": "cancel_failed", "order_id": oid,
@@ -158,7 +167,7 @@ def cancel_all_unfilled(client) -> dict:
         if not oid:
             continue
         try:
-            client.post("/smart/order/cancel", body={"order_id": oid})
+            cancel_order(client, oid)
             cancelled.append(oid)
         except Exception as exc:                        # noqa: BLE001
             failed.append({"order_id": oid, "reason": str(exc)[:160]})
