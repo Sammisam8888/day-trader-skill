@@ -304,10 +304,30 @@ details summary{cursor:pointer;color:var(--acc);font-size:13px;padding:6px 0}
 .flash.err{background:#3d1d1d;color:var(--bad)}
 pre{background:var(--bg);padding:8px;font-size:11px;overflow:auto;border-radius:6px;margin:0}
 .nav{position:fixed;bottom:0;left:0;right:0;background:#0f1218;border-top:1px solid var(--line);display:flex;justify-content:space-around;padding:10px 0 14px;font-size:12px;color:var(--mut)}
-.nav a{color:inherit;text-decoration:none;text-align:center}.nav a span{display:block;font-size:18px}
+.nav a{color:inherit;text-decoration:none;text-align:center;padding:0 10px}.nav a.on{color:var(--acc)}.nav a span{display:block;font-size:18px}
 @media(min-width:720px){.wrap,.top{max-width:720px;margin:0 auto}}
 """
 
+
+TABS_JS = """
+(function(){
+  var q=new URLSearchParams(location.search), tab=q.get('tab');
+  try{ tab=tab||localStorage.getItem('tab'); }catch(e){}
+  if(!tab) tab='pos';
+  function show(t){
+    document.querySelectorAll('[data-pane]').forEach(function(s){ s.style.display = s.dataset.pane===t ? '' : 'none'; });
+    document.querySelectorAll('[data-tab]').forEach(function(a){ a.classList.toggle('on', a.dataset.tab===t); });
+    try{ localStorage.setItem('tab', t); }catch(e){}
+    var u=new URL(location); u.searchParams.set('tab', t); history.replaceState(null,'',u);
+    window.scrollTo(0,0);
+  }
+  document.querySelectorAll('[data-tab]').forEach(function(a){
+    a.addEventListener('click', function(ev){ ev.preventDefault(); show(a.dataset.tab); });
+  });
+  show(tab);
+  setTimeout(function(){ location.reload(); }, 60000);
+})();
+"""
 
 EDITABLE = (
     ("TRADER_MAX_LOSS", "max loss per trade (Rs)", "number"),
@@ -354,19 +374,22 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
          f"<title>trader</title><style>{CSS}</style>",
          f"<div class=top><div class=head><h1>autotrader</h1><div class=muted style='font-size:13px'>"
          f"{e(now.strftime('%a %d %b %H:%M'))}</div></div>"
-         f"<div class=tabs><a class=on href='#pos'>Positions</a><a href='#orders'>Orders</a>"
-         f"<a href='#decisions'>Decisions</a><a href='#controls'>Controls</a></div>"
+         f"<div class=tabs><a data-tab=pos href='?tab=pos&day={e(day)}'>Positions</a>"
+         f"<a data-tab=orders href='?tab=orders&day={e(day)}'>Orders</a>"
+         f"<a data-tab=decisions href='?tab=decisions&day={e(day)}'>Decisions</a>"
+         f"<a data-tab=controls href='?tab=controls&day={e(day)}'>Controls</a></div>"
          f"<div class=ticker><b>{e(phase)}</b> &middot; {state} &middot; cash <b>{money(cash)}</b>"
          f" &middot; max {e(lim.get('TRADER_MAX_CONCURRENT', '2'))} positions &middot; "
          f"leverage cap {e(lim.get('TRADER_MAX_LEVERAGE', '1.0'))}x</div></div><div class=wrap>"]
     if flash:
         p.append(f"<div class='flash{' err' if flash_err else ''}'>{e(flash)}</div>")
 
+    p.append("<section data-pane=pos>")
     # ---- P&L card ----
     rp = Decimal(str(f.get("realized_pnl") or 0)) if "error" not in f else Decimal(0)
     up = Decimal(str(f.get("unrealized_pnl") or 0)) if "error" not in f else Decimal(0)
     tot = rp + up
-    p.append(f"<div class=card id=pos><div class=pnl>Today's Intraday P&amp;L"
+    p.append(f"<div class=card><div class=pnl>Today's Intraday P&amp;L"
              f"<div class='v {'ok' if tot >= 0 else 'bad'}'>{'' if tot < 0 else '+'}&#8377;{money(tot)}</div>"
              f"<div class=meta>realised <b class='{'ok' if rp >= 0 else 'bad'}'>{money(rp)}</b> &middot; "
              f"unrealised <b class='{'ok' if up >= 0 else 'bad'}'>{money(up)}</b></div></div></div>")
@@ -406,16 +429,17 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
                      f"<b>{e(lim.get('TRADER_MANUAL_STOP_PCT', '0.5'))}%</b> from {money(avg)}, "
                      f"and the 15:05 flatten closes it regardless.</div>")
         p.append(f"<div class=btns><form method=post action=/exit onsubmit=\"return confirm('Sell {e(name)} x{qty} at market now?')\">"
-                 f"<input type=hidden name=security_id value='{e(sid)}'><input type=hidden name=day value='{e(day)}'>"
+                 f"<input type=hidden name=security_id value='{e(sid)}'><input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=pos>"
                  f"<button class=btn-x>&#10162; Insta Exit</button></form>"
-                 f"<a class=btn href='#orders'>Manage</a></div></div>")
+                 f"<a class=btn data-tab=orders href='?tab=orders&day={e(day)}'>Manage</a></div></div>")
     if pos and cash:
         lev = held_value / cash
         p.append(f"<div class=meta style='margin:-4px 0 8px'>Held &#8377;{money(held_value)} against cash "
                  f"&#8377;{money(cash)} = <b class='{'bad' if lev > Decimal(lim.get('TRADER_MAX_LEVERAGE', '1.0') or 1) else 'ok'}'>{lev:.2f}x</b> leverage</div>")
 
+    p.append("</section><section data-pane=orders>")
     # ---- orders ----
-    p.append(f"<h2 id=orders>Open orders ({len(live_pairs)})</h2>")
+    p.append(f"<h2>Open orders ({len(live_pairs)})</h2>")
     if not live_pairs:
         p.append("<div class='card muted'>No resting orders. The scanner runs every 10 minutes 09:30-14:30.</div>")
     for entry, leg in live_pairs:
@@ -462,7 +486,7 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
         elif not ours:
             p.append("<div class=why>Placed outside the autotrader (no decision record).</div>")
         p.append(f"<div class=btns><form method=post action=/cancel onsubmit=\"return confirm('Cancel {e(name)} entry AND its SL/Target leg?')\">"
-                 f"<input type=hidden name=order_id value='{e(oid)}'><input type=hidden name=day value='{e(day)}'>"
+                 f"<input type=hidden name=order_id value='{e(oid)}'><input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=orders>"
                  f"<button class=btn-x>&#10006; Cancel both</button></form></div></div>")
     if dead_pairs:
         p.append(f"<details><summary>{len(dead_pairs)} cancelled / rejected / done today</summary><div class=card>")
@@ -472,8 +496,9 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
                      f"<div class=r><span class='pill blocked'>{e(entry.get('status'))}</span></div></div>")
         p.append("</div></details>")
 
+    p.append("</section><section data-pane=decisions>")
     # ---- decisions ----
-    p.append(f"<h2 id=decisions>Decisions &middot; {e(day)} ({len(log)})</h2><div class=card>")
+    p.append(f"<h2>Decisions &middot; {e(day)} ({len(log)})</h2><div class=card>")
     if not log:
         p.append("<div class=muted>no log for this day</div>")
     shown = 0
@@ -503,8 +528,9 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
             break
     p.append("</div>")
 
+    p.append("</section><section data-pane=controls>")
     # ---- controls ----
-    p.append("<h2 id=controls>Controls</h2><div class=card>")
+    p.append("<h2>Controls</h2><div class=card>")
     if halted:
         reason = ""
         try:
@@ -513,11 +539,11 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
             pass
         p.append(f"<div class=bad><b>Halted</b>: {e(reason or 'manually')}. No new orders until resumed. "
                  f"Resting orders stay at the exchange; cancel them above if you want them gone.</div>"
-                 f"<form method=post action=/resume><button class=btn-resume>Resume</button></form>")
+                 f"<form method=post action=/resume><input type=hidden name=tab value=controls><button class=btn-resume>Resume</button></form>")
     else:
-        p.append("<form method=post action=/halt><input type=text name=reason placeholder='reason (optional)'>"
+        p.append("<form method=post action=/halt><input type=hidden name=tab value=controls><input type=text name=reason placeholder='reason (optional)'>"
                  "<button class=btn-halt style='margin-top:10px'>Halt &mdash; stop placing new orders</button></form>")
-    p.append("<details><summary>Risk limits</summary><form method=post action=/limits>")
+    p.append("<details><summary>Risk limits</summary><form method=post action=/limits><input type=hidden name=tab value=controls>")
     for key, label, typ in EDITABLE:
         p.append(f"<label>{e(label)}</label><input type={typ} step=any name={e(key)} "
                  f"value='{e(lim.get(key, ''))}' placeholder='default'>")
@@ -530,9 +556,13 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
 
     p.append(f"<h2>Timers</h2><div class=card><pre>{e(timers())}</pre></div>")
     p.append("<div class='sub' style='margin:20px 0'>Reachable only over Tailscale or localhost. "
-             "Cancel and Exit only ever reduce exposure; nothing here can open a position.</div></div>"
-             "<div class=nav><a href='#pos'><span>&#8377;</span>Positions</a><a href='#orders'><span>&#9776;</span>Orders</a>"
-             "<a href='#decisions'><span>&#9881;</span>Decisions</a><a href='#controls'><span>&#9211;</span>Controls</a></div>")
+             "Cancel and Exit only ever reduce exposure; nothing here can open a position.</div>"
+             "</section></div>"
+             f"<div class=nav><a data-tab=pos href='?tab=pos&day={e(day)}'><span>&#8377;</span>Positions</a>"
+             f"<a data-tab=orders href='?tab=orders&day={e(day)}'><span>&#9776;</span>Orders</a>"
+             f"<a data-tab=decisions href='?tab=decisions&day={e(day)}'><span>&#9881;</span>Decisions</a>"
+             f"<a data-tab=controls href='?tab=controls&day={e(day)}'><span>&#9211;</span>Controls</a></div>"
+             f"<script>{TABS_JS}</script>")
     return "".join(p)
 
 
@@ -579,9 +609,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _day(self) -> str:
+    def _query(self) -> dict:
         from urllib.parse import parse_qs, urlparse
-        q = parse_qs(urlparse(self.path).query)
+        return parse_qs(urlparse(self.path).query)
+
+    def _day(self, form: dict | None = None) -> str:
+        q = form or self._query()
         day = (q.get("day") or [sess.now().strftime("%Y-%m-%d")])[0]
         try:
             datetime.strptime(day, "%Y-%m-%d")
@@ -590,8 +623,11 @@ class Handler(BaseHTTPRequestHandler):
             return sess.now().strftime("%Y-%m-%d")
 
     def do_GET(self):                                   # noqa: N802
+        q = self._query()
+        flash = (q.get("flash") or [""])[0]
+        err = (q.get("err") or ["0"])[0] == "1"
         try:
-            self._send(render(self._day()).encode("utf-8"))
+            self._send(render(self._day(), flash, err).encode("utf-8"))
         except Exception as exc:                        # noqa: BLE001
             self._send(f"<pre>dashboard error: {e(exc)}</pre>".encode(), 500)
 
@@ -635,10 +671,15 @@ class Handler(BaseHTTPRequestHandler):
                 flash, err = "unknown action", True
         except Exception as exc:                        # noqa: BLE001
             flash, err = f"failed: {exc}", True
-        try:
-            self._send(render(self._day(), flash, err).encode("utf-8"))
-        except Exception as exc:                        # noqa: BLE001
-            self._send(f"<pre>dashboard error: {e(exc)}</pre>".encode(), 500)
+        from urllib.parse import urlencode
+        tab = (form.get("tab") or ["pos"])[0]
+        if tab not in ("pos", "orders", "decisions", "controls"):
+            tab = "pos"
+        q = urlencode({"tab": tab, "day": self._day(form), "flash": flash[:300], "err": "1" if err else "0"})
+        self.send_response(303)
+        self.send_header("Location", "/?" + q)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def log_message(self, *a):                          # quiet
         pass
