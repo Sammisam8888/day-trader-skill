@@ -20,7 +20,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
       - name: Dump state
         run: |
-          ssh -i ~/.ssh/id_ed25519 ubuntu@13.127.164.72 bash -s <<'REMOTE'
+          ssh -o BatchMode=yes "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'REMOTE'
           set +e
           echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer fillmonitor dashboard
           echo "== timers"; systemctl list-timers --no-pager --no-legend auto.timer flatten.timer watch.timer
