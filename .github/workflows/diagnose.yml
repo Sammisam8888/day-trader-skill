@@ -1,0 +1,34 @@
+name: diagnose
+
+# Read-only look at the box: today's decision log, service and timer state.
+# Run by hand from the Actions tab. Prints nothing secret: the log holds
+# symbols, prices and reasons, never credentials.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write deploy key and pinned host key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Dump state
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ubuntu@13.127.164.72 bash -s <<'REMOTE'
+          set +e
+          echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer fillmonitor dashboard
+          echo "== timers"; systemctl list-timers --no-pager --no-legend auto.timer flatten.timer watch.timer
+          echo "== halt"; cat /etc/indstocks.halt 2>/dev/null || echo "(not halted)"
+          echo "== env (TRADER_*)"; sudo grep '^TRADER_' /etc/indstocks.env
+          echo "== claude cli"; sudo -u ubuntu -H bash -lc 'command -v claude; claude --version' 2>&1
+          D=$(TZ=Asia/Kolkata date +%F)
+          echo "== log $D (last 120)"; sudo tail -n 120 /var/lib/indstocks/auto/$D.jsonl | cut -c1-400
+          echo "== auto.service last run"; sudo journalctl -u auto.service -n 40 --no-pager | cut -c1-300
+          echo "== fillmonitor"; sudo journalctl -u fillmonitor -n 15 --no-pager | cut -c1-300
+          REMOTE
