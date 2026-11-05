@@ -1,0 +1,235 @@
+"""
+Fill monitor: the part that reacts in seconds, not every ten minutes.
+
+The autotrader rests many trigger orders across the watchlist because an
+unfilled order costs nothing. What must not happen is all of them firing on
+the same index move. So this loop polls the broker every few seconds during
+the session and does three mechanical things, none of them a judgement call:
+
+  1. CANCEL ON FILL. The moment the number of open intraday positions
+     (bot-filled or bought by hand -- capital is capital) reaches
+     max_concurrent, every other resting auto/ entry is cancelled, parent
+     and leg. The race window is one poll interval; intraday margin absorbs
+     a third fill landing inside it, and the flatten closes it.
+
+  2. PROTECT MANUAL POSITIONS. A position the owner opened by hand has no
+     stop or target. Each poll compares its LTP to its average price: past
+     TRADER_MANUAL_TARGET_PCT it is sold at market, past
+     -TRADER_MANUAL_STOP_PCT it is sold at market. Bot positions are left to
+     their own OCO legs.
+
+  3. NEAR CLOSE. From LAST_ENTRY onward no new fills are wanted: every
+     resting entry is cancelled so nothing opens into the flatten.
+
+Standard library only. Polling, not the order-update WebSocket: that needs
+a third-party library and a reconnect dance, and five seconds is fast
+enough for a cancel. It can be swapped in later without changing the
+decisions here.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import session as sess                                 # noqa: E402
+from client import Client                               # noqa: E402
+from flatten import cancel_resting_legs, open_intraday, sell  # noqa: E402
+
+STATE_DIR = Path(os.environ.get("TRADER_STATE_DIR", "/var/lib/indstocks/auto"))
+HALT_FILE = Path(os.environ.get("TRADER_KILL_SWITCH", "/etc/indstocks.halt"))
+POLL_S = float(os.environ.get("TRADER_FILL_POLL_S", "5"))
+MAX_CONCURRENT = int(os.environ.get("TRADER_MAX_CONCURRENT", "2"))
+MANUAL_TARGET_PCT = Decimal(os.environ.get("TRADER_MANUAL_TARGET_PCT", "1.0"))
+MANUAL_STOP_PCT = Decimal(os.environ.get("TRADER_MANUAL_STOP_PCT", "0.5"))
+PENDING = ("PENDING", "SL-PENDING", "O-PENDING", "QUEUED", "CREATED",
+           "INITIATED", "MODIFIED", "TRIGGER PENDING")
+
+
+def log(record: dict) -> None:
+    record = {"ts": sess.now().isoformat(timespec="seconds"), "job": "fill",
+              **record}
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl", "a",
+              encoding="utf-8") as fh:
+        fh.write(json.dumps(record, default=str) + "\n")
+    print(json.dumps(record, default=str), flush=True)
+
+
+def order_book(client) -> list:
+    rows = (client.get("/order-book") or {}).get("data") or []
+    return rows if isinstance(rows, list) else []
+
+
+def resting_entries(rows: list) -> list:
+    """Our auto/ BUY parents that have not traded and are still pending."""
+    out = []
+    for r in rows:
+        if not str(r.get("remarks", "")).startswith("auto/"):
+            continue
+        if r.get("parent_order_id"):
+            continue
+        if str(r.get("txn_type", "")).upper() != "BUY":
+            continue
+        if str(r.get("status", "")).upper() not in PENDING:
+            continue
+        try:
+            if int(r.get("traded_qty") or 0) > 0:
+                continue
+        except (TypeError, ValueError):
+            pass
+        out.append(r)
+    return out
+
+
+def protected_ids(rows: list) -> set:
+    """security_ids that have a pending SELL (an OCO leg or any stop)."""
+    out = set()
+    for r in rows:
+        if str(r.get("txn_type", "")).upper() != "SELL":
+            continue
+        if str(r.get("status", "")).upper() in PENDING:
+            out.add(str(r.get("security_id")))
+    return out
+
+
+def ltp_for(client, security_ids: list) -> dict:
+    out = {}
+    codes = [f"NSE_{s}" for s in security_ids]
+    for i in range(0, len(codes), 5):
+        batch = codes[i:i + 5]
+        try:
+            data = (client.get("/market/quotes/ltp",
+                               params={"scrip-codes": ",".join(batch)})
+                    or {}).get("data") or {}
+        except Exception:                               # noqa: BLE001
+            continue
+        for code, blk in data.items():
+            try:
+                out[code.split("_", 1)[1]] = Decimal(str((blk or {}).get("live_price")))
+            except Exception:                           # noqa: BLE001
+                pass
+    return out
+
+
+def cancel_entry(client, row: dict) -> bool:
+    """Cancel a resting parent. The linked leg never activates without it,
+    but it is cancelled too so the book shows nothing dangling."""
+    oid = row.get("id") or row.get("order_id")
+    try:
+        client.post("/smart/order/cancel", body={"order_id": oid})
+    except Exception as exc:                            # noqa: BLE001
+        log({"event": "cancel_failed", "order_id": oid, "reason": str(exc)[:200]})
+        return False
+    return True
+
+
+def cancel_all_entries(client, rows: list, reason: str) -> int:
+    n = 0
+    for r in resting_entries(rows):
+        if cancel_entry(client, r):
+            n += 1
+            log({"event": "cancelled_on_fill", "name": r.get("name"),
+                 "order_id": r.get("id") or r.get("order_id"), "reason": reason})
+        time.sleep(0.2)
+    return n
+
+
+def manual_decision(avg: Decimal, ltp: Decimal) -> str | None:
+    if avg <= 0 or ltp <= 0:
+        return None
+    move = (ltp - avg) / avg * 100
+    if move >= MANUAL_TARGET_PCT:
+        return f"up {move:.2f}% >= target {MANUAL_TARGET_PCT}%"
+    if move <= -MANUAL_STOP_PCT:
+        return f"down {-move:.2f}% >= stop {MANUAL_STOP_PCT}%"
+    return None
+
+
+def tick(client, now: datetime) -> dict:
+    """One poll. Returns what it did, for tests and the log."""
+    session = sess.session_for(now)
+    if session is None or now < session.open or now >= session.close:
+        return {"idle": True}
+
+    rows = order_book(client)
+    positions = open_intraday(client)
+    held = {p["security_id"]: p for p in positions}
+    out = {"held": len(held), "resting": len(resting_entries(rows)), "cancelled": 0, "sold": 0}
+
+    # 3. nothing new should open into the flatten
+    if not session.accepts_new_entries(now) and out["resting"]:
+        out["cancelled"] = cancel_all_entries(client, rows, "past last-entry time")
+        return out
+
+    # 1. cancel on fill
+    if len(held) >= MAX_CONCURRENT and out["resting"]:
+        out["cancelled"] = cancel_all_entries(
+            client, rows, f"{len(held)} position(s) open, cap {MAX_CONCURRENT}")
+
+    # 2. protect positions that have no sell order of their own
+    protected = protected_ids(rows)
+    bare = [p for p in positions if p["security_id"] not in protected]
+    if bare:
+        ltps = ltp_for(client, [p["security_id"] for p in bare])
+        for p in bare:
+            raw = p.get("avg_price")
+            try:
+                avg = Decimal(str(raw))
+            except Exception:                           # noqa: BLE001
+                continue
+            ltp = ltps.get(p["security_id"])
+            if ltp is None:
+                continue
+            why = manual_decision(avg, ltp)
+            if not why:
+                continue
+            cancel_resting_legs(client, p["security_id"])
+            try:
+                resp = sell(client, p)
+                oid = ((resp or {}).get("data") or {}).get("order_id")
+                log({"event": "sold", "name": p["name"], "qty": p["qty"],
+                     "avg": str(avg), "ltp": str(ltp), "order_id": oid,
+                     "reason": f"manual position {why}"})
+                out["sold"] += 1
+            except Exception as exc:                    # noqa: BLE001
+                log({"event": "sell_failed", "name": p["name"],
+                     "reason": str(exc)[:200]})
+    return out
+
+
+def run() -> int:
+    client = Client()
+    log({"event": "fillmonitor_start", "poll_s": POLL_S,
+         "max_concurrent": MAX_CONCURRENT})
+    last = None
+    while True:
+        now = sess.now()
+        if HALT_FILE.exists():
+            time.sleep(POLL_S)
+            continue
+        try:
+            got = tick(client, now)
+        except Exception as exc:                        # noqa: BLE001
+            log({"event": "error", "reason": str(exc)[:200]})
+            time.sleep(POLL_S * 2)
+            continue
+        if got.get("idle"):
+            time.sleep(30)
+            continue
+        key = (got.get("held"), got.get("resting"))
+        if key != last or got.get("cancelled") or got.get("sold"):
+            log({"event": "state", **got})
+            last = key
+        time.sleep(POLL_S)
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())

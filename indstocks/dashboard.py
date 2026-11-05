@@ -8,9 +8,13 @@ security model:
     ssh -L 8080:127.0.0.1:8080 -i ~/.ssh/lightsail.pem ubuntu@13.127.164.72
     # then open http://localhost:8080 on your laptop
 
-Shows: funds and P&L, open positions, resting orders, today's decisions
-with the reason for each, the limits in force, and the timers. It cannot
-place, cancel or modify anything: there is no POST handler.
+Shows: funds and P&L, open positions, resting orders (each entry paired
+with its OCO stop/target leg and the reason it was placed), today's
+decisions, the limits in force, and the timers.
+
+Writes: halt / resume / limits, CANCEL (an entry and its linked leg
+together) and EXIT (market-sell an open intraday position). Both of the
+order routes only ever reduce exposure; there is no route that opens one.
 """
 
 from __future__ import annotations
@@ -129,48 +133,179 @@ def live(client) -> dict:
     try:
         d = (client.get("/order-book") or {}).get("data") or []
         out["orders"] = [r for r in (d if isinstance(d, list) else [])
-                         if "auto/" in str(r.get("remarks", ""))
-                         or "flat/" in str(r.get("remarks", ""))]
+                         if isinstance(r, dict)]
     except Exception as exc:                            # noqa: BLE001
         out["orders"] = [{"error": str(exc)[:120]}]
     return out
 
 
+def ltps(client, security_ids) -> dict:
+    out = {}
+    codes = [f"NSE_{s}" for s in dict.fromkeys(str(s) for s in security_ids if s)]
+    for i in range(0, len(codes), 5):
+        try:
+            data = (client.get("/market/quotes/ltp",
+                               params={"scrip-codes": ",".join(codes[i:i + 5])})
+                    or {}).get("data") or {}
+        except Exception:                               # noqa: BLE001
+            continue
+        for code, blk in data.items():
+            try:
+                out[code.split("_", 1)[1]] = Decimal(str((blk or {}).get("live_price")))
+            except Exception:                           # noqa: BLE001
+                pass
+    return out
+
+
+def placed_records(log: list) -> dict:
+    """parent_order_id -> the autotrader's placement record (the why)."""
+    return {str(r.get("parent_order_id")): r for r in log
+            if r.get("event") == "placed" and r.get("parent_order_id")}
+
+
+def pair_orders(rows: list) -> list:
+    """[(entry_row, leg_row_or_None)] for every parent in the book."""
+    by_parent = {}
+    for r in rows:
+        pid = r.get("parent_order_id")
+        if pid:
+            by_parent.setdefault(str(pid), r)
+    out = []
+    for r in rows:
+        if r.get("parent_order_id"):
+            continue
+        out.append((r, by_parent.get(str(r.get("id") or r.get("order_id")))))
+    return out
+
+
+DEAD = ("CANCELLED", "REJECTED", "FAILED", "EXPIRED", "ABORTED")
+
+
+def status_of(entry: dict, leg) -> tuple:
+    """(css class, label) the way the broker app words it."""
+    st = str(entry.get("status", "")).upper()
+    traded = int(entry.get("traded_qty") or 0)
+    if st in DEAD:
+        return "dead", st.title()
+    if traded >= int(entry.get("requested_qty") or 0) and traded > 0:
+        return "fill", "Filled - SL / Target live" if leg else "Filled"
+    if traded > 0:
+        return "fill", f"Partly filled {traded}"
+    if str(entry.get("order_type", "")).upper() in ("TRIGGER", "GTT", "GTT_LIMIT", "SL", "SL-M") \
+            or entry.get("trigger_price"):
+        return "wait", "Waiting for Trigger Price"
+    return "wait", st.title() or "Pending"
+
+
+def dash_log(record: dict) -> None:
+    rec = {"ts": sess.now().isoformat(timespec="seconds"), "job": "dash", **record}
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
+    except OSError:
+        pass
+
+
+def cancel_pair(client, order_id: str) -> str:
+    """Cancel an entry and its linked leg. Only ids present in today's book."""
+    rows = (client.get("/order-book") or {}).get("data") or []
+    rows = [r for r in rows if isinstance(r, dict)]
+    ids = {str(r.get("id") or r.get("order_id")): r for r in rows}
+    if order_id not in ids:
+        return f"order {order_id} is not in today's order book"
+    targets = [order_id] + [str(r.get("id") or r.get("order_id")) for r in rows
+                            if str(r.get("parent_order_id") or "") == order_id]
+    done, failed = [], []
+    for oid in targets:
+        if str(ids.get(oid, {}).get("status", "")).upper() in DEAD:
+            continue
+        try:
+            client.post("/smart/order/cancel", body={"order_id": oid})
+            done.append(oid)
+        except Exception as exc:                        # noqa: BLE001
+            failed.append(f"{oid}: {str(exc)[:80]}")
+    dash_log({"event": "cancelled_from_dashboard", "name": ids[order_id].get("name"),
+              "order_ids": done, "failed": failed})
+    if failed:
+        return "cancelled " + ", ".join(done) + "; FAILED " + "; ".join(failed)
+    return f"Cancelled {ids[order_id].get('name')}: entry and its SL/Target leg ({len(done)} orders)."
+
+
+def exit_position(client, security_id: str) -> str:
+    from flatten import cancel_resting_legs, open_intraday, sell
+    pos = [p for p in open_intraday(client) if p["security_id"] == security_id]
+    if not pos:
+        return f"no open intraday position with security_id {security_id}"
+    p = pos[0]
+    legs = cancel_resting_legs(client, security_id)
+    if legs:
+        import time
+        time.sleep(1)
+    resp = sell(client, p)
+    oid = ((resp or {}).get("data") or {}).get("order_id")
+    dash_log({"event": "sold", "name": p["name"], "qty": p["qty"], "order_id": oid,
+              "reason": "exit from dashboard", "cancelled_legs": legs})
+    return f"Exit sent for {p['name']} x{p['qty']} at market (order {oid})."
+
+
 # ------------------------------------------------------------------ page
 
 CSS = """
-:root{color-scheme:dark;--bg:#0f1115;--card:#171a21;--line:#262b35;--fg:#e6e8ec;--mut:#8b93a1;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff}
+:root{color-scheme:dark;--bg:#0b0d12;--card:#151921;--line:#232833;--fg:#f2f3f5;--mut:#8b93a1;--ok:#22c55e;--bad:#ef4444;--warn:#f59e0b;--acc:#58a6ff;--orange:#e8833a}
 *{box-sizing:border-box}
-body{font:15px/1.45 -apple-system,system-ui,sans-serif;margin:0;padding:12px;color:var(--fg);background:var(--bg)}
-h1{font-size:18px;margin:0 0 2px}h2{font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);margin:22px 0 8px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.kv .k{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
-.kv .v{font-size:17px;font-weight:600;margin-top:2px}
+body{font:15px/1.4 -apple-system,system-ui,Inter,sans-serif;margin:0;padding:0 0 70px;color:var(--fg);background:var(--bg)}
+.wrap{padding:12px}
+h1{font-size:20px;margin:0}
+h2{font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);margin:22px 0 8px}
+.top{position:sticky;top:0;background:var(--bg);z-index:5;padding:12px 12px 0;border-bottom:1px solid var(--line)}
+.tabs{display:flex;gap:18px;overflow-x:auto;font-size:17px;font-weight:600;color:var(--mut);padding:10px 0 0}
+.tabs a{color:inherit;text-decoration:none;padding-bottom:8px;white-space:nowrap}
+.tabs a.on{color:var(--fg);border-bottom:2px solid var(--fg)}
+.ticker{font-size:13px;color:var(--mut);padding:8px 0}
+.ticker b{color:var(--fg)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.pnl{font-size:15px;color:var(--mut)}.pnl .v{font-size:26px;font-weight:700;margin-top:4px}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.muted{color:var(--mut)}
-.row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
-.row:last-child{border-bottom:0}
-.row .l{flex:1;min-width:0}.row .r{text-align:right;white-space:nowrap}
-.sym{font-weight:700;font-size:15px}
-.sub{font-size:12px;color:var(--mut);margin-top:2px;word-break:break-word}
+.head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.logo{width:40px;height:40px;border-radius:50%;background:#fff;color:#111;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:14px;flex:none}
+.nm{font-weight:700;font-size:17px}.tk{font-size:13px;color:var(--mut)}
+.badge{display:inline-block;border:1px solid;border-radius:5px;font-size:12px;font-weight:700;padding:0 6px;line-height:20px}
+.B{color:var(--ok);border-color:var(--ok)}.S{color:#60a5fa;border-color:#60a5fa}
+.st{display:inline-block;border-radius:8px;padding:4px 10px;font-size:13px;font-weight:600;white-space:nowrap}
+.st.wait{background:#3a2414;color:var(--orange)}.st.arm{background:#3a2414;color:var(--orange)}
+.st.fill{background:#14301f;color:var(--ok)}.st.dead{background:#3a1a1a;color:var(--bad)}
+.meta{font-size:14px;color:var(--mut);margin-top:4px}.meta b{color:var(--fg);font-weight:500}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:14px}
+.g3 .k{font-size:13px;color:var(--mut)}.g3 .v{font-size:18px;font-weight:700;margin-top:2px}
+.g3 div:nth-child(2){text-align:center}.g3 div:nth-child(3){text-align:right}
+.why{margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:10px;font-size:13px;color:var(--mut);line-height:1.5}
+.why b{color:var(--fg)}
+.why .row2{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed var(--line)}
+.why .row2:last-child{border-bottom:0}
+.btns{display:flex;gap:10px;margin-top:14px}
+.btns>*{flex:1;margin:0}
+button,.btn{white-space:nowrap;padding:12px 10px;border:1px solid var(--line);border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;width:100%;background:var(--card);color:var(--fg);text-align:center;text-decoration:none;display:block}
+.btn-x{color:var(--bad);border-color:#4a2a2a}.btn-save{background:var(--acc);color:#000;border:0}.btn-halt{background:var(--bad);color:#fff;border:0}.btn-resume{background:var(--ok);color:#000;border:0}
+.leg{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .pill{display:inline-block;padding:2px 9px;border-radius:12px;font-size:11px;font-weight:600;background:#262b35;color:var(--fg)}
-.pill.placed,.pill.sold,.pill.ok{background:#1b3a26;color:var(--ok)}
-.pill.blocked,.pill.ALERT,.pill.rejected_locally,.pill.halted{background:#3d1d1d;color:var(--bad)}
-.pill.would_place,.pill.run_start,.pill.run_end,.pill.reconciled_out{background:#1d2d44;color:var(--acc)}
-.pill.unsized,.pill.skip,.pill.no_data{background:#2d2a1a;color:var(--warn)}
-.status{font-size:13px;color:var(--mut);margin-bottom:12px}
-.status b{color:var(--fg)}
+.pill.placed,.pill.sold,.pill.ok,.pill.cancelled_on_fill{background:#1b3a26;color:var(--ok)}
+.pill.blocked,.pill.ALERT,.pill.rejected_locally,.pill.halted,.pill.sell_failed,.pill.cancel_failed,.pill.error{background:#3d1d1d;color:var(--bad)}
+.pill.would_place,.pill.run_start,.pill.run_end,.pill.reconciled_out,.pill.state,.pill.sizing{background:#1d2d44;color:var(--acc)}
+.pill.unsized,.pill.skip,.pill.no_data,.pill.stop{background:#2d2a1a;color:var(--warn)}
+.row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}.row .l{flex:1;min-width:0}.row .r{text-align:right;white-space:nowrap}
+.sym{font-weight:700}.sub{font-size:12px;color:var(--mut);margin-top:2px;word-break:break-word}
 form{margin:0}label{display:block;font-size:12px;color:var(--mut);margin:8px 0 3px}
 input[type=number],input[type=text]{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:16px}
-button{padding:12px 16px;border:0;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;width:100%;margin-top:10px}
-.btn-save{background:var(--acc);color:#000}.btn-halt{background:var(--bad);color:#fff}.btn-resume{background:var(--ok);color:#000}
-.toggle{display:flex;align-items:center;gap:10px;padding:10px 0}
-.toggle input{width:22px;height:22px}
+.toggle{display:flex;align-items:center;gap:10px;padding:10px 0}.toggle input{width:22px;height:22px}
 details summary{cursor:pointer;color:var(--acc);font-size:13px;padding:6px 0}
 .flash{background:#1b3a26;color:var(--ok);padding:10px;border-radius:8px;margin-bottom:10px;font-size:14px}
 .flash.err{background:#3d1d1d;color:var(--bad)}
 pre{background:var(--bg);padding:8px;font-size:11px;overflow:auto;border-radius:6px;margin:0}
-@media(min-width:720px){body{max-width:900px;margin:0 auto;padding:20px}.grid{grid-template-columns:repeat(4,1fr)}}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#0f1218;border-top:1px solid var(--line);display:flex;justify-content:space-around;padding:10px 0 14px;font-size:12px;color:var(--mut)}
+.nav a{color:inherit;text-decoration:none;text-align:center}.nav a span{display:block;font-size:18px}
+@media(min-width:720px){.wrap,.top{max-width:720px;margin:0 auto}}
 """
 
 
@@ -181,6 +316,9 @@ EDITABLE = (
     ("TRADER_MAX_CONCURRENT", "max concurrent positions", "number"),
     ("TRADER_MAX_LEVERAGE", "max leverage (1.0 = cash only)", "number"),
     ("TRADER_STOP_BAND_PCT", "stop band % (room for a gap to fill)", "number"),
+    ("TRADER_MAX_RESTING", "max resting orders at once", "number"),
+    ("TRADER_MANUAL_TARGET_PCT", "manual position: sell when up %", "number"),
+    ("TRADER_MANUAL_STOP_PCT", "manual position: sell when down %", "number"),
 )
 
 
@@ -195,36 +333,178 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     phase = session.phase(now) if session else "not a trading day"
     halted = HALT_FILE.exists()
     live_flag = lim.get("TRADER_LIVE", "false").lower() in ("1", "true", "yes")
+    whys = placed_records(log)
 
-    state = (f"<span class=bad>HALTED</span>" if halted else
-             (f"<span class=ok>LIVE</span>" if live_flag else
-              f"<span class=warn>SHADOW</span>"))
+    pos = [r for r in data["positions"] if isinstance(r, dict) and "error" not in r
+           and int(r.get("net_qty", r.get("quantity", r.get("qty", 0))) or 0) != 0]
+    pairs = pair_orders([r for r in data["orders"] if "error" not in r])
+    live_pairs = [(a, b) for a, b in pairs if str(a.get("status", "")).upper() not in DEAD]
+    dead_pairs = [(a, b) for a, b in pairs if str(a.get("status", "")).upper() in DEAD]
+    px = ltps(client, [r.get("security_id") for r in pos] +
+              [a.get("security_id") for a, _ in live_pairs])
+
+    try:
+        cash = Decimal(str((f.get("detailed_avl_balance") or {}).get("eq_mis") or 0))
+    except Exception:                                   # noqa: BLE001
+        cash = Decimal(0)
+
+    state = ("<span class=bad>HALTED</span>" if halted else
+             ("<span class=ok>LIVE</span>" if live_flag else "<span class=warn>SHADOW</span>"))
     p = [f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
          f"<title>trader</title><style>{CSS}</style>",
-         f"<h1>autotrader</h1>"
-         f"<div class=status>{e(now.strftime('%a %d %b %H:%M'))} &middot; <b>{e(phase)}</b> &middot; {state}"
-         f" &middot; <a href='?day={e(day)}' style='color:var(--acc)'>refresh</a></div>"]
+         f"<div class=top><div class=head><h1>autotrader</h1><div class=muted style='font-size:13px'>"
+         f"{e(now.strftime('%a %d %b %H:%M'))}</div></div>"
+         f"<div class=tabs><a class=on href='#pos'>Positions</a><a href='#orders'>Orders</a>"
+         f"<a href='#decisions'>Decisions</a><a href='#controls'>Controls</a></div>"
+         f"<div class=ticker><b>{e(phase)}</b> &middot; {state} &middot; cash <b>{money(cash)}</b>"
+         f" &middot; max {e(lim.get('TRADER_MAX_CONCURRENT', '2'))} positions &middot; "
+         f"leverage cap {e(lim.get('TRADER_MAX_LEVERAGE', '1.0'))}x</div></div><div class=wrap>"]
     if flash:
         p.append(f"<div class='flash{' err' if flash_err else ''}'>{e(flash)}</div>")
 
-    # ---- account ----
-    p.append("<h2>Account</h2><div class='card grid kv'>")
+    # ---- P&L card ----
+    rp = Decimal(str(f.get("realized_pnl") or 0)) if "error" not in f else Decimal(0)
+    up = Decimal(str(f.get("unrealized_pnl") or 0)) if "error" not in f else Decimal(0)
+    tot = rp + up
+    p.append(f"<div class=card id=pos><div class=pnl>Today's Intraday P&amp;L"
+             f"<div class='v {'ok' if tot >= 0 else 'bad'}'>{'' if tot < 0 else '+'}&#8377;{money(tot)}</div>"
+             f"<div class=meta>realised <b class='{'ok' if rp >= 0 else 'bad'}'>{money(rp)}</b> &middot; "
+             f"unrealised <b class='{'ok' if up >= 0 else 'bad'}'>{money(up)}</b></div></div></div>")
     if "error" in f:
-        p.append(f"<div class=bad>{e(f['error'])}</div>")
-    else:
-        bal = f.get("detailed_avl_balance") or {}
-        rp, up = Decimal(str(f.get("realized_pnl") or 0)), Decimal(str(f.get("unrealized_pnl") or 0))
-        tot = rp + up
-        def kv(k, v, cls=""):
-            return f"<div><div class=k>{e(k)}</div><div class='v {cls}'>{v}</div></div>"
-        p.append(kv("buying power", money(bal.get("eq_mis"))))
-        p.append(kv("combined P&L", money(tot), "ok" if tot >= 0 else "bad"))
-        p.append(kv("realised", money(rp), "ok" if rp >= 0 else "bad"))
-        p.append(kv("unrealised", money(up), "ok" if up >= 0 else "bad"))
+        p.append(f"<div class='card bad'>{e(f['error'])}</div>")
+
+    # ---- positions ----
+    held_value = Decimal(0)
+    p.append(f"<h2>Live positions ({len(pos)})</h2>")
+    if not pos:
+        p.append("<div class='card muted'>No open intraday positions.</div>")
+    for r in pos:
+        sid = str(r.get("security_id"))
+        qty = int(r.get("net_qty", r.get("quantity", r.get("qty", 0))) or 0)
+        avg = Decimal(str(r.get("avg_price") or r.get("buy_avg_price") or 0))
+        ltp = px.get(sid, Decimal(0))
+        inv, cur = avg * qty, ltp * qty
+        held_value += cur
+        pnl = cur - inv if ltp else Decimal(str(r.get("unrealized_pnl") or r.get("pnl") or 0))
+        pct = (pnl / inv * 100) if inv else Decimal(0)
+        cls = "ok" if pnl >= 0 else "bad"
+        name = r.get("name") or r.get("trading_symbol") or sid
+        ours = any(a.get("security_id") == sid and int(a.get("traded_qty") or 0) > 0
+                   and str(a.get("remarks", "")).startswith("auto/") for a, _ in pairs)
+        p.append(f"<div class=card><div class=head><div style='display:flex;gap:10px'>"
+                 f"<div class=logo>{e(str(name)[:2].upper())}</div><div><div class=nm>{e(name)}</div>"
+                 f"<div class=meta>&#8377;{money(ltp)} &middot; {e(r.get('product'))} &middot; "
+                 f"{'bot' if ours else '<span class=warn>manual</span>'}</div></div></div>"
+                 f"<div style='text-align:right'><div class=meta>Avg. <b>&#8377;{money(avg)}</b></div>"
+                 f"<div class=meta>Qty <b>{'+' if qty > 0 else ''}{qty}</b> <span class='badge {'B' if qty > 0 else 'S'}'>{'B' if qty > 0 else 'S'}</span></div></div></div>"
+                 f"<div class=g3><div><div class=k>Invested Value</div><div class=v>&#8377;{money(inv)}</div></div>"
+                 f"<div><div class=k>Current Value</div><div class=v>&#8377;{money(cur)}</div></div>"
+                 f"<div><div class=k>P&amp;L (<span class={cls}>{pct:+.2f}%</span>)</div><div class='v {cls}'>{'+' if pnl >= 0 else ''}&#8377;{money(pnl)}</div></div></div>")
+        if not ours:
+            p.append(f"<div class=why>Manual position. The fill monitor sells it at market when it is up "
+                     f"<b>{e(lim.get('TRADER_MANUAL_TARGET_PCT', '1.0'))}%</b> or down "
+                     f"<b>{e(lim.get('TRADER_MANUAL_STOP_PCT', '0.5'))}%</b> from {money(avg)}, "
+                     f"and the 15:05 flatten closes it regardless.</div>")
+        p.append(f"<div class=btns><form method=post action=/exit onsubmit=\"return confirm('Sell {e(name)} x{qty} at market now?')\">"
+                 f"<input type=hidden name=security_id value='{e(sid)}'><input type=hidden name=day value='{e(day)}'>"
+                 f"<button class=btn-x>&#10162; Insta Exit</button></form>"
+                 f"<a class=btn href='#orders'>Manage</a></div></div>")
+    if pos and cash:
+        lev = held_value / cash
+        p.append(f"<div class=meta style='margin:-4px 0 8px'>Held &#8377;{money(held_value)} against cash "
+                 f"&#8377;{money(cash)} = <b class='{'bad' if lev > Decimal(lim.get('TRADER_MAX_LEVERAGE', '1.0') or 1) else 'ok'}'>{lev:.2f}x</b> leverage</div>")
+
+    # ---- orders ----
+    p.append(f"<h2 id=orders>Open orders ({len(live_pairs)})</h2>")
+    if not live_pairs:
+        p.append("<div class='card muted'>No resting orders. The scanner runs every 10 minutes 09:30-14:30.</div>")
+    for entry, leg in live_pairs:
+        sid = str(entry.get("security_id"))
+        oid = str(entry.get("id") or entry.get("order_id"))
+        name = entry.get("name") or sid
+        ltp = px.get(sid)
+        cls, label = status_of(entry, leg)
+        side = str(entry.get("txn_type", "B"))[:1].upper()
+        why = whys.get(oid, {})
+        req = int(entry.get("requested_qty") or why.get("qty") or 0)
+        traded = int(entry.get("traded_qty") or 0)
+        trig = entry.get("trigger_price") or entry.get("requested_price") or why.get("entry")
+        ours = str(entry.get("remarks", "")).startswith("auto/")
+        when = (entry.get("created_at") or entry.get("order_time") or entry.get("exch_time")
+                or (why.get("ts") or "")[11:16])
+        p.append(f"<div class=card><div class=head><div style='display:flex;gap:10px'>"
+                 f"<div class=logo>{e(str(name)[:2].upper())}</div><div><div class=tk>{e(why.get('symbol') or sid)}</div>"
+                 f"<div class=nm>{e(name)}</div><div class=meta><span class='badge {side}'>{side}</span> &nbsp;"
+                 f"{e(entry.get('order_type') or 'GTT')} &middot; LTP: <b>&#8377;{money(ltp) if ltp is not None else '?'}</b></div></div></div>"
+                 f"<span class='st {cls}'>{e(label)}</span></div>"
+                 f"<div class=g3><div><div class=k>Placed</div><div class=v style='font-size:15px'>{e(str(when)[:16]) or '-'}</div></div>"
+                 f"<div><div class=k>Trigger</div><div class=v>&#8377;{money(trig)}</div></div>"
+                 f"<div><div class=k>Qty Filled</div><div class=v>{traded}/{req}</div></div></div>")
+        if leg:
+            lcls = "arm" if traded == 0 else "fill"
+            p.append(f"<div class=leg><div class=head><div class=meta><span class='badge S'>S</span> &nbsp;OCO &middot; "
+                     f"linked sell for the same {req}</div>"
+                     f"<span class='st {lcls}'>{'Activating SL / Target' if traded == 0 else 'SL / Target live'}</span></div>"
+                     f"<div class=g3><div><div class=k>Stop loss</div><div class='v bad'>&#8377;{money(leg.get('sl_trigger_price') or why.get('stop'))}</div></div>"
+                     f"<div><div class=k>Target</div><div class='v ok'>&#8377;{money(leg.get('tgt_trigger_price') or why.get('target'))}</div></div>"
+                     f"<div><div class=k>Status</div><div class=v style='font-size:14px'>{e(str(leg.get('status', '')).title())}</div></div></div></div>")
+        if why:
+            p.append(f"<div class=why><b>Why:</b> {e(why.get('why', ''))}"
+                     f"<div style='margin-top:8px'>"
+                     f"<div class=row2><span>Position value</span><b>&#8377;{money(why.get('position_value'))}</b></div>"
+                     f"<div class=row2><span>Leverage used (this order / cash)</span><b>{e(why.get('leverage'))}x</b></div>"
+                     f"<div class=row2><span>Max loss at stop</span><b class=bad>-&#8377;{money(why.get('risk'))}</b></div>"
+                     f"<div class=row2><span>Profit if target hits (gross)</span><b class=ok>+&#8377;{money(why.get('gross_if_target'))}</b></div>"
+                     f"<div class=row2><span>Charges, round trip</span><b>-&#8377;{money(why.get('costs'))}</b></div>"
+                     f"<div class=row2><span>Net profit if target hits</span><b class='{'ok' if Decimal(str(why.get('net_if_target') or 0)) >= 0 else 'bad'}'>&#8377;{money(why.get('net_if_target'))}</b></div>"
+                     f"<div class=row2><span>LTP when placed</span><b>&#8377;{money(why.get('ltp_at_placement'))}</b></div>"
+                     f"</div></div>")
+        elif not ours:
+            p.append("<div class=why>Placed outside the autotrader (no decision record).</div>")
+        p.append(f"<div class=btns><form method=post action=/cancel onsubmit=\"return confirm('Cancel {e(name)} entry AND its SL/Target leg?')\">"
+                 f"<input type=hidden name=order_id value='{e(oid)}'><input type=hidden name=day value='{e(day)}'>"
+                 f"<button class=btn-x>&#10006; Cancel both</button></form></div></div>")
+    if dead_pairs:
+        p.append(f"<details><summary>{len(dead_pairs)} cancelled / rejected / done today</summary><div class=card>")
+        for entry, leg in dead_pairs:
+            p.append(f"<div class=row><div class=l><div class=sym>{e((entry.get('name') or '')[:22])}</div>"
+                     f"<div class=sub>{e(entry.get('txn_type'))} {e(entry.get('requested_qty'))} &middot; filled {e(entry.get('traded_qty') or 0)} &middot; {e(entry.get('id'))}</div></div>"
+                     f"<div class=r><span class='pill blocked'>{e(entry.get('status'))}</span></div></div>")
+        p.append("</div></details>")
+
+    # ---- decisions ----
+    p.append(f"<h2 id=decisions>Decisions &middot; {e(day)} ({len(log)})</h2><div class=card>")
+    if not log:
+        p.append("<div class=muted>no log for this day</div>")
+    shown = 0
+    for r in reversed(log):
+        ev = r.get("event", "")
+        if (ev == "ok" and r.get("job") == "watch") or ev == "state":
+            continue
+        ts = (r.get("ts") or "")[11:16]
+        sym = r.get("symbol") or r.get("name") or ""
+        if ev == "blocked":
+            detail = e(" / ".join(str(x) for x in (r.get("reasons") or [])))
+        elif ev in ("placed", "would_place"):
+            detail = e(f"{r.get('qty')} @ {r.get('entry')} -> stop {r.get('stop')} / target {r.get('target')} "
+                       f"| risk {r.get('risk')} | net if target {r.get('net_if_target')} | {r.get('leverage')}x")
+        elif ev == "ALERT":
+            detail = f"<b class=bad>{e(r.get('level'))}</b> {e(r.get('action') or '')}"
+        else:
+            skip = {"ts", "event", "job", "symbol", "name", "live", "payload"}
+            detail = e("; ".join(f"{k}={v}" for k, v in r.items() if k not in skip)[:300])
+        p.append(f"<div class=row><div class=l><div><span class='pill {e(ev)}'>{e(ev)}</span> "
+                 f"<span class=sym>{e(sym)}</span> <span class=muted style='font-size:11px'>{e(r.get('job', 'auto'))}</span></div>"
+                 f"<div class=sub>{detail}</div></div>"
+                 f"<div class='r muted' style='font-size:12px'>{e(ts)}</div></div>")
+        shown += 1
+        if shown >= 80:
+            p.append(f"<div class='muted sub'>&hellip; {len(log) - shown} earlier events</div>")
+            break
     p.append("</div>")
 
     # ---- controls ----
-    p.append("<h2>Controls</h2><div class=card>")
+    p.append("<h2 id=controls>Controls</h2><div class=card>")
     if halted:
         reason = ""
         try:
@@ -232,11 +512,11 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
         except OSError:
             pass
         p.append(f"<div class=bad><b>Halted</b>: {e(reason or 'manually')}. No new orders until resumed. "
-                 f"Resting orders at the exchange are not recalled by a halt.</div>"
+                 f"Resting orders stay at the exchange; cancel them above if you want them gone.</div>"
                  f"<form method=post action=/resume><button class=btn-resume>Resume</button></form>")
     else:
         p.append("<form method=post action=/halt><input type=text name=reason placeholder='reason (optional)'>"
-                 "<button class=btn-halt>Halt &mdash; stop placing new orders</button></form>")
+                 "<button class=btn-halt style='margin-top:10px'>Halt &mdash; stop placing new orders</button></form>")
     p.append("<details><summary>Risk limits</summary><form method=post action=/limits>")
     for key, label, typ in EDITABLE:
         p.append(f"<label>{e(label)}</label><input type={typ} step=any name={e(key)} "
@@ -244,92 +524,15 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     p.append(f"<div class=toggle><input type=checkbox id=live name=TRADER_LIVE value=true"
              f"{' checked' if live_flag else ''}><label for=live style='margin:0'>LIVE &mdash; place real orders "
              f"(unticked = shadow, decides and logs only)</label></div>"
-             f"<button class=btn-save>Save limits</button>"
+             f"<button class=btn-save style='margin-top:10px'>Save limits</button>"
              f"<div class='sub' style='margin-top:8px'>Takes effect on the next scan. Leverage above 1.0 "
              f"means borrowed money.</div></form></details></div>")
 
-    # ---- positions ----
-    pos = [r for r in data["positions"]
-           if isinstance(r, dict) and ("error" in r or
-           int(r.get("net_qty", r.get("quantity", r.get("qty", 0))) or 0))]
-    p.append(f"<h2>Open positions ({len(pos)})</h2><div class=card>")
-    if not pos:
-        p.append("<div class=muted>none</div>")
-    for r in pos:
-        if "error" in r:
-            p.append(f"<div class=bad>{e(r['error'])}</div>"); continue
-        pnl = r.get("unrealized_pnl") or r.get("pnl") or r.get("realised_gains") or 0
-        try:
-            pcls = "ok" if Decimal(str(pnl)) >= 0 else "bad"
-        except Exception:                               # noqa: BLE001
-            pcls = ""
-        p.append(f"<div class=row><div class=l><div class=sym>{e(r.get('name') or r.get('trading_symbol') or r.get('security_id'))}</div>"
-                 f"<div class=sub>{e(r.get('net_qty', r.get('quantity', r.get('qty'))))} @ {money(r.get('avg_price') or r.get('buy_avg_price'))} "
-                 f"&middot; {e(r.get('product'))}</div></div>"
-                 f"<div class='r {pcls}'>{money(pnl)}</div></div>")
-    p.append("</div>")
-
-    # ---- orders ----
-    live_orders = [r for r in data["orders"] if "error" in r or
-                   str(r.get("status", "")).upper() not in ("CANCELLED", "REJECTED", "FAILED", "EXPIRED", "ABORTED")]
-    dead_orders = [r for r in data["orders"] if r not in live_orders]
-    p.append(f"<h2>Resting orders ({len(live_orders)})</h2><div class=card>")
-    if not live_orders:
-        p.append("<div class=muted>none</div>")
-    for r in live_orders:
-        if "error" in r:
-            p.append(f"<div class=bad>{e(r['error'])}</div>"); continue
-        st = str(r.get("status", "")).upper()
-        leg = bool(r.get("parent_order_id"))
-        what = (f"{e(r.get('txn_type'))} {e(r.get('requested_qty'))} &middot; "
-                + (f"SL {e(r.get('sl_trigger_price'))} / TGT {e(r.get('tgt_trigger_price'))}" if leg
-                   else f"trigger {e(r.get('trigger_price') or r.get('requested_price'))}"))
-        p.append(f"<div class=row><div class=l><div class=sym>{e((r.get('name') or '')[:22])}"
-                 f" <span class=muted style='font-weight:400;font-size:12px'>{'leg' if leg else 'entry'}</span></div>"
-                 f"<div class=sub>{what} &middot; filled {e(r.get('traded_qty') or 0)}</div></div>"
-                 f"<div class=r><span class='pill {'ok' if st == 'SUCCESS' else ''}'>{e(st)}</span></div></div>")
-    if dead_orders:
-        p.append(f"<details><summary>{len(dead_orders)} cancelled / rejected today</summary>")
-        for r in dead_orders:
-            p.append(f"<div class=row><div class=l><div class=sym style='font-weight:500'>{e((r.get('name') or '')[:22])}</div>"
-                     f"<div class=sub>{e(r.get('txn_type'))} {e(r.get('requested_qty'))} &middot; {e(r.get('id'))}</div></div>"
-                     f"<div class=r><span class='pill blocked'>{e(r.get('status'))}</span></div></div>")
-        p.append("</details>")
-    p.append("</div>")
-
-    # ---- decisions ----
-    p.append(f"<h2>Decisions &middot; {e(day)} ({len(log)})</h2><div class=card>")
-    if not log:
-        p.append("<div class=muted>no log for this day</div>")
-    shown = 0
-    for r in reversed(log):
-        ev = r.get("event", "")
-        if ev in ("ok",) and r.get("job") == "watch":
-            continue                                    # quiet watcher ticks
-        ts = (r.get("ts") or "")[11:16]
-        sym = r.get("symbol") or r.get("name") or ""
-        if ev == "blocked":
-            detail = " / ".join(str(x) for x in (r.get("reasons") or []))
-        elif ev in ("placed", "would_place"):
-            detail = (f"{r.get('qty')} @ {r.get('entry')} &rarr; stop {r.get('stop')} / target {r.get('target')} "
-                      f"&middot; risk {r.get('risk')} &middot; net if target {r.get('net_if_target')}")
-        elif ev == "ALERT":
-            detail = f"<b class=bad>{e(r.get('level'))}</b> {e(r.get('action') or '')}"
-        else:
-            skip = {"ts", "event", "job", "symbol", "name", "live", "payload"}
-            detail = e("; ".join(f"{k}={v}" for k, v in r.items() if k not in skip)[:300])
-        p.append(f"<div class=row><div class=l><div><span class='pill {e(ev)}'>{e(ev)}</span> "
-                 f"<span class=sym>{e(sym)}</span></div><div class=sub>{detail}</div></div>"
-                 f"<div class='r muted' style='font-size:12px'>{e(ts)}</div></div>")
-        shown += 1
-        if shown >= 60:
-            p.append(f"<div class='muted sub'>&hellip; {len(log) - shown} earlier events</div>")
-            break
-    p.append("</div>")
-
     p.append(f"<h2>Timers</h2><div class=card><pre>{e(timers())}</pre></div>")
     p.append("<div class='sub' style='margin:20px 0'>Reachable only over Tailscale or localhost. "
-             "This page can halt, resume and edit limits. It cannot place or cancel orders.</div>")
+             "Cancel and Exit only ever reduce exposure; nothing here can open a position.</div></div>"
+             "<div class=nav><a href='#pos'><span>&#8377;</span>Positions</a><a href='#orders'><span>&#9776;</span>Orders</a>"
+             "<a href='#decisions'><span>&#9881;</span>Decisions</a><a href='#controls'><span>&#9211;</span>Controls</a></div>")
     return "".join(p)
 
 
@@ -348,7 +551,7 @@ def write_limits(form: dict) -> str:
             return f"{label}: must not be negative"
         if key == "TRADER_MAX_LEVERAGE" and val > 5:
             return "leverage above 5x refused"
-        if key in ("TRADER_MAX_TRADES", "TRADER_MAX_CONCURRENT"):
+        if key in ("TRADER_MAX_TRADES", "TRADER_MAX_CONCURRENT", "TRADER_MAX_RESTING"):
             val = int(val)
         new[key] = str(val)
     new["TRADER_LIVE"] = "true" if (form.get("TRADER_LIVE") or [""])[0] == "true" else "false"
@@ -393,8 +596,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(f"<pre>dashboard error: {e(exc)}</pre>".encode(), 500)
 
     def do_POST(self):                                  # noqa: N802
-        """Halt, resume, edit limits. Never an order: there is no route for
-        one, and the only POSTs this server makes are none."""
+        """Halt, resume, edit limits, cancel an order pair, exit a position.
+        Every order route reduces exposure; none opens any."""
         from urllib.parse import parse_qs, urlparse
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
@@ -414,6 +617,20 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/limits":
                 problem = write_limits(form)
                 flash, err = (problem, True) if problem else ("Limits saved. They apply from the next scan.", False)
+            elif path == "/cancel":
+                oid = (form.get("order_id") or [""])[0].strip()
+                if not oid:
+                    flash, err = "no order id", True
+                else:
+                    flash = cancel_pair(Client(), oid)
+                    err = "FAILED" in flash or "not in" in flash
+            elif path == "/exit":
+                sid = (form.get("security_id") or [""])[0].strip()
+                if not sid:
+                    flash, err = "no security id", True
+                else:
+                    flash = exit_position(Client(), sid)
+                    err = flash.startswith("no open")
             else:
                 flash, err = "unknown action", True
         except Exception as exc:                        # noqa: BLE001

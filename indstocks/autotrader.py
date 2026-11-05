@@ -76,9 +76,9 @@ def reconcile_with_broker(client, placements: dict) -> dict:
     try:
         rows = (client.get("/order-book") or {}).get("data") or []
     except Exception:                                   # noqa: BLE001
-        return placements
+        return {**placements, "resting_symbols": ()}
     if not isinstance(rows, list):
-        return placements
+        return {**placements, "resting_symbols": ()}
 
     status_by_id = {}
     for r in rows:
@@ -90,25 +90,31 @@ def reconcile_with_broker(client, placements: dict) -> dict:
                 traded = 0
             status_by_id[oid] = (str(r.get("status", "")).upper(), traded)
 
-    kept_symbols, kept_risk, kept_count = [], Decimal(0), 0
+    # Resting orders cost nothing and may never fire. Only FILLS are trades,
+    # only fills hold capital, only fills count toward the concurrent cap.
+    # Resting symbols are remembered so they are not placed twice, and the
+    # fill monitor cancels them once the cap is reached.
+    resting, filled, risk = [], [], Decimal(0)
     for rec in placements.get("records", []):
         oid = str(rec.get("parent_order_id") or "")
         status, traded = status_by_id.get(oid, ("", 0))
+        sym = rec.get("symbol")
         if status in DEAD_AT_BROKER and traded == 0:
-            log({"event": "reconciled_out", "symbol": rec.get("symbol"),
+            log({"event": "reconciled_out", "symbol": sym,
                  "parent_order_id": oid, "broker_status": status,
-                 "reason": "dead at the broker with nothing traded; "
-                           "not counted as a trade or an open symbol"})
+                 "reason": "dead at the broker with nothing traded"})
             continue
-        kept_count += 1
-        if rec.get("symbol"):
-            kept_symbols.append(rec["symbol"])
-        try:
-            kept_risk += Decimal(str(rec.get("risk") or 0))
-        except Exception:                               # noqa: BLE001
-            pass
-    return {"trades_taken": kept_count, "risk_committed": kept_risk,
-            "open_symbols": tuple(kept_symbols)}
+        if traded > 0:
+            if sym:
+                filled.append(sym)
+            try:
+                risk += Decimal(str(rec.get("risk") or 0))
+            except Exception:                           # noqa: BLE001
+                pass
+        elif sym:
+            resting.append(sym)
+    return {"trades_taken": len(filled), "risk_committed": risk,
+            "open_symbols": tuple(filled), "resting_symbols": tuple(resting)}
 
 
 def todays_placements() -> dict:
@@ -198,6 +204,25 @@ def day_pnl(client) -> tuple:
         return Decimal(0), Decimal(0)
 
 
+def held_security_ids(client) -> set:
+    """security_ids of every open intraday position, manual ones included."""
+    out = set()
+    try:
+        data = (client.get("/portfolio/positions") or {}).get("data") or {}
+    except Exception:                                   # noqa: BLE001
+        return out
+    rows = data if isinstance(data, list) else (
+        data.get("positions") or data.get("net_positions") or [])
+    for r in rows or []:
+        try:
+            qty = int(r.get("net_qty", r.get("quantity", r.get("qty", 0))) or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0 and str(r.get("product", "")).upper() in ("INTRADAY", "MIS", ""):
+            out.add(str(r.get("security_id")))
+    return out
+
+
 def held_exposure(client) -> Decimal:
     """Position value already held, for the leverage cap."""
     try:
@@ -269,6 +294,7 @@ def run() -> int:
         return 0
 
     day_log = reconcile_with_broker(client, todays_placements())
+    held_ids = held_security_ids(client)
     if day_log["trades_taken"] >= limits.max_trades_per_day:
         log({"event": "halted", "reason": "trade limit reached",
              "taken": day_log["trades_taken"]})
@@ -282,33 +308,53 @@ def run() -> int:
 
     master = Instruments(client=client, source="equity").load()
     bars = Bars(client, "5minute")
+    # Anything the account holds intraday -- bot-filled or bought by hand --
+    # occupies a slot: it is capital at risk whoever placed it.
+    held_syms = set(day_log["open_symbols"])
+    for sym in watchlist():
+        try:
+            if str(master.resolve(sym).security_id) in held_ids:
+                held_syms.add(sym)
+        except KeyError:
+            pass
+    held_syms |= set(held_ids)       # unknown names still fill a slot
     day_state = risk_mod.DayState(
         trades_taken=day_log["trades_taken"],
         risk_committed=day_log["risk_committed"],
-        open_symbols=day_log["open_symbols"],
+        open_symbols=tuple(held_syms),
         exposure=exposure,
         unrealised_pnl=unrealised)
 
     placed = 0
-    budget = limits.max_trades_per_day - day_log["trades_taken"]
+    # How many resting orders may sit at once. Not the trade cap -- resting
+    # is free -- but a ceiling so a bug cannot paper the book.
+    budget = int(os.environ.get("TRADER_MAX_RESTING", "15")) - len(day_log.get("resting_symbols", ()))
 
-    # Capital is spent across the run, not per decision. Sizing each order
-    # against the full balance means three orders can commit three times the
-    # account: the first fills, the rest are rejected for margin, and which
-    # ones survive is decided by the exchange rather than by us.
-    remaining_cash = cash
+    # Resting orders are free and may never fire, so the book can hold many
+    # of them. What must never exceed cash is the FILLED total, and the fill
+    # monitor cancels the rest the moment the concurrent cap is reached. So
+    # each order is sized at cash / max_concurrent: if the cap's worth fill
+    # at once, the position still fits inside cash at 1.0x leverage. The
+    # only overshoot is the race between a fill and the cancel, a few
+    # seconds, which intraday margin absorbs.
+    held_cash = day_state.exposure
+    free_slots = max(limits.max_concurrent_positions - len(set(day_state.open_symbols)), 0)
+    per_order_cash = ((cash - held_cash) / free_slots) if free_slots else Decimal(0)
+    log({"event": "sizing", "cash": str(cash), "held": str(held_cash),
+         "free_slots": free_slots, "per_order": str(round(per_order_cash, 2))})
 
     for sym in watchlist():
         if placed >= budget:
-            log({"event": "stop", "reason": "trade budget spent"})
+            log({"event": "stop", "reason": "resting-order ceiling reached"})
             break
-        if sym in day_state.open_symbols:
-            # Already placed today, by this run or an earlier one. A second
-            # resting order in the same name doubles the position if both
-            # trigger.
-            log({"event": "skip", "symbol": sym,
-                 "reason": "already placed today"})
+        if sym in day_state.open_symbols or sym in day_log.get("resting_symbols", ()):
+            # Already held or already resting. A second order in the same
+            # name doubles the position if both trigger.
             continue
+        if free_slots <= 0:
+            log({"event": "stop", "reason": "concurrent cap reached; "
+                 "no free slots for new resting orders"})
+            break
         if halted():
             log({"event": "halted", "reason": "kill switch during run"})
             break
@@ -339,11 +385,11 @@ def run() -> int:
             log({"event": "skip", "symbol": sym, "reason": str(exc)[:160]})
             continue
 
-        sizing = risk_mod.size_position(plan, remaining_cash, limits)
+        sizing = risk_mod.size_position(plan, per_order_cash, limits)
         if not sizing.ok:
             log({"event": "unsized", "symbol": sym,
                  "reason": sizing.limit_hit,
-                 "remaining_cash": str(remaining_cash)})
+                 "per_order_cash": str(round(per_order_cash, 2))})
             continue
 
         verdict = risk_mod.check_entry_order(
@@ -368,19 +414,26 @@ def run() -> int:
             continue
 
         payload = order.payload()
+        value = sizing.position_value
         record = {"symbol": sym, "qty": sizing.qty, "entry": str(plan.entry),
                   "stop": str(plan.stop), "target": str(plan.target),
                   "risk": str(sizing.loss_at_stop),
                   "costs": str(sizing.round_trip_cost),
+                  "gross_if_target": str(sizing.gain_at_target),
                   "net_if_target": str(sizing.net_if_target_hits),
+                  "position_value": str(value),
+                  "leverage": str(round(value / cash, 2)) if cash else "0",
+                  "range_high": str(high), "range_low": str(low),
+                  "ltp_at_placement": str(ltp),
+                  "why": (f"opening range {session.open:%H:%M}-"
+                          f"{session.opening_range_end:%H:%M} was {low}-{high}; "
+                          f"buy if price breaks above {plan.entry} (range high + 1 tick); "
+                          f"stop {plan.stop} at the range midpoint, target {plan.target} = 2R"),
                   "payload": payload}
-
-        record["remaining_cash_before"] = str(remaining_cash)
 
         if not LIVE:
             log({"event": "would_place", **record})
             placed += 1
-            remaining_cash -= sizing.position_value
             continue
 
         try:
@@ -392,15 +445,8 @@ def run() -> int:
             log({"event": "placed", "parent_order_id": parent,
                  "child_order_id": child, **record})
             placed += 1
-            # A resting trigger reserves nothing at the broker until it
-            # fires, but it can still fire, so treat it as spent.
-            remaining_cash -= sizing.position_value
-            day_state = risk_mod.DayState(
-                trades_taken=day_state.trades_taken + 1,
-                risk_committed=day_state.risk_committed + sizing.loss_at_stop,
-                open_symbols=tuple(day_state.open_symbols) + (sym,),
-                exposure=day_state.exposure + sizing.position_value,
-                unrealised_pnl=day_state.unrealised_pnl)
+            # Resting, not filled: it holds no capital and is not a trade
+            # until it fires. The fill monitor handles what happens then.
         except Exception as exc:                        # noqa: BLE001
             # A failed order is never retried without a fresh check: the
             # failure may be margin, a band, or a position already open.

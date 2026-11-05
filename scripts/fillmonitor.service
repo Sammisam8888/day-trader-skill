@@ -1,0 +1,14 @@
+[Unit]
+Description=Fill monitor: cancel resting entries on fill, protect manual intraday positions
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/fillmonitor.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

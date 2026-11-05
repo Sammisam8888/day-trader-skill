@@ -187,29 +187,36 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestDashboardCannotTrade(unittest.TestCase):
-    """The dashboard may halt, resume and edit limits. It may never place,
-    modify or cancel an order."""
+class TestDashboardOnlyReducesExposure(unittest.TestCase):
+    """The dashboard may halt, resume, edit limits, CANCEL an order pair
+    and EXIT a position. It may never place or modify an entry."""
 
     def source(self):
         with open(os.path.join(ROOT, "indstocks", "dashboard.py"),
                   encoding="utf-8") as fh:
             return fh.read()
 
-    def test_no_broker_write_anywhere(self):
+    def test_the_only_api_write_is_cancel(self):
         text = self.source()
-        self.assertNotIn(".post(", text, "the dashboard makes no API writes")
-        # Exact write routes. /order-book is a read and is allowed.
-        for route in ('"/order"', '"/smart/order"', "/order/cancel",
-                      "/order/modify", "/smart/order/cancel"):
+        posts = [ln for ln in text.splitlines() if ".post(" in ln]
+        self.assertEqual(len(posts), 1, posts)
+        self.assertIn('"/smart/order/cancel"', posts[0])
+        for route in ('"/order"', '"/smart/order"', "/order/modify",
+                      "/smart/order/modify"):
             self.assertNotIn(route, text, route)
+        # The exit sells through flatten.sell, which is SELL-only.
+        self.assertIn("from flatten import cancel_resting_legs, open_intraday, sell", text)
 
-    def test_only_three_post_routes(self):
+    def test_cancel_takes_the_leg_with_the_entry(self):
+        text = self.source()
+        self.assertIn('str(r.get("parent_order_id") or "") == order_id', text)
+
+    def test_post_routes(self):
         text = self.source()
         start = text.index("def do_POST")
         end = text.index("def log_message", start)
         body = text[start:end]
-        for route in ("/halt", "/resume", "/limits"):
+        for route in ("/halt", "/resume", "/limits", "/cancel", "/exit"):
             self.assertIn(f'path == "{route}"', body)
         self.assertIn("unknown action", body)
 
