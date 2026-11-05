@@ -199,6 +199,40 @@ def status_of(entry: dict, leg) -> tuple:
     return "wait", st.title() or "Pending"
 
 
+def term_history(n: int) -> list:
+    try:
+        lines = (STATE_DIR / "term.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for ln in lines[-n:]:
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            pass
+    return out
+
+
+def run_terminal(cmd: str) -> dict:
+    """Run a shell command on the box. The page is reachable only over
+    Tailscale from the owner's devices: the same trust as their SSH key."""
+    try:
+        r = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True,
+                           timeout=60, cwd="/opt/indstocks/day-trader-skill")
+        out, rc = (r.stdout + r.stderr), r.returncode
+    except subprocess.TimeoutExpired as exc:
+        out, rc = (exc.stdout or "") + (exc.stderr or "") + "\n[timed out after 60 s]", 124
+    rec = {"ts": sess.now().isoformat(timespec="seconds"), "cmd": cmd,
+           "out": out[-20000:], "rc": rc}
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(STATE_DIR / "term.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
+    return rec
+
+
 def dash_log(record: dict) -> None:
     rec = {"ts": sess.now().isoformat(timespec="seconds"), "job": "dash", **record}
     try:
@@ -301,6 +335,8 @@ button,.btn{white-space:nowrap;padding:12px 10px;border:1px solid var(--line);bo
 form{margin:0}label{display:block;font-size:12px;color:var(--mut);margin:8px 0 3px}
 input[type=number],input[type=text]{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:16px}
 .toggle{display:flex;align-items:center;gap:10px;padding:10px 0}.toggle input{width:22px;height:22px}
+.copy{background:#262b35;color:var(--fg);border:0;border-radius:6px}
+a[data-cmd]{color:var(--acc);text-decoration:none}
 details summary{cursor:pointer;color:var(--acc);font-size:13px;padding:6px 0}
 .flash{background:#1b3a26;color:var(--ok);padding:10px;border-radius:8px;margin-bottom:10px;font-size:14px}
 .flash.err{background:#3d1d1d;color:var(--bad)}
@@ -333,9 +369,19 @@ TABS_JS = """
   document.querySelectorAll('[data-tab]').forEach(function(a){
     a.addEventListener('click', function(ev){ ev.preventDefault(); show(a.dataset.tab); });
   });
+  document.querySelectorAll('[data-copy]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var txt=b.dataset.copy;
+      (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(function(){ b.textContent='Copied'; },
+        function(){ var ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); b.textContent='Copied'; });
+    });
+  });
+  document.querySelectorAll('[data-cmd]').forEach(function(a){
+    a.addEventListener('click', function(ev){ ev.preventDefault(); var f=document.querySelector('form[action=\"/term\"] input[name=cmd]'); f.value=a.dataset.cmd; f.form.submit(); });
+  });
   show(tab);
   var cb=document.getElementById('chatbox'); if(cb && tab==='chat'){ window.scrollTo(0, document.body.scrollHeight); }
-  setTimeout(function(){ location.reload(); }, 60000);
+  setTimeout(function(){ if(tab!=='term' && tab!=='chat') location.reload(); }, 60000);
 })();
 """
 
@@ -347,6 +393,8 @@ EDITABLE = (
     ("TRADER_MAX_LEVERAGE", "max leverage (1.0 = cash only)", "number"),
     ("TRADER_STOP_BAND_PCT", "stop band % (room for a gap to fill)", "number"),
     ("TRADER_MAX_RESTING", "max resting orders at once", "number"),
+    ("TRADER_RESTING_TTL_MIN", "cancel a resting order after N minutes (0 = never)", "number"),
+    ("TRADER_MIN_ORDER_VALUE", "smallest order value (Rs)", "number"),
     ("TRADER_MANUAL_TARGET_PCT", "manual position: sell when up %", "number"),
     ("TRADER_MANUAL_STOP_PCT", "manual position: sell when down %", "number"),
 )
@@ -388,7 +436,8 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
          f"<a data-tab=pos href='?tab=pos&day={e(day)}'>Positions</a>"
          f"<a data-tab=orders href='?tab=orders&day={e(day)}'>Orders</a>"
          f"<a data-tab=decisions href='?tab=decisions&day={e(day)}'>Decisions</a>"
-         f"<a data-tab=controls href='?tab=controls&day={e(day)}'>Controls</a></div>"
+         f"<a data-tab=controls href='?tab=controls&day={e(day)}'>Controls</a>"
+         f"<a data-tab=term href='?tab=term&day={e(day)}'>Terminal</a></div>"
          f"<div class=ticker><b>{e(phase)}</b> &middot; {state} &middot; cash <b>{money(cash)}</b>"
          f" &middot; max {e(lim.get('TRADER_MAX_CONCURRENT', '2'))} positions &middot; "
          f"leverage cap {e(lim.get('TRADER_MAX_LEVERAGE', '1.0'))}x</div></div><div class=wrap>"]
@@ -591,6 +640,25 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
              f"means borrowed money.</div></form></details></div>")
 
     p.append(f"<h2>Timers</h2><div class=card><pre>{e(timers())}</pre></div>")
+    p.append("</section><section data-pane=term>")
+    # ---- terminal ----
+    p.append("<form method=post action=/term class=chatform autocomplete=off>"
+             f"<input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=term>"
+             "<input type=text name=cmd placeholder='sudo tail -n 30 /var/lib/indstocks/auto/$(date +%F).jsonl' required>"
+             "<button class=btn-save style='width:auto;margin:0'>Run</button></form>"
+             "<div class=meta style='margin:6px 0 10px'>Runs on the server as root, 60 s limit. Shortcuts: "
+             "<a href='#' data-cmd='sudo tail -n 40 /var/lib/indstocks/auto/$(TZ=Asia/Kolkata date +%F).jsonl'>today's log</a> &middot; "
+             "<a href='#' data-cmd='systemctl status auto.timer fillmonitor dashboard --no-pager | head -40'>services</a> &middot; "
+             "<a href='#' data-cmd='sudo journalctl -u auto.service -n 60 --no-pager'>last scan</a> &middot; "
+             "<a href='#' data-cmd='sudo journalctl -u fillmonitor -n 40 --no-pager'>fill monitor</a> &middot; "
+             "<a href='#' data-cmd='cd /opt/indstocks/day-trader-skill && git log --oneline -8'>deployed version</a></div>")
+    for run in reversed(term_history(12)):
+        p.append(f"<div class=card><div class=head><code class=muted style='word-break:break-all'>$ {e(run.get('cmd'))}</code>"
+                 f"<button class=copy data-copy='{e(run.get('out', ''))}' style='width:auto;padding:6px 10px;margin:0;font-size:12px'>Copy</button></div>"
+                 f"<pre style='margin-top:8px;max-height:60vh'>{e(run.get('out', ''))}</pre>"
+                 f"<div class=meta>exit {e(run.get('rc'))} &middot; {e((run.get('ts') or '')[11:19])}</div></div>")
+    if not term_history(1):
+        p.append("<div class='card muted'>No commands run yet.</div>")
     p.append("<div class='sub' style='margin:20px 0'>Reachable only over Tailscale or localhost. "
              "Cancel and Exit reduce exposure; the only way to open a position from here is a chat 'buy', capped at half of cash.</div>"
              "</section></div>"
@@ -598,7 +666,8 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
              f"<a data-tab=pos href='?tab=pos&day={e(day)}'><span>&#8377;</span>Positions</a>"
              f"<a data-tab=orders href='?tab=orders&day={e(day)}'><span>&#9776;</span>Orders</a>"
              f"<a data-tab=decisions href='?tab=decisions&day={e(day)}'><span>&#9881;</span>Decisions</a>"
-             f"<a data-tab=controls href='?tab=controls&day={e(day)}'><span>&#9211;</span>Controls</a></div>"
+             f"<a data-tab=controls href='?tab=controls&day={e(day)}'><span>&#9211;</span>Controls</a>"
+             f"<a data-tab=term href='?tab=term&day={e(day)}'><span>&gt;_</span>Terminal</a></div>"
              f"<script>{TABS_JS}</script>")
     return "".join(p)
 
@@ -618,7 +687,7 @@ def write_limits(form: dict) -> str:
             return f"{label}: must not be negative"
         if key == "TRADER_MAX_LEVERAGE" and val > 5:
             return "leverage above 5x refused"
-        if key in ("TRADER_MAX_TRADES", "TRADER_MAX_CONCURRENT", "TRADER_MAX_RESTING"):
+        if key in ("TRADER_MAX_TRADES", "TRADER_MAX_CONCURRENT", "TRADER_MAX_RESTING", "TRADER_RESTING_TTL_MIN"):
             val = int(val)
         new[key] = str(val)
     new["TRADER_LIVE"] = "true" if (form.get("TRADER_LIVE") or [""])[0] == "true" else "false"
@@ -701,6 +770,11 @@ class Handler(BaseHTTPRequestHandler):
                 if text:
                     chat_mod.handle(text, Client())
                 flash = ""
+            elif path == "/term":
+                cmd = (form.get("cmd") or [""])[0].strip()[:2000]
+                if cmd:
+                    run_terminal(cmd)
+                flash = ""
             elif path == "/cancel":
                 oid = (form.get("order_id") or [""])[0].strip()
                 if not oid:
@@ -721,7 +795,7 @@ class Handler(BaseHTTPRequestHandler):
             flash, err = f"failed: {exc}", True
         from urllib.parse import urlencode
         tab = (form.get("tab") or ["pos"])[0]
-        if tab not in ("chat", "pos", "orders", "decisions", "controls"):
+        if tab not in ("chat", "pos", "orders", "decisions", "controls", "term"):
             tab = "pos"
         q = urlencode({"tab": tab, "day": self._day(form), "flash": flash[:300], "err": "1" if err else "0"})
         self.send_response(303)

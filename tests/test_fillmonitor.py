@@ -127,6 +127,33 @@ class TestCancelOnExposure(unittest.TestCase):
         self.assertEqual(_f.max_concurrent(), 2)
 
 
+class TestRestingTTL(unittest.TestCase):
+    def _log_placed(self, oid, ts):
+        import json as _j
+        d = _f.STATE_DIR / f"{_s.now():%Y-%m-%d}.jsonl"
+        d.parent.mkdir(parents=True, exist_ok=True)
+        with open(d, "a") as fh:
+            fh.write(_j.dumps({"ts": ts, "event": "placed", "parent_order_id": oid}) + "\n")
+
+    def test_old_resting_entry_is_cancelled_young_one_kept(self):
+        now = _s.now()
+        self._log_placed("OLD", (now - __import__("datetime").timedelta(minutes=45)).isoformat())
+        self._log_placed("NEW", (now - __import__("datetime").timedelta(minutes=5)).isoformat())
+        b = Broker(book=[entry("OLD", "1", "A"), entry("NEW", "2", "B")])
+        n = _f.expire_stale(b, b.book, now)
+        self.assertEqual(n, 1)
+        self.assertEqual([body["order_id"] for _, body in b.posts], ["OLD"])
+
+    def test_ttl_zero_means_never(self):
+        with open(str(_f.ENV_FILE), "w") as fh:
+            fh.write("TRADER_RESTING_TTL_MIN=0\n")
+        try:
+            b = Broker(book=[entry("OLD", "1", "A")])
+            self.assertEqual(_f.expire_stale(b, b.book, _s.now()), 0)
+        finally:
+            os.unlink(str(_f.ENV_FILE))
+
+
 class TestManualPositions(unittest.TestCase):
     def test_bare_position_up_past_target_is_sold(self):
         b = Broker(positions=[pos("2885", "RELIANCE", 1, "1316.60")],
