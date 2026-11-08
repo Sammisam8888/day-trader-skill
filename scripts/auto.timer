@@ -1,22 +1,12 @@
-# Scans every 10 minutes through the entry window.
-#
-# Each firing is a fresh process that reads its own log and reconciles it
-# against the broker before placing anything, so frequent runs cannot
-# duplicate: a symbol already resting or held is skipped. A breakout that
-# forms at 11:17 is caught by 11:20 instead of 11:30 or 13:00.
-#
-# Hours 09-14, minute 0 stepping by 10: fires 09:00 to 14:50. The script
-# returns immediately outside the 09:30-14:30 entry window, so the extra
-# firings cost nothing. Validated with `systemd-analyze calendar`.
-#
-# Install:
-#   sudo cp scripts/auto.{timer,service} /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl restart auto.timer
 [Unit]
-Description=Autonomous trading scan, every 10 minutes through the entry window
+Description=Breakout scanner, every 5 minutes through the session
 
 [Timer]
-OnCalendar=Mon-Fri *-*-* 09..14:00/10:00 Asia/Kolkata
+# Every day, 09:00-15:55 in 5-minute steps. The scanner returns at once on a
+# non-trading day or outside the entry window, so weekends cost nothing and
+# special sessions (Muhurat, on a Sunday) are covered without an edit.
+# Validated with `systemd-analyze calendar`.
+OnCalendar=*-*-* 09..15:00/5:00 Asia/Kolkata
 Persistent=false
 
 [Install]

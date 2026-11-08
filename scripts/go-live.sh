@@ -23,8 +23,8 @@ case "${1:-status}" in
     set_var TRADER_LIVE true
     echo "LIVE placement ON. Unattended runs will send real orders."
     echo "Limits now in force:"
-    grep -E '^TRADER_(MAX_LOSS|DAILY_LOSS|MAX_TRADES)=' "$ENV" || \
-      echo "  (defaults: max loss 500, daily 1500, 3 trades)"
+    grep -E '^TRADER_(SYMBOLS|MAX_LOSS|DAILY_LOSS|MAX_TRADES|MAX_CONCURRENT|MAX_LEVERAGE)=' "$ENV" || true
+    [ -n "$(grep -E '^SHOONYA_ALGO_ID=.+' "$ENV")" ] || echo "  NOTE: no SHOONYA_ALGO_ID set; the exchange may reject API orders without one."
     echo "Emergency stop: sudo bash $0 halt \"reason\""
     ;;
   off)
@@ -34,8 +34,8 @@ case "${1:-status}" in
   halt)
     printf '%s\n' "${2:-halted manually}" > "$HALT"
     chmod 644 "$HALT"
-    echo "HALTED. No further orders until resumed. Resting orders at the"
-    echo "exchange are NOT cancelled by this -- check positions."
+    echo "HALTED. No new entries until resumed. Stops, targets and the flatten"
+    echo "keep running. Resting entries are NOT cancelled; say 'cancel all' in chat."
     ;;
   resume)
     rm -f "$HALT"

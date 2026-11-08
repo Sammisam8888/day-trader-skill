@@ -5,7 +5,7 @@ from decimal import Decimal as D
 from _load import load
 
 _v = load("indstocks", "volatility")
-_b = load("indstocks", "bars")
+_b = load("indstocks", "market")
 _s = load("indstocks", "session")
 
 

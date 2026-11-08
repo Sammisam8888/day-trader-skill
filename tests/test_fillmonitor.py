@@ -1,304 +1,244 @@
-"""The fill monitor: cancel-on-fill, manual-position protection, near-close
-sweep. It is the piece that must react in seconds, so it is mechanical."""
+"""The fill monitor: stop on fill, target, trailing, pruning, manual,
+shorts, and the flatten hand-off. Every case is a scripted broker state."""
 
 import os
 import sys
-import tempfile
 import unittest
-from datetime import datetime
-from decimal import Decimal
+from datetime import date, datetime, timedelta
+from decimal import Decimal as D
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _load import ROOT, load  # noqa: E402
+import _fake  # noqa: E402
+from _fake import NIFTY, SENSEX, FakeBroker, order, position, reset  # noqa: E402
 
-os.environ["TRADER_STATE_DIR"] = tempfile.mkdtemp()
-os.environ["TRADER_MAX_CONCURRENT"] = "2"
-os.environ["TRADER_ENV_FILE"] = os.path.join(tempfile.mkdtemp(), "none")
-_f = load("indstocks", "fillmonitor")
-_s = load("indstocks", "session")
+import common  # noqa: E402
+import fillmonitor as fm  # noqa: E402
+import session as sess  # noqa: E402
 
-
-class Broker:
-    """Scripted broker: an order book, positions, LTPs; records POSTs."""
-
-    def __init__(self, book=(), positions=(), ltp=None):
-        self.book, self.positions, self.ltp = list(book), list(positions), ltp or {}
-        self.posts = []
-
-    cash = "25000"
-
-    def get(self, path, params=None):
-        if path == "/funds":
-            return {"data": {"detailed_avl_balance": {"eq_mis": self.cash}}}
-        if path == "/order-book":
-            return {"data": self.book}
-        if path == "/portfolio/positions":
-            return {"data": self.positions}
-        if path == "/market/quotes/ltp":
-            return {"data": {c: {"live_price": str(self.ltp[c.split('_', 1)[1]])}
-                             for c in params["scrip-codes"].split(",")
-                             if c.split("_", 1)[1] in self.ltp}}
-        raise AssertionError(path)
-
-    def post(self, path, body=None):
-        self.posts.append((path, body))
-        return {"data": {"order_id": "X"}}
+DAY = date(2026, 11, 11)
+AT = datetime(2026, 11, 11, 10, 30, tzinfo=sess.IST)
+sess.now = lambda clock=None: AT
 
 
-def entry(oid, sid, name, traded=0, status="PENDING", price="100", qty=10):
-    return {"id": oid, "security_id": sid, "name": name, "txn_type": "BUY",
-            "status": status, "traded_qty": traded, "requested_qty": qty,
-            "trigger_price": price,
-            "remarks": f"auto/{name}/2026-11-05", "order_type": "TRIGGER"}
+def plan(oid="P1", inst=NIFTY, qty=40, ts=None, **kw):
+    rec = {"event": "placed", "order_id": oid, "symbol": inst.symbol, "tsym": inst.tsym,
+           "token": inst.token, "exch": "NSE", "tick": "0.01", "qty": qty,
+           "trigger": "281.01", "entry": "281.03", "stop": "280.30", "target": "282.49",
+           "range_high": "281.00", "range_low": "279.60",
+           "ts": ts or (AT - timedelta(minutes=5)).isoformat()}
+    rec.update(kw)
+    common.log("auto", rec)
 
 
-def leg(oid, parent, sid, status="PENDING"):
-    return {"id": oid, "parent_order_id": parent, "security_id": sid,
-            "txn_type": "SELL", "status": status, "traded_qty": 0}
+def filled_entry(oid="P1", inst=NIFTY, qty=40, avg="281.02"):
+    return order(oid, inst, status="COMPLETE", qty=qty, filled=qty, avg=avg, remarks=f"auto/{inst.symbol}")
 
 
-def pos(sid, name, qty, avg):
-    return {"security_id": sid, "name": name, "net_qty": qty, "avg_price": avg,
-            "product": "INTRADAY", "exchange": "NSE"}
+def ev(name):
+    return common.events(name)
 
 
-MID = datetime(2026, 11, 5, 11, 0, tzinfo=_s.IST)
-LATE = datetime(2026, 11, 5, 14, 45, tzinfo=_s.IST)
+class Protect(unittest.TestCase):
+    def setUp(self):
+        reset()
+
+    def test_a_fill_gets_a_sell_stop_at_the_exchange(self):
+        plan()
+        b = FakeBroker(orders=[filled_entry()], positions=[position(NIFTY, 40, "281.02")],
+                       quotes={NIFTY.token: {"ltp": "281.10"}})
+        out = fm.tick(b, AT, {})
+        self.assertEqual(out["protected"], 1)
+        s = b.placed[0]
+        self.assertEqual((s["side"], s["qty"], s["trigger"]), ("S", 40, D("280.30")))
+        self.assertLess(s["price"], s["trigger"], "stop limit sits under the trigger to fill in a gap")
+        self.assertEqual(ev("stop_placed")[0]["parent"], "P1")
+
+    def test_the_stop_is_placed_once(self):
+        plan()
+        b = FakeBroker(orders=[filled_entry()], positions=[position(NIFTY, 40, "281.02")],
+                       quotes={NIFTY.token: {"ltp": "281.10"}})
+        fm.tick(b, AT, {})
+        fm.tick(b, AT, {})
+        self.assertEqual(len(b.placed), 1)
+
+    def test_a_partial_fill_that_grows_resizes_the_stop(self):
+        plan()
+        b = FakeBroker(orders=[order("P1", NIFTY, status="OPEN", qty=40, filled=10)],
+                       positions=[position(NIFTY, 10, "281.02")], quotes={NIFTY.token: {"ltp": "281.1"}})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.placed[0]["qty"], 10)
+        b._orders[0].update(filled=40, status="COMPLETE", pending=False)
+        b._positions = [position(NIFTY, 40, "281.02")]
+        fm.tick(b, AT, {})
+        self.assertEqual(b.modified[-1]["qty"], 40)
+
+    def test_a_failed_stop_is_retried_and_alerted(self):
+        plan()
+        b = FakeBroker(orders=[filled_entry()], positions=[position(NIFTY, 40, "281.02")],
+                       quotes={NIFTY.token: {"ltp": "281.1"}}, fail_place=True)
+        fm.tick(b, AT, {})
+        self.assertEqual(len(ev("stop_failed")), 1)
+        b.fail_place = False
+        fm.tick(b, AT, {})
+        self.assertEqual(len(ev("stop_placed")), 1)
 
 
-class TestCancelOnFill(unittest.TestCase):
-    def test_nothing_happens_under_the_cap(self):
-        b = Broker(book=[entry("P1", "1", "A"), entry("P2", "2", "B"), entry("P3", "3", "C")],
-                   positions=[pos("1", "A", 10, "100")])
-        # A is both held (filled) and has a leg, so it is protected
-        b.book.append(leg("L1", "P1", "1"))
-        b.book[0]["traded_qty"] = 10
-        out = _f.tick(b, MID)
-        self.assertEqual(out["cancelled"], 0)
-        self.assertEqual(b.posts, [])
+class TargetAndTrail(unittest.TestCase):
+    def setUp(self):
+        reset()
+        plan()
+        common.log("fill", {"event": "stop_placed", "parent": "P1", "order_id": "S1",
+                            "symbol": "NIFTYBEES", "qty": 40, "trigger": "280.30"})
 
-    def test_every_other_resting_entry_goes_when_the_cap_is_reached(self):
-        b = Broker(book=[entry("P1", "1", "A", traded=10), leg("L1", "P1", "1"),
-                         entry("P2", "2", "B", traded=10), leg("L2", "P2", "2"),
-                         entry("P3", "3", "C"), entry("P4", "4", "D")],
-                   positions=[pos("1", "A", 10, "100"), pos("2", "B", 10, "50")])
-        out = _f.tick(b, MID)
-        self.assertEqual(out["cancelled"], 2)
-        cancelled = sorted(body["order_id"] for path, body in b.posts
-                           if path == "/smart/order/cancel")
-        self.assertEqual(cancelled, ["P3", "P4"], "the filled ones stay")
+    def broker(self, ltp, **kw):
+        return FakeBroker(orders=[filled_entry(), order("S1", NIFTY, side="S", qty=40, price="278.90",
+                                                        trigger="280.30", remarks="stop/NIFTYBEES")],
+                          positions=[position(NIFTY, 40, "281.02")], quotes={NIFTY.token: {"ltp": ltp}}, **kw)
 
-    def test_a_manual_position_counts_toward_the_cap(self):
-        # 1 share of RELIANCE bought by hand + one bot fill = cap of 2.
-        b = Broker(book=[entry("P1", "1", "A", traded=10), leg("L1", "P1", "1"),
-                         entry("P3", "3", "C")],
-                   positions=[pos("1", "A", 10, "100"), pos("2885", "RELIANCE", 1, "1316.6")],
-                   ltp={"2885": "1310"})
-        out = _f.tick(b, MID)
-        self.assertEqual(out["cancelled"], 1)
+    def test_target_cancels_the_stop_then_sells(self):
+        b = self.broker("282.50")
+        fm.tick(b, AT, {})
+        self.assertEqual(b.cancelled, ["S1"])
+        self.assertEqual((b.placed[0]["side"], b.placed[0]["qty"]), ("S", 40))
+        self.assertIsNone(b.placed[0]["trigger"], "a limit, not a stop")
+        self.assertEqual(len(ev("target_exit")), 1)
 
-    def test_never_cancels_a_leg_or_a_sell(self):
-        b = Broker(book=[entry("P1", "1", "A", traded=10), leg("L1", "P1", "1"),
-                         entry("P2", "2", "B", traded=10), leg("L2", "P2", "2")],
-                   positions=[pos("1", "A", 10, "100"), pos("2", "B", 10, "50")])
-        _f.tick(b, MID)
-        self.assertEqual(b.posts, [], "legs are what protect the fills")
+    def test_if_the_stop_cannot_be_cancelled_nothing_is_sold(self):
+        b = self.broker("282.50", fail_cancel={"S1"})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.placed, [], "the stop has probably executed: selling again would go short")
 
+    def test_under_one_r_the_stop_stays(self):
+        b = self.broker("281.50")
+        fm.tick(b, AT, {})
+        self.assertEqual(b.modified, [])
 
-class TestCancelOnExposure(unittest.TestCase):
-    def test_resting_order_that_would_breach_leverage_is_cancelled(self):
-        # One fill of 20,000 held; a resting 13,000 would make 33,000 > 25,000.
-        b = Broker(book=[entry("P1", "1", "A", traded=10, price="2000"), leg("L1", "P1", "1"),
-                         entry("P2", "2", "B", price="1300", qty=10),
-                         entry("P3", "3", "C", price="400", qty=10)],      # 4,000 fits
-                   positions=[pos("1", "A", 10, "2000")])
-        out = _f.tick(b, MID)
-        self.assertEqual(out["cancelled"], 1)
-        self.assertEqual([body["order_id"] for _, body in b.posts], ["P2"])
+    def test_at_one_r_the_stop_moves_to_entry(self):
+        b = self.broker("281.76")                     # entry 281.02 + R 0.72
+        fm.tick(b, AT, {})
+        self.assertEqual(b.modified[0]["trigger"], D("281.02"))
 
-    def test_limits_are_read_fresh_each_tick(self):
-        path = str(_f.ENV_FILE)
-        with open(path, "w") as fh:
-            fh.write("TRADER_MAX_CONCURRENT=1\n")
-        try:
-            self.assertEqual(_f.max_concurrent(), 1)
-        finally:
-            os.unlink(path)
-        self.assertEqual(_f.max_concurrent(), 2)
+    def test_further_up_it_trails_and_never_moves_down(self):
+        b = self.broker("282.20")                     # +1.64R
+        fm.tick(b, AT, {})
+        # R is measured from the actual fill (281.02), so 0.72: 282.20 - 0.72
+        self.assertEqual(b.modified[0]["trigger"], D("281.48"))
+        self.assertIsNone(fm.new_stop(D("281.02"), D("280.30"), D("281.80"), D("0.01"), D("281.48")))
 
 
-class TestRestingTTL(unittest.TestCase):
-    def _log_placed(self, oid, ts):
-        import json as _j
-        d = _f.STATE_DIR / f"{_s.now():%Y-%m-%d}.jsonl"
-        d.parent.mkdir(parents=True, exist_ok=True)
-        with open(d, "a") as fh:
-            fh.write(_j.dumps({"ts": ts, "event": "placed", "parent_order_id": oid}) + "\n")
+class Prune(unittest.TestCase):
+    def setUp(self):
+        reset()
 
-    def test_old_resting_entry_is_cancelled_young_one_kept(self):
-        now = _s.now()
-        self._log_placed("OLD", (now - __import__("datetime").timedelta(minutes=45)).isoformat())
-        self._log_placed("NEW", (now - __import__("datetime").timedelta(minutes=5)).isoformat())
-        b = Broker(book=[entry("OLD", "1", "A"), entry("NEW", "2", "B")])
-        n = _f.expire_stale(b, b.book, now)
-        self.assertEqual(n, 1)
-        self.assertEqual([body["order_id"] for _, body in b.posts], ["OLD"])
+    def test_resting_entries_go_when_fills_reach_the_cap(self):
+        plan("P1"); plan("P2", SENSEX); plan("P3", NIFTY)
+        b = FakeBroker(orders=[filled_entry("P1"), filled_entry("P2", SENSEX, 10, "900"),
+                               order("P3", NIFTY, remarks="auto/NIFTYBEES")],
+                       positions=[position(NIFTY, 40, "281.02"), position(SENSEX, 10, "900")],
+                       quotes={NIFTY.token: {"ltp": "281.1"}, SENSEX.token: {"ltp": "900.5"}})
+        fm.tick(b, AT, {})
+        self.assertIn("P3", b.cancelled)
+        self.assertNotIn("P1", b.cancelled)
 
-    def test_ttl_zero_means_never(self):
-        with open(str(_f.ENV_FILE), "w") as fh:
-            fh.write("TRADER_RESTING_TTL_MIN=0\n")
-        try:
-            b = Broker(book=[entry("OLD", "1", "A")])
-            self.assertEqual(_f.expire_stale(b, b.book, _s.now()), 0)
-        finally:
-            os.unlink(str(_f.ENV_FILE))
+    def test_one_more_fill_past_cash_is_cancelled(self):
+        plan("P1", qty=60); plan("P2", SENSEX, qty=20, entry="900")
+        b = FakeBroker(cash="25000", orders=[filled_entry("P1", qty=60), order("P2", SENSEX, qty=20)],
+                       positions=[position(NIFTY, 60, "281.02")],
+                       quotes={NIFTY.token: {"ltp": "281.1"}, SENSEX.token: {"ltp": "899"}})
+        fm.tick(b, AT, {})
+        self.assertIn("P2", b.cancelled)            # 16,861 held + 18,000 > 25,000
+
+    def test_price_below_the_range_low_kills_the_setup(self):
+        plan("P1")
+        b = FakeBroker(orders=[order("P1", NIFTY)], quotes={NIFTY.token: {"ltp": "279.50"}})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.cancelled, ["P1"])
+
+    def test_inside_the_range_it_stays(self):
+        plan("P1")
+        b = FakeBroker(orders=[order("P1", NIFTY)], quotes={NIFTY.token: {"ltp": "280.50"}})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.cancelled, [])
+
+    def test_ttl(self):
+        reset(TRADER_RESTING_TTL_MIN="30")
+        plan("P1", ts=(AT - timedelta(minutes=45)).isoformat())
+        b = FakeBroker(orders=[order("P1", NIFTY)], quotes={NIFTY.token: {"ltp": "280.50"}})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.cancelled, ["P1"])
+
+    def test_after_last_entry_everything_resting_goes_but_stops_stay(self):
+        plan("P1"); plan("P2", SENSEX, entry="900.50", stop="899", target="905")
+        common.log("fill", {"event": "stop_placed", "parent": "P2", "order_id": "S2", "trigger": "899"})
+        late = datetime(2026, 11, 11, 13, 0, tzinfo=sess.IST)
+        b = FakeBroker(orders=[order("P1", NIFTY), filled_entry("P2", SENSEX, 10, "900"),
+                               order("S2", SENSEX, side="S", qty=10, trigger="899", price="894")],
+                       positions=[position(SENSEX, 10, "900")],
+                       quotes={NIFTY.token: {"ltp": "280.5"}, SENSEX.token: {"ltp": "900"}})
+        fm.tick(b, late, {})
+        self.assertEqual(b.cancelled, ["P1"])
 
 
-class TestManualPositions(unittest.TestCase):
-    def test_bare_position_up_past_target_is_sold(self):
-        b = Broker(positions=[pos("2885", "RELIANCE", 1, "1316.60")],
-                   ltp={"2885": "1330.00"})            # +1.02%
-        out = _f.tick(b, MID)
+class ManualAndShorts(unittest.TestCase):
+    def setUp(self):
+        reset()
+
+    def test_a_manual_position_is_sold_at_its_threshold(self):
+        b = FakeBroker(positions=[position(NIFTY, 10, "280.00")], quotes={NIFTY.token: {"ltp": "282.90"}})
+        out = fm.tick(b, AT, {})
         self.assertEqual(out["sold"], 1)
-        sells = [body for path, body in b.posts if path == "/order"]
-        self.assertEqual(sells[0]["txn_type"], "SELL")
-        self.assertEqual(sells[0]["qty"], 1)
+        self.assertEqual((b.placed[0]["side"], b.placed[0]["qty"]), ("S", 10))
 
-    def test_bare_position_down_past_stop_is_sold(self):
-        b = Broker(positions=[pos("2885", "RELIANCE", 1, "1316.60")],
-                   ltp={"2885": "1309.00"})            # -0.58%
-        self.assertEqual(_f.tick(b, MID)["sold"], 1)
+    def test_inside_the_band_it_is_held(self):
+        b = FakeBroker(positions=[position(NIFTY, 10, "280.00")], quotes={NIFTY.token: {"ltp": "280.50"}})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.placed, [])
 
-    def test_bare_position_inside_the_band_is_held(self):
-        b = Broker(positions=[pos("2885", "RELIANCE", 1, "1316.60")],
-                   ltp={"2885": "1312.00"})            # -0.35%
-        self.assertEqual(_f.tick(b, MID)["sold"], 0)
-        self.assertEqual(b.posts, [])
+    def test_a_manual_position_with_its_own_sell_is_left_to_it(self):
+        b = FakeBroker(positions=[position(NIFTY, 10, "280.00")],
+                       orders=[order("X", NIFTY, side="S", qty=10, trigger="279", price="278")],
+                       quotes={NIFTY.token: {"ltp": "290"}})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.placed, [])
 
-    def test_a_position_with_its_own_sell_leg_is_left_to_it(self):
-        b = Broker(book=[entry("P1", "2885", "RELIANCE", traded=1), leg("L1", "P1", "2885")],
-                   positions=[pos("2885", "RELIANCE", 1, "1316.60")],
-                   ltp={"2885": "1400.00"})
-        self.assertEqual(_f.tick(b, MID)["sold"], 0)
-
-    def test_decision_arithmetic(self):
-        self.assertIsNone(_f.manual_decision(Decimal("100"), Decimal("100.9")))
-        self.assertIn("target", _f.manual_decision(Decimal("100"), Decimal("101")))
-        self.assertIn("stop", _f.manual_decision(Decimal("100"), Decimal("99.5")))
-        self.assertIsNone(_f.manual_decision(Decimal("0"), Decimal("1")))
+    def test_a_short_is_bought_back(self):
+        b = FakeBroker(positions=[position(NIFTY, -40, "281.00")], quotes={NIFTY.token: {"ltp": "281"}})
+        fm.tick(b, AT, {})
+        self.assertEqual((b.placed[0]["side"], b.placed[0]["qty"]), ("B", 40))
 
 
-class TestNearClose(unittest.TestCase):
-    def test_resting_entries_are_swept_after_last_entry(self):
-        b = Broker(book=[entry("P1", "1", "A"), entry("P2", "2", "B")])
-        out = _f.tick(b, LATE)
-        self.assertEqual(out["cancelled"], 2)
+class FlattenHandOff(unittest.TestCase):
+    def setUp(self):
+        reset()
+        _fake  # sandbox already set
+
+    def test_flatten_runs_once_at_flat_by_and_once_five_minutes_later(self):
+        calls = []
+        orig = fm.flatten_mod.run
+        fm.flatten_mod.run = lambda broker, now=None: calls.append(now)
+        try:
+            state = {}
+            b = FakeBroker()
+            for hh, mm in ((15, 4), (15, 5), (15, 6), (15, 10), (15, 11)):
+                fm.tick(b, datetime(2026, 11, 11, hh, mm, tzinfo=sess.IST), state)
+        finally:
+            fm.flatten_mod.run = orig
+        self.assertEqual([(c.hour, c.minute) for c in calls], [(15, 5), (15, 10)])
+
+    def test_muhurat_flattens_at_its_own_time(self):
+        calls = []
+        orig = fm.flatten_mod.run
+        fm.flatten_mod.run = lambda broker, now=None: calls.append(now)
+        try:
+            fm.tick(FakeBroker(), datetime(2026, 11, 8, 15, 10, tzinfo=sess.IST), {})
+        finally:
+            fm.flatten_mod.run = orig
+        self.assertEqual(len(calls), 1)
 
     def test_idle_outside_the_session(self):
-        b = Broker(book=[entry("P1", "1", "A")])
-        self.assertTrue(_f.tick(b, datetime(2026, 11, 5, 8, 0, tzinfo=_s.IST))["idle"])
-        self.assertEqual(b.posts, [])
-
-
-class TestCancelPayload(unittest.TestCase):
-    def test_segment_is_sent(self):
-        # 2026-11-05 13:50: {"order_id": ...} alone is a 400 at the broker.
-        b = Broker(book=[entry("P1", "1", "A")])
-        _f.cancel_entry(b, b.book[0])
-        self.assertEqual(b.posts, [("/smart/order/cancel",
-                                    {"order_id": "P1", "segment": "EQUITY"})])
-
-    def test_every_cancel_in_the_codebase_goes_through_one_function(self):
-        import glob
-        hits = []
-        for path in glob.glob(os.path.join(ROOT, "indstocks", "*.py")):
-            with open(path, encoding="utf-8") as fh:
-                for i, ln in enumerate(fh, 1):
-                    if 'post("/smart/order/cancel"' in ln:
-                        hits.append(f"{os.path.basename(path)}:{i}")
-        self.assertEqual(hits, ["flatten.py:" + hits[0].split(":")[1]] if hits else [], hits)
-
-
-class TestService(unittest.TestCase):
-    def test_unit_file_and_deploy(self):
-        with open(os.path.join(ROOT, "scripts", "fillmonitor.service")) as fh:
-            unit = fh.read()
-        self.assertIn("Restart=always", unit)
-        self.assertIn("EnvironmentFile=/etc/indstocks.env", unit)
-        with open(os.path.join(ROOT, ".github", "workflows", "deploy.yml")) as fh:
-            self.assertIn("fillmonitor", fh.read())
+        self.assertTrue(fm.tick(FakeBroker(), datetime(2026, 11, 11, 7, 0, tzinfo=sess.IST), {})["idle"])
+        self.assertTrue(fm.tick(FakeBroker(), datetime(2026, 11, 14, 11, 0, tzinfo=sess.IST), {})["idle"])
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestTrailingStop(unittest.TestCase):
-    """Breakeven at +1R, then trail 1R below price. Never down."""
-    E, S, T, TICK = Decimal("759.20"), Decimal("755.70"), Decimal("766.50"), Decimal("0.05")
-
-    def test_under_one_r_does_not_move(self):
-        self.assertIsNone(_f.new_stop(self.E, self.S, Decimal("761.00"), self.TICK, self.S))
-
-    def test_at_one_r_locks_breakeven(self):
-        # R = 3.50; +1R = 762.70
-        self.assertEqual(_f.new_stop(self.E, self.S, Decimal("762.70"), self.TICK, self.S),
-                         Decimal("759.20"))
-
-    def test_beyond_one_and_a_half_r_trails(self):
-        # +2R = 766.20 -> stop at ltp - 1R = 762.70
-        self.assertEqual(_f.new_stop(self.E, self.S, Decimal("766.20"), self.TICK, self.S),
-                         Decimal("762.70"))
-
-    def test_never_moves_down(self):
-        self.assertIsNone(_f.new_stop(self.E, self.S, Decimal("762.70"), self.TICK,
-                                      current_sl=Decimal("763.00")))
-
-    def test_rounds_down_to_tick(self):
-        got = _f.new_stop(Decimal("100"), Decimal("99"), Decimal("102.333"), Decimal("0.05"), Decimal("99"))
-        self.assertEqual(got, Decimal("101.30"))
-
-    def test_modify_payload_has_segment_algo_and_both_legs(self):
-        b = Broker()
-        leg = {"id": "L1", "tgt_limit_price": "767.00"}
-        _f.modify_leg(b, leg, Decimal("759.20"), self.TICK, self.T)
-        path, body = b.posts[0]
-        self.assertEqual(path, "/smart/order/modify")
-        self.assertEqual(body["segment"], "EQUITY")
-        self.assertEqual(body["algo_id"], "99999")
-        self.assertEqual(body["sl_trigger_price"], 759.20)
-        self.assertLess(body["sl_limit_price"], 759.20)
-        self.assertEqual(body["tgt_trigger_price"], 766.50)
-
-    def test_manage_stops_end_to_end(self):
-        import json as _j
-        d = _f.STATE_DIR / f"{_s.now():%Y-%m-%d}.jsonl"
-        with open(d, "a") as fh:
-            fh.write(_j.dumps({"ts": "x", "event": "placed", "parent_order_id": "PX", "symbol": "HDFCBANK",
-                               "entry": "759.20", "stop": "755.70", "target": "766.50", "tick": "0.05"}) + "\n")
-        b = Broker(book=[entry("PX", "1333", "HDFC Bank", traded=31),
-                         {**leg("LX", "PX", "1333"), "name": "HDFC Bank", "sl_trigger_price": "755.70"}],
-                   positions=[pos("1333", "HDFC Bank", 31, "759.30")],
-                   ltp={"1333": "763.00"})
-        out = _f.tick(b, MID)
-        self.assertEqual(out["moved"], 1)
-        self.assertEqual(b.posts[0][0], "/smart/order/modify")
-        self.assertEqual(b.posts[0][1]["sl_trigger_price"], 759.20)
-
-
-class TestInvalidateByPrice(unittest.TestCase):
-    def test_resting_order_below_range_low_is_cancelled(self):
-        import json as _j
-        d = _f.STATE_DIR / f"{_s.now():%Y-%m-%d}.jsonl"
-        with open(d, "a") as fh:
-            fh.write(_j.dumps({"ts": "x", "event": "placed", "parent_order_id": "PR", "symbol": "ITC",
-                               "entry": "410.10", "stop": "408.00", "target": "414.30",
-                               "range_low": "405.90"}) + "\n")
-        b = Broker(book=[entry("PR", "1660", "ITC")], ltp={"1660": "405.00"})
-        n = _f.invalidate_by_price(b, b.book, {"1660": Decimal("405.00")})
-        self.assertEqual(n, 1)
-        self.assertEqual(b.posts[0][1]["order_id"], "PR")
-
-    def test_inside_the_range_is_kept(self):
-        b = Broker(book=[entry("PR", "1660", "ITC")])
-        self.assertEqual(_f.invalidate_by_price(b, b.book, {"1660": Decimal("407.00")}), 0)

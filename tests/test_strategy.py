@@ -5,7 +5,7 @@ from decimal import Decimal as D
 from _load import load
 
 _s = load("indstocks", "session")
-_b = load("indstocks", "bars")
+_b = load("indstocks", "market")
 _st = load("indstocks", "strategy")
 _r = load("indstocks", "risk")
 _ch = load("indstocks", "charges")
@@ -61,81 +61,6 @@ class TestBars(unittest.TestCase):
         self.assertEqual(c.closes_at, t(9, 25))
         self.assertFalse(c.is_complete_at(t(9, 24)))
         self.assertTrue(c.is_complete_at(t(9, 25)))
-
-    def test_parse_uses_success_not_status(self):
-        payload = {"success": True, "data": {"NSE_1594": {"candles": [
-            {"ts": int(t(9, 15).timestamp()), "o": 1007, "h": 1013.9,
-             "l": 999.3, "c": 1000.4, "v": 2847163}]}}}
-        out = _b.parse_response(payload, "5minute")
-        self.assertEqual(out["NSE_1594"][0].high, D("1013.9"))
-        self.assertEqual(out["NSE_1594"][0].opens_at, t(9, 15))
-
-    def test_unsuccessful_payload_raises(self):
-        with self.assertRaises(RuntimeError):
-            _b.parse_response({"success": False, "message": "nope"}, "5minute")
-
-    def test_batches_five_codes_per_call(self):
-        calls = []
-
-        class C:
-            def get(self, path, params=None):
-                calls.append(params["scrip-codes"].split(","))
-                return {"success": True, "data": {}}
-
-        codes = [f"NSE_{i}" for i in range(12)]
-        out = _b.Bars(C()).fetch(codes, t(9, 15), t(15, 30), sleep=lambda s: None)
-        self.assertEqual(len(calls[0]), 5, "first pass batches by five")
-        self.assertEqual(len(out), 12)
-        self.assertEqual(out["NSE_0"], [], "absent codes become explicit empties")
-
-    def test_never_exceeds_the_documented_maximum(self):
-        self.assertLessEqual(_b.MAX_CODES_PER_CALL, 5)
-
-    def test_empty_result_is_retried_individually(self):
-        # The endpoint answers success:true with no candles when throttled,
-        # so an empty array must not be taken at face value.
-        attempts = {"n": 0}
-
-        def payload(codes):
-            return {"success": True, "data": {c: {"candles": [
-                {"ts": int(t(9, 15).timestamp()), "o": 1, "h": 2, "l": 1,
-                 "c": 2, "v": 10}]} for c in codes}}
-
-        class C:
-            def get(self, path, params=None):
-                attempts["n"] += 1
-                codes = params["scrip-codes"].split(",")
-                if attempts["n"] == 1:          # first batch comes back empty
-                    return {"success": True, "data": {}}
-                return payload(codes)
-
-        out = _b.Bars(C()).fetch(["NSE_1", "NSE_2"], t(9, 15), t(15, 30),
-                                 sleep=lambda s: None)
-        self.assertEqual(len(out["NSE_1"]), 1)
-        self.assertEqual(len(out["NSE_2"]), 1)
-
-    def test_codes_still_empty_after_retries_are_surfaced(self):
-        class C:
-            def get(self, path, params=None):
-                return {"success": True, "data": {}}
-
-        bars = _b.Bars(C())
-        bars.fetch(["NSE_1"], t(9, 15), t(15, 30), sleep=lambda s: None)
-        self.assertEqual(bars.unresolved, ["NSE_1"],
-                         "a persistent empty must be reported, not read as 'no setup'")
-
-    def test_a_successful_code_is_not_retried(self):
-        calls = []
-
-        class C:
-            def get(self, path, params=None):
-                calls.append(params["scrip-codes"])
-                return {"success": True, "data": {"NSE_1": {"candles": [
-                    {"ts": int(t(9, 15).timestamp()), "o": 1, "h": 2,
-                     "l": 1, "c": 2, "v": 10}]}}}
-
-        _b.Bars(C()).fetch(["NSE_1"], t(9, 15), t(15, 30), sleep=lambda s: None)
-        self.assertEqual(len(calls), 1)
 
     def test_opening_range_only_counts_candles_inside_the_window(self):
         s = _s.Session(DAY)
@@ -238,22 +163,24 @@ class TestSizingAndRisk(unittest.TestCase):
         self.assertEqual(s.qty, 41)                   # 4500 / 108
 
     def test_round_trip_cost_includes_statutory_charges(self):
-        c = _r.size_position(self.plan(), D("100000"), _r.Limits()).round_trip_cost
-        self.assertGreater(c, D("20"), "brokerage alone understates the cost")
+        c = _ch.round_trip(D("12500"), D("12560"))
+        self.assertGreater(c.total, c.brokerage, "brokerage alone understates the cost")
 
-    def test_gst_is_the_bulk_of_the_gap_above_brokerage(self):
+    def test_shoonya_brokerage_is_5_or_003_pct_whichever_lower(self):
+        self.assertEqual(_ch.brokerage(D("12500")), D("3.75"))     # 0.03% < Rs 5
+        self.assertEqual(_ch.brokerage(D("50000")), D("5"))        # capped at Rs 5
         c = _ch.cost_of_plan(D("465.50"), D("469.80"), 1)
-        self.assertEqual(c.brokerage, D("20"))
-        self.assertEqual(c.gst, D("3.61"))
-        self.assertEqual(c.total, D("23.77"))
+        self.assertEqual(c.brokerage, D("0.28"))
+        self.assertEqual(c.total, D("0.50"))
 
     def test_stt_is_charged_on_the_sell_leg_only(self):
         c = _ch.round_trip(D("10000"), D("20000"))
         self.assertEqual(c.stt, D("5.00"))          # 0.025% of the sell side
 
-    def test_breakeven_is_impossible_on_a_tiny_position(self):
-        # Rs 889 of buying power needs a 5% intraday move just to break even.
-        self.assertGreater(_ch.breakeven_pct(D("465.50"), 1), D("5"))
+    def test_percentage_brokerage_keeps_small_positions_viable(self):
+        # Under INDstocks' flat Rs 10 a side, one share at 465 needed a 5%
+        # move to break even. Percentage brokerage removes the fixed floor.
+        self.assertLess(_ch.breakeven_pct(D("465.50"), 1), D("0.2"))
 
     def test_breakeven_is_reasonable_on_a_real_position(self):
         self.assertLess(_ch.breakeven_pct(D("465.50"), 53), D("0.2"))
@@ -304,18 +231,15 @@ class TestSizingAndRisk(unittest.TestCase):
         v = self.gate(limits=_r.Limits(blocked_symbols=("RELIANCE",)))
         self.assertFalse(v.passed)
 
-    def test_todays_real_kotakbank_ticket_is_blocked_on_cost(self):
-        # Live numbers from 2026-11-04 with Rs 889.88 available: 1 share,
-        # trigger 465.50, stop 463.50, target 469.80. Risks Rs 2.10 to make
-        # Rs 4.30 against Rs 20 of brokerage -- it loses when it wins.
-        plan = self.plan(entry="465.50", stop="463.50", target="469.80")
-        sizing = _r.size_position(plan, D("889.88"), _r.Limits())
-        self.assertEqual(sizing.qty, 1)
-        self.assertLess(sizing.net_if_target_hits, 0,
-                        "this trade loses money even on a win")
-        v = self.gate(plan=plan, sizing=sizing)
+    def test_a_trade_whose_move_is_inside_the_charges_is_blocked(self):
+        # An ETF range of a few paise: gain at target below 2x the charges.
+        plan = self.plan(entry="280.00", stop="279.98", target="280.04")
+        sizing = _r.size_position(plan, D("2800"), _r.Limits(min_reward_to_cost=D("2")))
+        self.assertGreater(sizing.qty, 0)
+        self.assertLess(sizing.gain_at_target, sizing.round_trip_cost * 2)
+        v = self.gate(plan=plan, sizing=sizing, limits=_r.Limits(min_reward_to_cost=D("2")))
         self.assertFalse(v.passed)
-        self.assertIn("LOSES", str(v))
+        self.assertIn("not worth the costs", str(v))
 
     def test_a_trade_that_clears_costs_comfortably_passes(self):
         # Rs 500 gain at target against Rs 20 of brokerage.
@@ -324,20 +248,6 @@ class TestSizingAndRisk(unittest.TestCase):
         self.assertGreater(sizing.gain_at_target,
                            sizing.round_trip_cost * _r.MIN_REWARD_TO_COST)
         self.assertTrue(self.gate(plan=plan, sizing=sizing).passed)
-
-    def test_itc_looked_profitable_on_brokerage_alone_and_is_not(self):
-        # ITC today: Rs 23.00 at target. Against brokerage alone (Rs 20) that
-        # reads as a small win. Against the real charges (Rs 23.81) it is a
-        # loss, which is exactly why the flat estimate was dangerous.
-        plan = self.plan(entry="283.20", stop="277.60", target="294.70")
-        sizing = _r.size_position(plan, D("889.88"), _r.Limits())
-        self.assertEqual(sizing.gain_at_target, D("23.00"))
-        self.assertGreater(sizing.round_trip_cost, D("20"))
-        self.assertLess(sizing.net_if_target_hits, 0,
-                        "loses money even when the target hits")
-        v = self.gate(plan=plan, sizing=sizing)
-        self.assertFalse(v.passed)
-        self.assertIn("LOSES", str(v))
 
     def test_gain_at_target_scales_with_quantity(self):
         plan = self.plan(entry="100", stop="95", target="110")

@@ -1,349 +1,170 @@
+"""The scanner: what it places, what it refuses, and why."""
+
 import os
+import sys
 import unittest
-from pathlib import Path
+from datetime import date, datetime
+from decimal import Decimal as D
 
-from _load import ROOT, load
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _fake  # noqa: E402  (sets the sandbox env first)
+from _fake import NIFTY, SENSEX, FakeBroker, opening, order, position, reset  # noqa: E402
 
-_a = load("indstocks", "autotrader")
+import autotrader  # noqa: E402
+import common  # noqa: E402
+import session as sess  # noqa: E402
+from shoonya import LoginRequired  # noqa: E402
 
-
-class TestFailsClosed(unittest.TestCase):
-    def test_live_is_off_unless_explicitly_switched_on(self):
-        for value in ("", "0", "false", "no", "maybe", "TRUE_ISH"):
-            os.environ["TRADER_LIVE"] = value
-            mod = load("indstocks", "autotrader")
-            self.assertFalse(mod.LIVE, f"{value!r} must not enable live")
-        os.environ.pop("TRADER_LIVE", None)
-
-    def test_only_explicit_affirmatives_enable_live(self):
-        for value in ("1", "true", "yes", "TRUE", " Yes "):
-            os.environ["TRADER_LIVE"] = value
-            mod = load("indstocks", "autotrader")
-            self.assertTrue(mod.LIVE, f"{value!r} should enable live")
-        os.environ.pop("TRADER_LIVE", None)
-
-    def test_kill_switch_is_checked_before_any_order(self):
-        with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
-                  encoding="utf-8") as fh:
-            text = fh.read()
-        halt_at = text.index("reason = halted()")
-        post_at = text.index('client.post("/smart/order"')
-        self.assertLess(halt_at, post_at,
-                        "the halt check must precede any order call")
-        # And again inside the loop, so a halt mid-run stops the rest.
-        self.assertIn("if halted():", text)
-
-    def test_daily_loss_limit_uses_broker_pnl_not_our_own_log(self):
-        with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
-                  encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("realised_pnl", text)
-        self.assertIn("daily loss limit reached", text)
-
-    def test_a_failed_order_is_not_retried(self):
-        with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
-                  encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("never retried", text)
-        self.assertNotIn("for attempt in", text)
+DAY = date(2026, 11, 11)                       # a Wednesday
+AT = datetime(2026, 11, 11, 10, 0, tzinfo=sess.IST)
 
 
-class TestCapitalIsSpentAcrossTheRun(unittest.TestCase):
-    """Three orders must not each claim the whole account."""
-
-    def source(self, name):
-        with open(os.path.join(ROOT, "indstocks", name), encoding="utf-8") as fh:
-            return fh.read()
-
-    def test_autotrader_sizes_per_free_slot(self):
-        # Resting orders are free, so many may rest at once; what bounds
-        # the FILLED total is sizing each at (cash - held) / free slots.
-        text = self.source("autotrader.py")
-        self.assertIn("size_position(plan, per_order_cash", text)
-        self.assertNotIn("size_position(plan, cash", text)
-        self.assertIn("per_order_cash = (free_cash / slots)", text)
-        # 2026-11-05: max_concurrent=20 split 26k into 1,387 per order and
-        # every name sized to zero. The slot is floored at a viable value.
-        self.assertIn("viable_slots = max(int(free_cash / MIN_ORDER_VALUE), 1)", text)
-        self.assertIn("slots = min(free_slots, viable_slots)", text)
-
-    def test_resting_orders_do_not_occupy_slots(self):
-        text = self.source("autotrader.py")
-        self.assertIn('"open_symbols": tuple(filled), "resting_symbols": tuple(resting)', text)
-        self.assertNotIn("remaining_cash -= sizing.position_value", text)
-
-    def test_shadow_sizes_against_remaining_too(self):
-        text = self.source("shadow.py")
-        self.assertIn("size_position(plan, remaining_cash", text)
-        self.assertNotIn("size_position(plan, cash", text)
-
-    def test_shadow_decrements_after_committing(self):
-        self.assertIn("remaining_cash -= sizing.position_value",
-                      self.source("shadow.py"))
-
-    def test_the_arithmetic_that_was_wrong(self):
-        # 2026-11-04: three tickets at 22,341 + 22,447 + 21,753 against a
-        # 25,000 balance, each sized as though it were the only one.
-        from decimal import Decimal as D
-        _r = load("indstocks", "risk")
-        _st = load("indstocks", "strategy")
-
-        def plan(entry, stop, target):
-            e, s, t_ = D(entry), D(stop), D(target)
-            return _st.ExitPlan(e, s, t_, e - s, (t_ - e) / (e - s))
-
-        cash = D("25000")
-        limits = _r.Limits()
-        total = D(0)
-        for args in (("1314.2", "1304.9", "1332.8"),
-                     ("2494.1", "2478.4", "2525.5"),
-                     ("1144.9", "1137.8", "1159.1")):
-            total += _r.size_position(plan(*args), cash, limits).position_value
-        self.assertGreater(total, cash * 2, "the bug: 2.6x the account")
-
-        remaining = cash
-        spent = D(0)
-        for args in (("1314.2", "1304.9", "1332.8"),
-                     ("2494.1", "2478.4", "2525.5"),
-                     ("1144.9", "1137.8", "1159.1")):
-            s = _r.size_position(plan(*args), remaining, limits)
-            spent += s.position_value
-            remaining -= s.position_value
-        self.assertLessEqual(spent, cash, "the fix: never over-commit")
+def broker(**kw):
+    kw.setdefault("candles", {NIFTY.token: opening(DAY), SENSEX.token: opening(DAY, "900.00", "896.00")})
+    kw.setdefault("quotes", {NIFTY.token: {"ltp": "280.50"}, SENSEX.token: {"ltp": "898.00", "uc": "990", "lc": "810"}})
+    return FakeBroker(**kw)
 
 
-class TestCrossRunMemory(unittest.TestCase):
-    """Each timer firing is a new process; the day's limits are per DAY."""
+def events(name):
+    return common.events(name, DAY.isoformat())
 
+
+class Placement(unittest.TestCase):
     def setUp(self):
-        import tempfile
-        self.tmp = tempfile.TemporaryDirectory()
-        self._old = _a.STATE_DIR
-        _a.STATE_DIR = Path(self.tmp.name)
+        reset()
+        sess.now = lambda clock=None: AT
 
-    def tearDown(self):
-        _a.STATE_DIR = self._old
-        self.tmp.cleanup()
+    def test_places_an_sl_lmt_buy_one_tick_over_the_range_high(self):
+        b = broker()
+        autotrader.run(b, now=AT)
+        n = next(p for p in b.placed if p["symbol"] == "NIFTYBEES")
+        self.assertEqual((n["side"], n["trigger"]), ("B", D("281.01")))
+        self.assertEqual(n["price"], D("281.03"), "limit = trigger + 2 ticks of slippage")
+        self.assertEqual(n["remarks"], "auto/NIFTYBEES")
+        rec = next(r for r in events("placed") if r["symbol"] == "NIFTYBEES")
+        # stop at the midpoint 280.30; risk 0.73 from 281.03; target 2R = 282.49
+        self.assertEqual((rec["stop"], rec["target"]), ("280.30", "282.49"))
+        self.assertIn("opening range", rec["why"])
 
-    def test_empty_log_means_nothing_placed(self):
-        s = _a.todays_placements()
-        self.assertEqual(s["trades_taken"], 0)
-        self.assertEqual(s["open_symbols"], ())
+    def test_two_slots_split_the_cash(self):
+        b = broker()
+        autotrader.run(b, now=AT)
+        values = [p["qty"] * p["price"] for p in b.placed]
+        self.assertEqual(len(values), 2)
+        self.assertLessEqual(sum(values), D("25000"), "both filling still fits in cash at 1.0x")
 
-    def test_counts_placements_from_an_earlier_run(self):
-        import json
-        from decimal import Decimal as D
-        import session as sess
-        path = _a.STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
-        path.write_text("\n".join(json.dumps(r) for r in [
-            {"event": "run_start"},
-            {"event": "placed", "symbol": "RELIANCE", "risk": "158.10"},
-            {"event": "blocked", "symbol": "WIPRO"},
-            {"event": "run_end"},
-            {"event": "placed", "symbol": "ITC", "risk": "51.30"},
-        ]) + "\n", encoding="utf-8")
+    def test_shadow_mode_places_nothing(self):
+        reset(TRADER_LIVE="false")
+        b = broker()
+        autotrader.run(b, now=AT)
+        self.assertEqual(b.placed, [])
+        self.assertEqual(len(events("would_place")), 2)
 
-        s = _a.todays_placements()
-        self.assertEqual(s["trades_taken"], 2)
-        self.assertEqual(set(s["open_symbols"]), {"RELIANCE", "ITC"})
-        self.assertEqual(s["risk_committed"], D("209.40"))
+    def test_never_chases_a_price_already_through_the_trigger(self):
+        b = broker(quotes={NIFTY.token: {"ltp": "281.20"}, SENSEX.token: {"ltp": "898"}})
+        autotrader.run(b, now=AT)
+        self.assertNotIn("NIFTYBEES", [p["symbol"] for p in b.placed])
+        self.assertTrue(any("not chasing" in r["reason"] for r in events("skip")))
 
-    def test_only_placed_events_count(self):
-        import json
-        import session as sess
-        path = _a.STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
-        path.write_text("\n".join(json.dumps(r) for r in [
-            {"event": "would_place", "symbol": "RELIANCE", "risk": "158.10"},
-            {"event": "blocked", "symbol": "ITC", "risk": "51.30"},
-            {"event": "order_failed", "symbol": "SBIN", "risk": "10"},
-        ]) + "\n", encoding="utf-8")
-        self.assertEqual(_a.todays_placements()["trades_taken"], 0,
-                         "a shadow decision is not a placement")
+    def test_below_the_range_low_is_no_setup(self):
+        b = broker(quotes={NIFTY.token: {"ltp": "279.00"}, SENSEX.token: {"ltp": "898"}})
+        autotrader.run(b, now=AT)
+        self.assertNotIn("NIFTYBEES", [p["symbol"] for p in b.placed])
 
-    def test_a_corrupt_line_does_not_lose_the_rest(self):
-        import json
-        import session as sess
-        path = _a.STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
-        path.write_text(
-            "not json\n"
-            + json.dumps({"event": "placed", "symbol": "ITC", "risk": "51.30"})
-            + "\n", encoding="utf-8")
-        self.assertEqual(_a.todays_placements()["trades_taken"], 1)
+    def test_a_resting_order_is_not_placed_twice(self):
+        b = broker()
+        autotrader.run(b, now=AT)
+        first = len(b.placed)
+        autotrader.run(b, now=AT)
+        self.assertEqual(len(b.placed), first)
 
-    def test_runner_reads_its_own_log_not_the_ticket_log(self):
-        with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
-                  encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("day_log = reconcile_with_broker(client, todays_placements())", text)
-        self.assertNotIn("day_log = tk_mod.day_state_from_log()", text)
+    def test_a_held_symbol_is_not_entered_again(self):
+        b = broker(positions=[position(NIFTY, 40, "281.02")])
+        autotrader.run(b, now=AT)
+        self.assertEqual([p["symbol"] for p in b.placed], ["SENSEXIETF"])
 
-    def test_a_symbol_placed_today_is_skipped(self):
-        with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
-                  encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("already placed today", text)
+    def test_a_failed_order_is_logged_and_not_retried_in_the_run(self):
+        b = broker(fail_place=True)
+        autotrader.run(b, now=AT)
+        self.assertEqual(len(events("order_failed")), 2)
 
 
-class TestReconcile(unittest.TestCase):
-    """A manually cancelled order is not a trade taken."""
-
+class Guards(unittest.TestCase):
     def setUp(self):
-        import tempfile
-        self.tmp = tempfile.TemporaryDirectory()
-        self._old = _a.STATE_DIR
-        _a.STATE_DIR = Path(self.tmp.name)
+        reset()
+        sess.now = lambda clock=None: AT
 
-    def tearDown(self):
-        _a.STATE_DIR = self._old
-        self.tmp.cleanup()
+    def test_kill_switch(self):
+        common.KILL_SWITCH.write_text("test\n")
+        b = broker()
+        autotrader.run(b, now=AT)
+        self.assertEqual(b.placed, [])
 
-    class C:
-        def __init__(self, book):
-            self.book = book
+    def test_outside_the_entry_window(self):
+        b = broker()
+        autotrader.run(b, now=datetime(2026, 11, 11, 9, 20, tzinfo=sess.IST))
+        autotrader.run(b, now=datetime(2026, 11, 11, 13, 0, tzinfo=sess.IST))
+        self.assertEqual(b.placed, [])
 
-        def get(self, path, params=None):
-            return {"data": self.book}
+    def test_weekend_does_nothing(self):
+        b = broker()
+        self.assertEqual(autotrader.run(b, now=datetime(2026, 11, 14, 10, 0, tzinfo=sess.IST)), 0)
+        self.assertEqual(b.placed, [])
 
-    def placements(self):
-        return {"trades_taken": 2, "risk_committed": 0,
-                "open_symbols": ("RELIANCE", "ITC"),
-                "records": [{"symbol": "RELIANCE", "parent_order_id": "P1",
-                             "risk": "158"},
-                            {"symbol": "ITC", "parent_order_id": "P2",
-                             "risk": "51"}]}
+    def test_daily_loss_counts_open_losses(self):
+        b = broker(positions=[position(SENSEX, 10, "900", unrealised="-1600")])
+        autotrader.run(b, now=AT)
+        self.assertEqual(b.placed, [])
+        self.assertTrue(any("daily loss" in r["reason"] for r in events("halted")))
 
-    def test_cancelled_with_nothing_traded_is_dropped(self):
-        # 2026-11-05 09:32: RELIANCE cancelled by hand before it triggered.
-        book = [{"id": "P1", "status": "CANCELLED", "traded_qty": 0},
-                {"id": "P2", "status": "PENDING", "traded_qty": 0}]
-        out = _a.reconcile_with_broker(self.C(book), self.placements())
-        # P2 is still resting: not a trade, not an open symbol, but
-        # remembered so it is not placed twice.
-        self.assertEqual(out["trades_taken"], 0)
-        self.assertEqual(out["open_symbols"], ())
-        self.assertEqual(out["resting_symbols"], ("ITC",))
+    def test_leverage_ceiling(self):
+        b = broker(cash="10000", positions=[position(SENSEX, 12, "900")])
+        autotrader.run(b, now=AT)
+        self.assertEqual(b.placed, [])
 
-    def test_a_fill_is_a_trade_and_an_open_symbol(self):
-        book = [{"id": "P1", "status": "SUCCESS", "traded_qty": 17},
-                {"id": "P2", "status": "PENDING", "traded_qty": 0}]
-        out = _a.reconcile_with_broker(self.C(book), self.placements())
-        self.assertEqual(out["trades_taken"], 1)
-        self.assertEqual(out["open_symbols"], ("RELIANCE",))
-        self.assertEqual(out["resting_symbols"], ("ITC",))
+    def test_fills_count_toward_the_trade_cap(self):
+        reset(TRADER_MAX_TRADES="1")
+        b = broker()
+        autotrader.run(b, now=AT)
+        oid = b.placed[0]["id"]
+        for o in b._orders:
+            if o["id"] == oid:
+                o.update(status="COMPLETE", pending=False, filled=o["qty"])
+        n = len(b.placed)
+        autotrader.run(b, now=AT)
+        self.assertEqual(len(b.placed), n)
+        self.assertTrue(any("trade limit" in r["reason"] for r in events("halted")))
 
-    def test_cancelled_after_a_partial_fill_still_counts(self):
-        book = [{"id": "P1", "status": "PARTIALLY FILLED - CANCELLED",
-                 "traded_qty": 5}]
-        out = _a.reconcile_with_broker(
-            self.C(book), {"records": [{"symbol": "RELIANCE",
-                                        "parent_order_id": "P1", "risk": "158"}]})
-        self.assertEqual(out["trades_taken"], 1, "shares were bought")
+    def test_not_logged_in_is_logged_not_crashed(self):
+        class NoLogin(FakeBroker):
+            def cash(self):
+                raise LoginRequired("not logged in to Shoonya today")
+        self.assertEqual(autotrader.run(NoLogin(), now=AT), 0)
+        self.assertEqual(len(events("login_required")), 1)
 
-    def test_unreadable_book_keeps_the_log(self):
-        class Broken:
-            def get(self, path, params=None):
-                raise RuntimeError("down")
-        out = _a.reconcile_with_broker(Broken(), self.placements())
-        self.assertEqual(out["trades_taken"], 2, "conservative on error")
-
-
-class TestLeverageAndUnrealised(unittest.TestCase):
-    def source(self):
-        with open(os.path.join(ROOT, "indstocks", "autotrader.py"),
-                  encoding="utf-8") as fh:
-            return fh.read()
-
-    def test_daily_limit_reads_unrealised_too(self):
-        text = self.source()
-        self.assertIn("unrealized_pnl", text)
-        self.assertIn("combined = realised + unrealised", text)
-
-    def test_held_exposure_is_measured_before_placing(self):
-        text = self.source()
-        self.assertIn("held_exposure(client)", text)
-        self.assertIn("leverage ceiling already reached", text)
-
-    def test_leverage_default_is_one(self):
-        _r = load("indstocks", "risk")
-        from decimal import Decimal as D
-        self.assertEqual(_r.Limits().max_leverage, D("1.0"))
+    def test_live_is_off_unless_explicitly_on(self):
+        for v in ("", "0", "no", "False", "maybe"):
+            reset(TRADER_LIVE=v)
+            self.assertFalse(common.live(), v)
+        reset(TRADER_LIVE="true")
+        self.assertTrue(common.live())
 
 
-class TestOperatorControls(unittest.TestCase):
-    def test_go_live_script_offers_halt_and_resume(self):
-        text = Path(ROOT, "scripts", "go-live.sh").read_text(encoding="utf-8")
-        for verb in ("on)", "off)", "halt)", "resume)", "status)"):
-            self.assertIn(verb, text)
-
-    def test_halt_warns_that_resting_orders_survive(self):
-        text = Path(ROOT, "scripts", "go-live.sh").read_text(encoding="utf-8")
-        self.assertIn("NOT cancelled", text,
-                      "halting stops new orders; it cannot recall resting ones")
+class Muhurat(unittest.TestCase):
+    def test_sunday_special_session_trades(self):
+        reset()
+        day = date(2026, 11, 8)
+        at = datetime(2026, 11, 8, 14, 45, tzinfo=sess.IST)
+        sess.now = lambda clock=None: at
+        c = [_fake.candle(day, 14, 20, "280", "281", "279.9", "280.5"),
+             _fake.candle(day, 14, 25, "280.5", "280.8", "279.6", "280.1"),
+             _fake.candle(day, 14, 30, "280.1", "280.6", "279.8", "280.4")]
+        b = FakeBroker(candles={NIFTY.token: c}, quotes={NIFTY.token: {"ltp": "280.5"}},
+                       instruments=(NIFTY,))
+        reset(TRADER_SYMBOLS="NIFTYBEES")
+        autotrader.run(b, now=at)
+        self.assertEqual([p["symbol"] for p in b.placed], ["NIFTYBEES"])
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestFlatten(unittest.TestCase):
-    """The exit side. Narrow by design: it may only ever sell."""
-
-    def source(self):
-        with open(os.path.join(ROOT, "indstocks", "flatten.py"),
-                  encoding="utf-8") as fh:
-            return fh.read()
-
-    def test_it_only_ever_sells(self):
-        text = self.source()
-        self.assertIn('"txn_type": "SELL"', text)
-        self.assertNotIn('"txn_type": "BUY"', text,
-                         "the flatten job must never open a position")
-
-    def test_quantity_comes_from_the_broker_not_from_our_log(self):
-        # Selling what we think we hold, rather than what we do hold, is how
-        # a flatten turns into a short position.
-        text = self.source()
-        self.assertIn("/portfolio/positions", text)
-        self.assertIn('pos["qty"]', text)
-
-    def test_only_positive_quantities_are_closed(self):
-        self.assertIn("if qty > 0", self.source(),
-                      "a zero or negative net qty must not be sold")
-
-    def test_resting_legs_are_cancelled_before_selling(self):
-        text = self.source()
-        cancel_at = text.index("cancelled = cancel_resting_legs")
-        sell_at = text.index("resp = sell(client, pos)")
-        self.assertLess(cancel_at, sell_at,
-                        "a sell is rejected while the OCO still holds the shares")
-
-    def test_a_failed_sell_is_loud(self):
-        self.assertIn("CLOSE THIS MANUALLY", self.source())
-
-    def test_flattens_every_intraday_position_by_default(self):
-        # 2026-11-05: the owner asked for manual intraday positions to be
-        # managed too. Only INTRADAY product rows are positions here; CNC
-        # holdings never are.
-        text = self.source()
-        self.assertIn('TRADER_FLATTEN_ALL", "true"', text)
-        self.assertIn('("INTRADAY", "MIS", "")', text)
-        # The old behaviour is still there behind the flag.
-        self.assertIn("bot_filled_today", text)
-        self.assertIn("left_alone", text)
-
-    def test_unfilled_entries_are_cancelled_at_end_of_day(self):
-        text = self.source()
-        self.assertIn("def cancel_all_unfilled", text)
-        # On every exit path, not only when a position was open.
-        self.assertGreaterEqual(text.count("cancel_all_unfilled(client)"), 3)
-
-    def test_sweep_touches_only_our_orders(self):
-        text = self.source()
-        start = text.index("def cancel_all_unfilled")
-        end = text.index("def sell(")
-        self.assertIn('startswith("auto/")', text[start:end])
-
-    def test_runs_before_the_brokers_cutoff(self):
-        timer = Path(ROOT, "scripts", "flatten.timer").read_text(encoding="utf-8")
-        self.assertIn("15:05:00", timer)
-        self.assertIn("15:12:00", timer, "a second pass for anything that failed")

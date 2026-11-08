@@ -22,8 +22,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
-# Per-order brokerage. INDstocks charges a flat Rs 10 per algo order.
-BROKERAGE_PER_ORDER = Decimal("10")
+# Per executed order. Shoonya: Rs 5 or 0.03% of the order value, whichever
+# is lower (the tariff sheet signed at account opening).
+BROKERAGE_PER_ORDER = Decimal("5")
+BROKERAGE_PCT = Decimal("0.0003")
+
+
+def brokerage(order_value: Decimal) -> Decimal:
+    return min(BROKERAGE_PER_ORDER, (Decimal(order_value) * BROKERAGE_PCT)
+               .quantize(Decimal("0.01")))
 
 # Securities Transaction Tax: intraday equity is charged on the SELL leg only.
 STT_SELL_RATE = Decimal("0.00025")          # 0.025%
@@ -78,15 +85,15 @@ def round_trip(buy_value: Decimal, sell_value: Decimal) -> Charges:
     """Every charge on buying at one value and selling at another, intraday."""
     turnover = buy_value + sell_value
 
-    brokerage = BROKERAGE_PER_ORDER * 2
+    brok = brokerage(buy_value) + brokerage(sell_value)
     stt = _r(sell_value * STT_SELL_RATE)          # sell leg only
     exchange = _r(turnover * EXCHANGE_TXN_RATE)
     sebi = _r(turnover * SEBI_RATE)
     ipft = _r(turnover * IPFT_RATE)
     stamp = _r(buy_value * STAMP_DUTY_RATE)       # buy leg only
-    gst = _r((brokerage + exchange + sebi) * GST_RATE)
+    gst = _r((brok + exchange + sebi) * GST_RATE)
 
-    return Charges(brokerage=brokerage, stt=stt, exchange=exchange, sebi=sebi,
+    return Charges(brokerage=brok, stt=stt, exchange=exchange, sebi=sebi,
                    ipft=ipft, stamp_duty=stamp, gst=gst)
 
 
@@ -106,7 +113,7 @@ def breakeven_move(entry: Decimal, qty: int) -> Decimal:
         return Decimal(0)
 
     buy_value = entry * qty
-    fixed = (BROKERAGE_PER_ORDER * 2 * (Decimal(1) + GST_RATE)
+    fixed = (brokerage(buy_value) * 2 * (Decimal(1) + GST_RATE)
              + buy_value * STAMP_DUTY_RATE
              + buy_value * (EXCHANGE_TXN_RATE * (Decimal(1) + GST_RATE)
                             + SEBI_RATE * (Decimal(1) + GST_RATE)
