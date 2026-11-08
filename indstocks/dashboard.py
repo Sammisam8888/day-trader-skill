@@ -1,22 +1,16 @@
 """
-Read-only dashboard. Standard library only. Binds to localhost.
+Dashboard for the Shoonya autotrader. Standard library only. Binds to
+localhost and the Tailscale address; never to all interfaces.
 
-Reach it over an SSH tunnel, never a public port -- this box holds broker
-credentials and can place orders, and "nobody knows the URL" is not a
-security model:
+Tabs: Chat, Positions (net P&L after charges, live and closed positions),
+Orders (each entry with its exchange stop and the reason it was placed),
+Decisions (every logged decision), Controls (halt/resume/limits/symbols),
+Terminal (run a command on the box).
 
-    ssh -L 8080:127.0.0.1:8080 -i ~/.ssh/lightsail.pem ubuntu@13.127.164.72
-    # then open http://localhost:8080 on your laptop
-
-Shows: funds and P&L, open positions, resting orders (each entry paired
-with its OCO stop/target leg and the reason it was placed), today's
-decisions, the limits in force, and the timers.
-
-Writes: halt / resume / limits, CANCEL (an entry and its linked leg
-together), EXIT (market-sell an open intraday position), and CHAT, which
-routes through chat.py: stop, continue, scan interval, limits, cancel,
-sell, and a capped market BUY (at most half of cash). Every write goes
-through the same code the timers use.
+Login: Shoonya is OAuth-only. "Log in" sends the browser to Shoonya's
+authorize page; the redirect comes back to /shoonya/callback (or the
+redirected URL is pasted into the login card) and the code is exchanged
+for today's session token on THIS box, from its whitelisted static IP.
 """
 
 from __future__ import annotations
@@ -33,11 +27,12 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import common
 import session as sess
-from client import Client
+import shoonya as sh
 
 STATE_DIR = Path(os.environ.get("TRADER_STATE_DIR", "/var/lib/indstocks/auto"))
-ENV_FILE = Path("/etc/indstocks.env")
+ENV_FILE = Path(os.environ.get("TRADER_ENV_FILE", "/etc/indstocks.env"))
 HALT_FILE = Path(os.environ.get("TRADER_KILL_SWITCH", "/etc/indstocks.halt"))
 PORT = int(os.environ.get("TRADER_DASHBOARD_PORT", "8080"))
 
@@ -102,7 +97,7 @@ def limits() -> dict:
     out = {}
     try:
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-            if (line.startswith("TRADER_") or line.startswith("ANTHROPIC_API_KEY")) and "=" in line:
+            if (line.startswith(("TRADER_", "ANTHROPIC_API_KEY", "SHOONYA_CLIENT_ID", "SHOONYA_USER_ID", "SHOONYA_ALGO_ID"))) and "=" in line:
                 k, v = line.split("=", 1)
                 out[k] = v
     except OSError:
@@ -120,83 +115,53 @@ def timers() -> str:
         return f"(unavailable: {exc})"
 
 
-def live(client) -> dict:
-    out = {"funds": {}, "positions": [], "orders": []}
+def live(broker) -> dict:
+    """Everything the page shows from the broker, each part failing alone."""
+    out = {"cash": None, "positions": [], "orders": [], "error": "", "login": False}
     try:
-        out["funds"] = (client.get("/funds") or {}).get("data") or {}
+        out["cash"] = broker.cash()
+    except sh.LoginRequired as exc:
+        out["login"], out["error"] = True, str(exc)
+        return out
     except Exception as exc:                            # noqa: BLE001
-        out["funds"] = {"error": str(exc)[:120]}
-    try:
-        d = (client.get("/portfolio/positions") or {}).get("data") or {}
-        out["positions"] = d if isinstance(d, list) else (
-            d.get("positions") or d.get("net_positions") or [])
-    except Exception as exc:                            # noqa: BLE001
-        out["positions"] = [{"error": str(exc)[:120]}]
-    try:
-        d = (client.get("/order-book") or {}).get("data") or []
-        out["orders"] = [r for r in (d if isinstance(d, list) else [])
-                         if isinstance(r, dict)]
-    except Exception as exc:                            # noqa: BLE001
-        out["orders"] = [{"error": str(exc)[:120]}]
-    return out
-
-
-def ltps(client, security_ids) -> dict:
-    out = {}
-    codes = [f"NSE_{s}" for s in dict.fromkeys(str(s) for s in security_ids if s)]
-    for i in range(0, len(codes), 5):
+        out["error"] = f"funds: {exc}"[:200]
+    for key, fn in (("positions", broker.positions), ("orders", broker.orders)):
         try:
-            data = (client.get("/market/quotes/ltp",
-                               params={"scrip-codes": ",".join(codes[i:i + 5])})
-                    or {}).get("data") or {}
-        except Exception:                               # noqa: BLE001
-            continue
-        for code, blk in data.items():
-            try:
-                out[code.split("_", 1)[1]] = Decimal(str((blk or {}).get("live_price")))
-            except Exception:                           # noqa: BLE001
-                pass
+            out[key] = fn()
+        except sh.LoginRequired as exc:
+            out["login"], out["error"] = True, str(exc)
+            return out
+        except Exception as exc:                        # noqa: BLE001
+            out["error"] = (out["error"] + f" {key}: {exc}")[:300]
     return out
 
 
 def placed_records(log: list) -> dict:
-    """parent_order_id -> the autotrader's placement record (the why)."""
-    return {str(r.get("parent_order_id")): r for r in log
-            if r.get("event") == "placed" and r.get("parent_order_id")}
+    """entry order id -> the autotrader's placement record (the why)."""
+    return {str(r.get("order_id")): r for r in log
+            if r.get("event") == "placed" and r.get("order_id")}
 
 
-def pair_orders(rows: list) -> list:
-    """[(entry_row, leg_row_or_None)] for every parent in the book."""
-    by_parent = {}
-    for r in rows:
-        pid = r.get("parent_order_id")
-        if pid:
-            by_parent.setdefault(str(pid), r)
-    out = []
-    for r in rows:
-        if r.get("parent_order_id"):
-            continue
-        out.append((r, by_parent.get(str(r.get("id") or r.get("order_id")))))
+def stop_for(log: list) -> dict:
+    """entry order id -> latest stop order id."""
+    out = {}
+    for r in log:
+        if r.get("event") == "stop_placed" and r.get("parent"):
+            out[str(r["parent"])] = str(r.get("order_id"))
     return out
 
 
-DEAD = ("CANCELLED", "REJECTED", "FAILED", "EXPIRED", "ABORTED")
-
-
-def status_of(entry: dict, leg) -> tuple:
-    """(css class, label) the way the broker app words it."""
-    st = str(entry.get("status", "")).upper()
-    traded = int(entry.get("traded_qty") or 0)
-    if st in DEAD:
-        return "dead", st.title()
-    if traded >= int(entry.get("requested_qty") or 0) and traded > 0:
-        return "fill", "Filled - SL / Target live" if leg else "Filled"
-    if traded > 0:
-        return "fill", f"Partly filled {traded}"
-    if str(entry.get("order_type", "")).upper() in ("TRIGGER", "GTT", "GTT_LIMIT", "SL", "SL-M") \
-            or entry.get("trigger_price"):
+def status_label(o: dict) -> tuple:
+    """(css class, label) in the broker app's words."""
+    if o["dead"]:
+        return "dead", o["status"].title()
+    if o["status"] == "COMPLETE":
+        return "fill", "Executed"
+    if o["filled"] > 0:
+        return "fill", f"Partly filled {o['filled']}"
+    if o["status"] == "TRIGGER_PENDING":
         return "wait", "Waiting for Trigger Price"
-    return "wait", st.title() or "Pending"
+    return "wait", "Open"
 
 
 def term_history(n: int) -> list:
@@ -243,47 +208,39 @@ def dash_log(record: dict) -> None:
         pass
 
 
-def cancel_pair(client, order_id: str) -> str:
-    """Cancel an entry and its linked leg. Only ids present in today's book."""
-    from flatten import cancel_order
-    rows = (client.get("/order-book") or {}).get("data") or []
-    rows = [r for r in rows if isinstance(r, dict)]
-    ids = {str(r.get("id") or r.get("order_id")): r for r in rows}
-    if order_id not in ids:
+def cancel_pair(broker, order_id: str) -> str:
+    """Cancel an entry and, if it is the bot's, its stop. Ids must be in
+    today's book."""
+    book = {o["id"]: o for o in broker.orders()}
+    if order_id not in book:
         return f"order {order_id} is not in today's order book"
-    targets = [order_id] + [str(r.get("id") or r.get("order_id")) for r in rows
-                            if str(r.get("parent_order_id") or "") == order_id]
+    targets = [order_id]
+    sid = stop_for(common.read_log()).get(order_id)
+    if sid:
+        targets.append(sid)
     done, failed = [], []
     for oid in targets:
-        if str(ids.get(oid, {}).get("status", "")).upper() in DEAD:
+        o = book.get(oid)
+        if not o or not o["pending"]:
             continue
         try:
-            cancel_order(client, oid)
+            broker.cancel(oid)
             done.append(oid)
         except Exception as exc:                        # noqa: BLE001
             failed.append(f"{oid}: {str(exc)[:80]}")
-    dash_log({"event": "cancelled_from_dashboard", "name": ids[order_id].get("name"),
-              "order_ids": done, "failed": failed})
+    common.log("dash", {"event": "cancelled_from_dashboard", "symbol": book[order_id]["symbol"],
+                        "order_ids": done, "failed": failed})
     if failed:
         return "cancelled " + ", ".join(done) + "; FAILED " + "; ".join(failed)
-    return f"Cancelled {ids[order_id].get('name')}: entry and its SL/Target leg ({len(done)} orders)."
+    return f"Cancelled {book[order_id]['symbol']} ({len(done)} order{'s' if len(done) != 1 else ''})."
 
 
-def exit_position(client, security_id: str) -> str:
-    from flatten import cancel_resting_legs, open_intraday, sell
-    pos = [p for p in open_intraday(client) if p["security_id"] == security_id]
+def exit_position(broker, token: str) -> str:
+    import chat as chat_mod
+    pos = [p for p in broker.positions() if p["token"] == token and p["qty"] > 0]
     if not pos:
-        return f"no open intraday position with security_id {security_id}"
-    p = pos[0]
-    legs = cancel_resting_legs(client, security_id)
-    if legs:
-        import time
-        time.sleep(1)
-    resp = sell(client, p)
-    oid = ((resp or {}).get("data") or {}).get("order_id")
-    dash_log({"event": "sold", "name": p["name"], "qty": p["qty"], "order_id": oid,
-              "reason": "exit from dashboard", "cancelled_legs": legs})
-    return f"Exit sent for {p['name']} x{p['qty']} at market (order {oid})."
+        return f"no open intraday position with token {token}"
+    return chat_mod.act_sell(broker, pos[0]["symbol"])
 
 
 # ------------------------------------------------------------------ page
@@ -387,6 +344,7 @@ TABS_JS = """
 """
 
 EDITABLE = (
+    ("TRADER_SYMBOLS", "symbols to trade (comma separated)", "text"),
     ("TRADER_MAX_LOSS", "max loss per trade (Rs)", "number"),
     ("TRADER_DAILY_LOSS", "daily loss limit (Rs)", "number"),
     ("TRADER_MAX_TRADES", "max trades per day", "number"),
@@ -405,39 +363,37 @@ EDITABLE = (
 
 
 def render(day: str, flash: str = "", flash_err: bool = False) -> str:
+    import charges as charges_mod
     log = read_log(day)
     lim = limits()
-    client = Client()
-    data = live(client)
-    f = data["funds"]
+    broker = sh.Shoonya()
+    data = live(broker)
     now = sess.now()
     session = sess.session_for(now)
     phase = session.phase(now) if session else "not a trading day"
     halted = HALT_FILE.exists()
     live_flag = lim.get("TRADER_LIVE", "false").lower() in ("1", "true", "yes")
     whys = placed_records(log)
+    stops = stop_for(log)
+    tok = sh.load_token(now)
+    cash = data["cash"] or Decimal(0)
 
-    allpos = [r for r in data["positions"] if isinstance(r, dict) and "error" not in r]
-    pos = [r for r in allpos if int(r.get("net_qty", r.get("quantity", r.get("qty", 0))) or 0) != 0]
-    closed = [r for r in allpos if int(r.get("net_qty", 0) or 0) == 0
-              and (int(r.get("sell_qty") or 0) > 0 or int(r.get("buy_qty") or 0) > 0)]
-    pairs = pair_orders([r for r in data["orders"] if "error" not in r])
-    live_pairs = [(a, b) for a, b in pairs if str(a.get("status", "")).upper() not in DEAD]
-    dead_pairs = [(a, b) for a, b in pairs if str(a.get("status", "")).upper() in DEAD]
-    px = ltps(client, [r.get("security_id") for r in pos] +
-              [a.get("security_id") for a, _ in live_pairs])
-
-    try:
-        cash = Decimal(str((f.get("detailed_avl_balance") or {}).get("eq_mis") or 0))
-    except Exception:                                   # noqa: BLE001
-        cash = Decimal(0)
+    allpos = data["positions"]
+    pos = [r for r in allpos if r["qty"] != 0]
+    closed = [r for r in allpos if r["qty"] == 0 and (r["buy_qty"] or r["sell_qty"])]
+    orders = data["orders"]
+    pending = [o for o in orders if o["pending"]]
+    done_orders = [o for o in orders if not o["pending"]]
+    px = {}
+    if tok and not data["login"]:
+        px = broker.ltps([r["token"] for r in pos] + [o["token"] for o in pending])
 
     state = ("<span class=bad>HALTED</span>" if halted else
              ("<span class=ok>LIVE</span>" if live_flag else "<span class=warn>SHADOW</span>"))
     p = [f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
          f"<title>trader</title><style>{CSS}</style>",
-         f"<div class=top><div class=head><h1>autotrader</h1><div class=muted style='font-size:13px'>"
-         f"{e(now.strftime('%a %d %b %H:%M'))}</div></div>"
+         f"<div class=top><div class=head><h1>autotrader <span class=muted style='font-size:12px;font-weight:500'>Shoonya</span></h1>"
+         f"<div class=muted style='font-size:13px'>{e(now.strftime('%a %d %b %H:%M'))}</div></div>"
          f"<div class=tabs><a data-tab=chat href='?tab=chat&day={e(day)}'>Chat</a>"
          f"<a data-tab=pos href='?tab=pos&day={e(day)}'>Positions</a>"
          f"<a data-tab=orders href='?tab=orders&day={e(day)}'>Orders</a>"
@@ -445,10 +401,34 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
          f"<a data-tab=controls href='?tab=controls&day={e(day)}'>Controls</a>"
          f"<a data-tab=term href='?tab=term&day={e(day)}'>Terminal</a></div>"
          f"<div class=ticker><b>{e(phase)}</b> &middot; {state} &middot; cash <b>{money(cash)}</b>"
-         f" &middot; max {e(lim.get('TRADER_MAX_CONCURRENT', '2'))} positions &middot; "
-         f"leverage cap {e(lim.get('TRADER_MAX_LEVERAGE', '1.0'))}x</div></div><div class=wrap>"]
+         f" &middot; {e(lim.get('TRADER_SYMBOLS', common.DEFAULT_SYMBOLS))} &middot; "
+         f"max {e(lim.get('TRADER_MAX_CONCURRENT', '2'))} pos &middot; "
+         f"{e(lim.get('TRADER_MAX_LEVERAGE', '1.0'))}x</div></div><div class=wrap>"]
     if flash:
         p.append(f"<div class='flash{' err' if flash_err else ''}'>{e(flash)}</div>")
+
+    # ---- login card: always first when there is no session ----
+    if not tok or data["login"]:
+        configured = bool(lim.get("SHOONYA_CLIENT_ID"))
+        p.append("<div class=card style='border-color:var(--warn)'><div class=nm>Not logged in to Shoonya</div>"
+                 "<div class=meta style='margin:6px 0 10px'>Nothing can trade or be protected until you log in. "
+                 "Shoonya sessions end every night, so this is once per trading day.</div>")
+        if configured:
+            p.append("<a class='btn btn-save' href='/shoonya/login'>Log in to Shoonya</a>"
+                     "<form method=post action=/shoonya/code style='margin-top:10px'>"
+                     "<input type=hidden name=tab value=pos>"
+                     "<label>If the redirect page does not load, paste its full address (or just the code) here</label>"
+                     "<input type=text name=code placeholder='https://...?code=...'>"
+                     "<button>Use this code</button></form>")
+        else:
+            p.append("<div class=bad>Shoonya credentials are not set. In Terminal run: "
+                     "<code>sudo bash scripts/setup-shoonya.sh</code></div>")
+        p.append("</div>")
+    else:
+        p.append(f"<div class=meta style='margin-bottom:8px'>Shoonya session since {e(tok['at'][11:16])} "
+                 f"&middot; {e(tok.get('uid'))}</div>")
+    if data["error"] and not data["login"]:
+        p.append(f"<div class='card bad'>{e(data['error'])}</div>")
 
     # ---- chat ----
     import chat as chat_mod
@@ -457,7 +437,7 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     msgs = chat_mod.history(60)
     if not msgs:
         p.append("<div class='bub bot'>Hi. Tell me <b>stop</b>, <b>continue</b>, <b>scan every 5 minutes</b>, "
-                 "<b>buy 10 RELIANCE</b>, <b>sell all</b>, <b>cancel all</b>, <b>status</b> or <b>why HDFCBANK</b>."
+                 "<b>buy 50 NIFTYBEES</b>, <b>sell all</b>, <b>cancel all</b>, <b>status</b> or <b>why NIFTYBEES</b>."
                  + ("" if (has_key or chat_mod.find_claude()) else " No Claude login found on the server, so only commands work.")
                  + "</div>")
     for m in msgs:
@@ -469,167 +449,146 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
                  f"<div class=t>{e((m.get('ts') or '')[11:16])}</div></div>")
     p.append("</div><form method=post action=/chat class=chatform autocomplete=off>"
              f"<input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=chat>"
-             "<input type=text name=text placeholder='stop / continue / buy 10 RELIANCE / why ITC / status' required>"
+             "<input type=text name=text placeholder='stop / continue / buy 50 NIFTYBEES / why / status' required>"
              "<button class=btn-save style='width:auto;margin:0'>Send</button></form>"
              f"<div class=meta style='margin-top:8px'>{'AI replies via API key' if has_key else ('AI replies via the server Claude login' if chat_mod.find_claude() else 'Command mode only')}"
-             f" &middot; scan every {e(lim.get('TRADER_SCAN_MINUTES', '10'))} min</div></section>")
+             f" &middot; scan every {e(lim.get('TRADER_SCAN_MINUTES', '5'))} min</div></section>")
+
+    # ---- positions ----
     p.append("<section data-pane=pos>")
-    # ---- P&L card: realised (closed), open (mark-to-LTP), charges, net ----
-    import charges as charges_mod
-    rp = sum((Decimal(str(r.get("realized_profit") or 0)) for r in allpos), Decimal(0))
+    rp = sum((r["realised"] for r in allpos), Decimal(0))
     up = Decimal(0)
-    for r in pos:
-        q = int(r.get("net_qty", 0) or 0)
-        avg = Decimal(str(r.get("avg_price") or 0))
-        ltp = px.get(str(r.get("security_id")), avg)
-        up += (ltp - avg) * q
-    # charges: every round trip closed today, plus the exit still owed on open positions
     fees = Decimal(0)
     for r in allpos:
-        bq, sq = int(r.get("buy_qty") or 0), int(r.get("sell_qty") or 0)
-        bv = Decimal(str(r.get("buy_avg") or 0)) * bq
-        sv = Decimal(str(r.get("sell_avg") or 0)) * sq
-        if bq and sq:
-            fees += charges_mod.round_trip(bv * min(bq, sq) / bq, sv * min(bq, sq) / sq).total
-        q = int(r.get("net_qty", 0) or 0)
+        ltp = px.get(r["token"]) or r["ltp"] or r["avg"]
+        if r["qty"]:
+            up += (ltp - r["avg"]) * r["qty"]
+            fees += charges_mod.round_trip(r["avg"] * abs(r["qty"]), ltp * abs(r["qty"])).total
+        q = min(r["buy_qty"], r["sell_qty"])
         if q:
-            avg = Decimal(str(r.get("avg_price") or 0))
-            ltp = px.get(str(r.get("security_id")), avg)
-            fees += charges_mod.round_trip(avg * q, ltp * q).total
+            fees += charges_mod.round_trip(r["buy_avg"] * q, r["sell_avg"] * q).total
     net = rp + up - fees
+
     def c(v): return "ok" if v >= 0 else "bad"
     p.append(f"<div class=card><div class=pnl>Today's net, after charges"
              f"<div class='v {c(net)}'>{'+' if net >= 0 else ''}&#8377;{money(net)}</div></div>"
              f"<div class=g3 style='margin-top:10px'><div><div class=k>Realised (closed)</div><div class='v {c(rp)}'>{'+' if rp >= 0 else ''}&#8377;{money(rp)}</div></div>"
              f"<div><div class=k>Open (at LTP)</div><div class='v {c(up)}'>{'+' if up >= 0 else ''}&#8377;{money(up)}</div></div>"
-             f"<div><div class=k>Charges (est.)</div><div class='v bad'>-&#8377;{money(fees)}</div></div></div>"
-             f"<div class=meta style='margin-top:8px'>Broker says realised {money(f.get('realized_pnl'))} &middot; unrealised {money(f.get('unrealized_pnl'))} (before charges)</div></div>")
-    if "error" in f:
-        p.append(f"<div class='card bad'>{e(f['error'])}</div>")
+             f"<div><div class=k>Charges (est.)</div><div class='v bad'>-&#8377;{money(fees)}</div></div></div></div>")
 
-    # ---- positions ----
+    bot_tokens = {w["token"] for oid, w in whys.items()
+                  if any(o["id"] == oid and o["filled"] > 0 for o in orders)}
     held_value = Decimal(0)
     p.append(f"<h2>Live positions ({len(pos)})</h2>")
     if not pos:
         p.append("<div class='card muted'>No open intraday positions.</div>")
     for r in pos:
-        sid = str(r.get("security_id"))
-        qty = int(r.get("net_qty", r.get("quantity", r.get("qty", 0))) or 0)
-        avg = Decimal(str(r.get("avg_price") or r.get("buy_avg_price") or 0))
-        ltp = px.get(sid, Decimal(0))
+        qty, avg = r["qty"], r["avg"]
+        ltp = px.get(r["token"]) or r["ltp"]
         inv, cur = avg * qty, ltp * qty
-        held_value += cur
-        pnl = cur - inv if ltp else Decimal(str(r.get("unrealized_pnl") or r.get("pnl") or 0))
+        held_value += abs(cur)
+        pnl = cur - inv
         pct = (pnl / inv * 100) if inv else Decimal(0)
-        cls = "ok" if pnl >= 0 else "bad"
-        name = r.get("name") or r.get("trading_symbol") or sid
-        ours = any(a.get("security_id") == sid and int(a.get("traded_qty") or 0) > 0
-                   and str(a.get("remarks", "")).startswith("auto/") for a, _ in pairs)
+        cls = c(pnl)
+        ours = r["token"] in bot_tokens
+        stop_o = next((o for o in pending if o["token"] == r["token"] and o["side"] == "S"), None)
+        plan = next((w for w in whys.values() if w.get("token") == r["token"]), {})
         p.append(f"<div class=card><div class=head><div style='display:flex;gap:10px'>"
-                 f"<div class=logo>{e(str(name)[:2].upper())}</div><div><div class=nm>{e(name)}</div>"
-                 f"<div class=meta>&#8377;{money(ltp)} &middot; {e(r.get('product'))} &middot; "
+                 f"<div class=logo>{e(r['symbol'][:2])}</div><div><div class=nm>{e(r['symbol'])}</div>"
+                 f"<div class=meta>&#8377;{money(ltp)} &middot; MIS &middot; "
                  f"{'bot' if ours else '<span class=warn>manual</span>'}</div></div></div>"
                  f"<div style='text-align:right'><div class=meta>Avg. <b>&#8377;{money(avg)}</b></div>"
                  f"<div class=meta>Qty <b>{'+' if qty > 0 else ''}{qty}</b> <span class='badge {'B' if qty > 0 else 'S'}'>{'B' if qty > 0 else 'S'}</span></div></div></div>"
-                 f"<div class=g3><div><div class=k>Invested Value</div><div class=v>&#8377;{money(inv)}</div></div>"
-                 f"<div><div class=k>Current Value</div><div class=v>&#8377;{money(cur)}</div></div>"
+                 f"<div class=g3><div><div class=k>Invested</div><div class=v>&#8377;{money(inv)}</div></div>"
+                 f"<div><div class=k>Current</div><div class=v>&#8377;{money(cur)}</div></div>"
                  f"<div><div class=k>P&amp;L (<span class={cls}>{pct:+.2f}%</span>)</div><div class='v {cls}'>{'+' if pnl >= 0 else ''}&#8377;{money(pnl)}</div></div></div>")
-        if not ours:
-            p.append(f"<div class=why>Manual position. The fill monitor sells it at market when it is up "
-                     f"<b>{e(lim.get('TRADER_MANUAL_TARGET_PCT', '1.0'))}%</b> or down "
-                     f"<b>{e(lim.get('TRADER_MANUAL_STOP_PCT', '0.5'))}%</b> from {money(avg)}, "
-                     f"and the 15:05 flatten closes it regardless.</div>")
-        p.append(f"<div class=btns><form method=post action=/exit onsubmit=\"return confirm('Sell {e(name)} x{qty} at market now?')\">"
-                 f"<input type=hidden name=security_id value='{e(sid)}'><input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=pos>"
-                 f"<button class=btn-x>&#10162; Insta Exit</button></form>"
-                 f"<a class=btn data-tab=orders href='?tab=orders&day={e(day)}'>Manage</a></div></div>")
-    if closed:
-        p.append(f"<h2>Closed today ({len(closed)})</h2>")
-        for r in closed:
-            q = min(int(r.get("buy_qty") or 0), int(r.get("sell_qty") or 0))
-            b_avg, s_avg = Decimal(str(r.get("buy_avg") or 0)), Decimal(str(r.get("sell_avg") or 0))
-            rpnl = Decimal(str(r.get("realized_profit") or 0))
-            fee = charges_mod.round_trip(b_avg * q, s_avg * q).total if q else Decimal(0)
-            name = r.get("name") or r.get("symbol") or r.get("security_id")
-            why = next((w for w in whys.values() if (w.get("symbol") or "").upper() == str(r.get("symbol") or "").upper()), {})
-            how = ""
-            if why:
-                stop, tgt = Decimal(why["stop"]), Decimal(why["target"])
-                how = ("stop-loss hit" if s_avg <= stop + (stop * Decimal("0.002")) else
-                       "target hit" if s_avg >= tgt - (tgt * Decimal("0.002")) else "sold before stop/target")
-            p.append(f"<div class=card><div class=head><div style='display:flex;gap:10px'>"
-                     f"<div class=logo>{e(str(name)[:2].upper())}</div><div><div class=nm>{e(name)}</div>"
-                     f"<div class=meta>Qty {q} &middot; <span class='st {'dead' if rpnl < 0 else 'fill'}'>{e(how) or 'traded'}</span></div></div></div>"
-                     f"<div style='text-align:right'><div class='v {c(rpnl)}' style='font-size:18px;font-weight:700'>{'+' if rpnl >= 0 else ''}&#8377;{money(rpnl)}</div>"
-                     f"<div class=meta>net {'+' if rpnl - fee >= 0 else ''}&#8377;{money(rpnl - fee)}</div></div></div>"
-                     f"<div class=g3><div><div class=k>Avg. Buy</div><div class=v>&#8377;{money(b_avg)}</div></div>"
-                     f"<div><div class=k>Avg. Sell</div><div class=v>&#8377;{money(s_avg)}</div></div>"
-                     f"<div><div class=k>Charges</div><div class=v>&#8377;{money(fee)}</div></div></div>"
-                     + (f"<div class=why><b>Plan was:</b> buy {e(why.get('entry'))} &rarr; stop {e(why.get('stop'))} / target {e(why.get('target'))}. "
-                        f"{e(why.get('why', ''))}</div>" if why else "")
+        if stop_o:
+            p.append(f"<div class=why>Stop at the exchange: <b class=bad>&#8377;{money(stop_o['trigger'])}</b>"
+                     + (f" &middot; target <b class=ok>&#8377;{money(plan.get('target'))}</b> (taken by the fill monitor)" if plan else "")
                      + "</div>")
+        elif ours:
+            p.append("<div class='why bad'>No stop at the exchange yet. The fill monitor places one within seconds of a fill; "
+                     "if this stays, check the Decisions tab for stop_failed.</div>")
+        else:
+            p.append(f"<div class=why>Manual position. The fill monitor sells it when it is up "
+                     f"<b>{e(lim.get('TRADER_MANUAL_TARGET_PCT', '1.0'))}%</b> or down "
+                     f"<b>{e(lim.get('TRADER_MANUAL_STOP_PCT', '0.5'))}%</b> from {money(avg)}; "
+                     f"the flatten closes it regardless.</div>")
+        p.append(f"<div class=btns><form method=post action=/exit onsubmit=\"return confirm('Sell {e(r['symbol'])} x{qty} now?')\">"
+                 f"<input type=hidden name=token value='{e(r['token'])}'><input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=pos>"
+                 f"<button class=btn-x>&#10162; Insta Exit</button></form>"
+                 f"<a class=btn data-tab=orders href='?tab=orders&day={e(day)}'>Orders</a></div></div>")
     if pos and cash:
         lev = held_value / cash
         p.append(f"<div class=meta style='margin:-4px 0 8px'>Held &#8377;{money(held_value)} against cash "
-                 f"&#8377;{money(cash)} = <b class='{'bad' if lev > Decimal(lim.get('TRADER_MAX_LEVERAGE', '1.0') or 1) else 'ok'}'>{lev:.2f}x</b> leverage</div>")
+                 f"&#8377;{money(cash)} = <b class='{'bad' if lev > Decimal(lim.get('TRADER_MAX_LEVERAGE', '1.0') or 1) else 'ok'}'>{lev:.2f}x</b></div>")
+    if closed:
+        p.append(f"<h2>Closed today ({len(closed)})</h2>")
+        for r in closed:
+            q = min(r["buy_qty"], r["sell_qty"])
+            fee = charges_mod.round_trip(r["buy_avg"] * q, r["sell_avg"] * q).total if q else Decimal(0)
+            rpnl = r["realised"]
+            plan = next((w for w in whys.values() if w.get("token") == r["token"]), {})
+            how = ""
+            if plan:
+                stop, tgt = Decimal(plan["stop"]), Decimal(plan["target"])
+                how = ("stop-loss hit" if r["sell_avg"] <= stop * Decimal("1.002") else
+                       "target hit" if r["sell_avg"] >= tgt * Decimal("0.998") else "closed before stop/target")
+            p.append(f"<div class=card><div class=head><div style='display:flex;gap:10px'>"
+                     f"<div class=logo>{e(r['symbol'][:2])}</div><div><div class=nm>{e(r['symbol'])}</div>"
+                     f"<div class=meta>Qty {q} &middot; <span class='st {'dead' if rpnl < 0 else 'fill'}'>{e(how) or 'traded'}</span></div></div></div>"
+                     f"<div style='text-align:right'><div class='v {c(rpnl)}' style='font-size:18px;font-weight:700'>{'+' if rpnl >= 0 else ''}&#8377;{money(rpnl)}</div>"
+                     f"<div class=meta>net {'+' if rpnl - fee >= 0 else ''}&#8377;{money(rpnl - fee)}</div></div></div>"
+                     f"<div class=g3><div><div class=k>Avg. Buy</div><div class=v>&#8377;{money(r['buy_avg'])}</div></div>"
+                     f"<div><div class=k>Avg. Sell</div><div class=v>&#8377;{money(r['sell_avg'])}</div></div>"
+                     f"<div><div class=k>Charges</div><div class=v>&#8377;{money(fee)}</div></div></div>"
+                     + (f"<div class=why><b>Plan was:</b> {e(plan.get('why', ''))}</div>" if plan else "")
+                     + "</div>")
 
-    p.append("</section><section data-pane=orders>")
     # ---- orders ----
-    p.append(f"<h2>Open orders ({len(live_pairs)})</h2>")
-    if not live_pairs:
-        p.append("<div class='card muted'>No resting orders. The scanner runs every 10 minutes 09:30-14:30.</div>")
-    for entry, leg in live_pairs:
-        sid = str(entry.get("security_id"))
-        oid = str(entry.get("id") or entry.get("order_id"))
-        name = entry.get("name") or sid
-        ltp = px.get(sid)
-        cls, label = status_of(entry, leg)
-        side = str(entry.get("txn_type", "B"))[:1].upper()
-        why = whys.get(oid, {})
-        req = int(entry.get("requested_qty") or why.get("qty") or 0)
-        traded = int(entry.get("traded_qty") or 0)
-        trig = entry.get("trigger_price") or entry.get("requested_price") or why.get("entry")
-        ours = str(entry.get("remarks", "")).startswith("auto/")
-        when = (entry.get("created_at") or entry.get("order_time") or entry.get("exch_time")
-                or (why.get("ts") or "")[11:16])
+    p.append("</section><section data-pane=orders>")
+    entries = [o for o in pending if o["side"] == "B"]
+    sells = [o for o in pending if o["side"] == "S"]
+    p.append(f"<h2>Open orders ({len(pending)})</h2>")
+    if not pending:
+        p.append("<div class='card muted'>No open orders.</div>")
+    for o in entries + sells:
+        ltp = px.get(o["token"])
+        cls, label = status_label(o)
+        why = whys.get(o["id"], {})
+        is_stop = o["side"] == "S" and o["type"] == "SL-LMT"
+        kind = ("Stop-loss" if is_stop else "Sell") if o["side"] == "S" else ("Breakout entry" if why else "Buy")
         p.append(f"<div class=card><div class=head><div style='display:flex;gap:10px'>"
-                 f"<div class=logo>{e(str(name)[:2].upper())}</div><div><div class=tk>{e(why.get('symbol') or sid)}</div>"
-                 f"<div class=nm>{e(name)}</div><div class=meta><span class='badge {side}'>{side}</span> &nbsp;"
-                 f"{e(entry.get('order_type') or 'GTT')} &middot; LTP: <b>&#8377;{money(ltp) if ltp is not None else '?'}</b></div></div></div>"
+                 f"<div class=logo>{e(o['symbol'][:2])}</div><div><div class=tk>{e(kind)}</div>"
+                 f"<div class=nm>{e(o['symbol'])}</div><div class=meta><span class='badge {o['side']}'>{o['side']}</span> &nbsp;"
+                 f"{e(o['type'])} &middot; LTP <b>&#8377;{money(ltp) if ltp is not None else '?'}</b></div></div></div>"
                  f"<span class='st {cls}'>{e(label)}</span></div>"
-                 f"<div class=g3><div><div class=k>Placed</div><div class=v style='font-size:15px'>{e(str(when)[:16]) or '-'}</div></div>"
-                 f"<div><div class=k>Trigger</div><div class=v>&#8377;{money(trig)}</div></div>"
-                 f"<div><div class=k>Qty Filled</div><div class=v>{traded}/{req}</div></div></div>")
-        if leg:
-            lcls = "arm" if traded == 0 else "fill"
-            p.append(f"<div class=leg><div class=head><div class=meta><span class='badge S'>S</span> &nbsp;OCO &middot; "
-                     f"linked sell for the same {req}</div>"
-                     f"<span class='st {lcls}'>{'Activating SL / Target' if traded == 0 else 'SL / Target live'}</span></div>"
-                     f"<div class=g3><div><div class=k>Stop loss</div><div class='v bad'>&#8377;{money(leg.get('sl_trigger_price') or why.get('stop'))}</div></div>"
-                     f"<div><div class=k>Target</div><div class='v ok'>&#8377;{money(leg.get('tgt_trigger_price') or why.get('target'))}</div></div>"
-                     f"<div><div class=k>Status</div><div class=v style='font-size:14px'>{e(str(leg.get('status', '')).title())}</div></div></div></div>")
+                 f"<div class=g3><div><div class=k>Trigger</div><div class=v>{'&#8377;' + money(o['trigger']) if o['trigger'] else '-'}</div></div>"
+                 f"<div><div class=k>Limit</div><div class=v>&#8377;{money(o['price'])}</div></div>"
+                 f"<div><div class=k>Filled</div><div class=v>{o['filled']}/{o['qty']}</div></div></div>")
         if why:
             p.append(f"<div class=why><b>Why:</b> {e(why.get('why', ''))}"
                      f"<div style='margin-top:8px'>"
+                     f"<div class=row2><span>Stop / target</span><b><span class=bad>&#8377;{money(why.get('stop'))}</span> / <span class=ok>&#8377;{money(why.get('target'))}</span></b></div>"
                      f"<div class=row2><span>Position value</span><b>&#8377;{money(why.get('position_value'))}</b></div>"
-                     f"<div class=row2><span>Leverage used (this order / cash)</span><b>{e(why.get('leverage'))}x</b></div>"
+                     f"<div class=row2><span>Leverage (this order / cash)</span><b>{e(why.get('leverage'))}x</b></div>"
                      f"<div class=row2><span>Max loss at stop</span><b class=bad>-&#8377;{money(why.get('risk'))}</b></div>"
                      f"<div class=row2><span>Profit if target hits (gross)</span><b class=ok>+&#8377;{money(why.get('gross_if_target'))}</b></div>"
                      f"<div class=row2><span>Charges, round trip</span><b>-&#8377;{money(why.get('costs'))}</b></div>"
-                     f"<div class=row2><span>Net profit if target hits</span><b class='{'ok' if Decimal(str(why.get('net_if_target') or 0)) >= 0 else 'bad'}'>&#8377;{money(why.get('net_if_target'))}</b></div>"
-                     f"<div class=row2><span>LTP when placed</span><b>&#8377;{money(why.get('ltp_at_placement'))}</b></div>"
+                     f"<div class=row2><span>Net if target hits</span><b class='{c(Decimal(str(why.get('net_if_target') or 0)))}'>&#8377;{money(why.get('net_if_target'))}</b></div>"
                      f"</div></div>")
-        elif not ours:
-            p.append("<div class=why>Placed outside the autotrader (no decision record).</div>")
-        p.append(f"<div class=btns><form method=post action=/cancel onsubmit=\"return confirm('Cancel {e(name)} entry AND its SL/Target leg?')\">"
-                 f"<input type=hidden name=order_id value='{e(oid)}'><input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=orders>"
-                 f"<button class=btn-x>&#10006; Cancel both</button></form></div></div>")
-    if dead_pairs:
-        p.append(f"<details><summary>{len(dead_pairs)} cancelled / rejected / done today</summary><div class=card>")
-        for entry, leg in dead_pairs:
-            p.append(f"<div class=row><div class=l><div class=sym>{e((entry.get('name') or '')[:22])}</div>"
-                     f"<div class=sub>{e(entry.get('txn_type'))} {e(entry.get('requested_qty'))} &middot; filled {e(entry.get('traded_qty') or 0)} &middot; {e(entry.get('id'))}</div></div>"
-                     f"<div class=r><span class='pill blocked'>{e(entry.get('status'))}</span></div></div>")
+        confirm = ("Cancel this STOP? The position will have no protection." if is_stop
+                   else f"Cancel {o['symbol']} {kind.lower()}?")
+        p.append(f"<div class=btns><form method=post action=/cancel onsubmit=\"return confirm('{e(confirm)}')\">"
+                 f"<input type=hidden name=order_id value='{e(o['id'])}'><input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=orders>"
+                 f"<button class=btn-x>&#10006; Cancel</button></form></div></div>")
+    if done_orders:
+        p.append(f"<details><summary>{len(done_orders)} executed / cancelled / rejected today</summary><div class=card>")
+        for o in done_orders:
+            p.append(f"<div class=row><div class=l><div class=sym>{e(o['symbol'])} <span class='badge {o['side']}'>{o['side']}</span></div>"
+                     f"<div class=sub>{e(o['type'])} {o['qty']} &middot; filled {o['filled']} @ {money(o['avg'])} &middot; {e(o['remarks'])}"
+                     f"{(' &middot; ' + e(o['reason'])) if o['reason'] else ''}</div></div>"
+                     f"<div class=r><span class='pill {'ok' if o['status'] == 'COMPLETE' else 'blocked'}'>{e(o['status'])}</span></div></div>")
         p.append("</div></details>")
 
     p.append("</section><section data-pane=decisions>")
@@ -679,10 +638,21 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     else:
         p.append("<form method=post action=/halt><input type=hidden name=tab value=controls><input type=text name=reason placeholder='reason (optional)'>"
                  "<button class=btn-halt style='margin-top:10px'>Halt &mdash; stop placing new orders</button></form>")
-    p.append("<details><summary>Risk limits</summary><form method=post action=/limits><input type=hidden name=tab value=controls>")
+    p.append("<details><summary>Risk limits &amp; credentials</summary><form method=post action=/limits><input type=hidden name=tab value=controls>")
     for key, label, typ in EDITABLE:
-        p.append(f"<label>{e(label)}</label><input type={typ} step=any name={e(key)} "
+        p.append(f"<label>{e(label)}</label><input type={typ} {'step=any ' if typ == 'number' else ''}name={e(key)} "
                  f"value='{e(lim.get(key, ''))}' placeholder='default'>")
+    p.append("<h2 style='margin-top:16px'>Shoonya credentials</h2>"
+             "<div class=sub>From trade.shoonya.com &rarr; profile &rarr; API Key. Blank keeps what is saved. "
+             "Register IP 13.127.164.72 there as primary and secondary.</div>")
+    for key, label, kind in (("SHOONYA_USER_ID", "User ID", "text"),
+                             ("SHOONYA_CLIENT_ID", "Client ID", "text"),
+                             ("SHOONYA_SECRET_CODE", "Secret Code", "password"),
+                             ("SHOONYA_ALGO_ID", "SEBI Algo ID (if issued)", "text")):
+        saved = bool(cred_saved(key))
+        shown = "" if kind == "password" else e(lim.get(key, ""))
+        p.append(f"<label>{label}{' (saved)' if saved and kind == 'password' else ''}</label>"
+                 f"<input type={kind} name={key} value='{shown}' autocomplete=off>")
     p.append(f"<label>Anthropic API key (for chat; leave blank to keep{' the saved one' if lim.get('ANTHROPIC_API_KEY') else ''})</label>"
              f"<input type=password name=ANTHROPIC_API_KEY placeholder='{'saved' if lim.get('ANTHROPIC_API_KEY') else 'sk-ant-...'}'>")
     p.append(f"<div class=toggle><input type=checkbox id=live name=TRADER_LIVE value=true"
@@ -725,12 +695,32 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     return "".join(p)
 
 
+def cred_saved(key: str) -> str:
+    try:
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1]
+    except OSError:
+        pass
+    return ""
+
+
+CRED_KEYS = ("SHOONYA_USER_ID", "SHOONYA_CLIENT_ID", "SHOONYA_SECRET_CODE", "SHOONYA_ALGO_ID")
+
+
 def write_limits(form: dict) -> str:
     """Rewrite the TRADER_* lines in the env file. Validates before touching it."""
     new = {}
     for key, label, typ in EDITABLE:
         raw = (form.get(key) or [""])[0].strip()
         if not raw:
+            continue
+        if typ == "text":
+            import re as _re
+            syms = [s.upper() for s in _re.split(r"[ ,]+", raw) if s]
+            if not syms or not all(_re.fullmatch(r"[A-Z0-9&\-]{1,20}", s) for s in syms):
+                return f"{label}: letters, digits, & and - only"
+            new[key] = ",".join(syms)
             continue
         try:
             val = Decimal(raw)
@@ -746,6 +736,14 @@ def write_limits(form: dict) -> str:
             val = int(val)
         new[key] = str(val)
     new["TRADER_LIVE"] = "true" if (form.get("TRADER_LIVE") or [""])[0] == "true" else "false"
+    import re as _re2
+    for ck in CRED_KEYS:
+        raw = (form.get(ck) or [""])[0].strip()
+        if not raw:
+            continue
+        if not _re2.fullmatch(r"[A-Za-z0-9_\-]{2,128}", raw):
+            return f"{ck}: unexpected characters"
+        new[ck] = raw
     key = (form.get("ANTHROPIC_API_KEY") or [""])[0].strip()
     if key:
         if not key.startswith("sk-ant-") or len(key) < 40:
@@ -788,8 +786,30 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return sess.now().strftime("%Y-%m-%d")
 
+    def _redirect(self, url: str) -> None:
+        self.send_response(303)
+        self.send_header("Location", url)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):                                   # noqa: N802
+        from urllib.parse import urlencode, urlparse
+        path = urlparse(self.path).path
         q = self._query()
+        if path == "/shoonya/login":
+            try:
+                return self._redirect(sh.authorize_url())
+            except sh.ShoonyaError as exc:
+                return self._redirect("/?" + urlencode({"tab": "pos", "flash": str(exc), "err": "1"}))
+        if path == "/shoonya/callback":
+            code = (q.get("code") or [""])[0]
+            try:
+                rec = sh.exchange_code(code)
+                common.log("dash", {"event": "logged_in", "uid": rec["uid"]})
+                msg, err = f"Logged in to Shoonya as {rec['uid']}.", "0"
+            except Exception as exc:                    # noqa: BLE001
+                msg, err = f"login failed: {exc}", "1"
+            return self._redirect("/?" + urlencode({"tab": "pos", "flash": msg[:300], "err": err}))
         flash = (q.get("flash") or [""])[0]
         err = (q.get("err") or ["0"])[0] == "1"
         try:
@@ -798,8 +818,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(f"<pre>dashboard error: {e(exc)}</pre>".encode(), 500)
 
     def do_POST(self):                                  # noqa: N802
-        """Halt, resume, edit limits, cancel an order pair, exit a position.
-        Every order route reduces exposure; none opens any."""
+        """Halt, resume, limits, chat, terminal, cancel, exit, login code."""
         from urllib.parse import parse_qs, urlparse
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
@@ -823,7 +842,7 @@ class Handler(BaseHTTPRequestHandler):
                 import chat as chat_mod
                 text = (form.get("text") or [""])[0].strip()[:500]
                 if text:
-                    chat_mod.handle(text, Client())
+                    chat_mod.handle(text, sh.Shoonya())
                 flash = ""
             elif path == "/term":
                 cmd = (form.get("cmd") or [""])[0].strip()[:2000]
@@ -835,15 +854,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not oid:
                     flash, err = "no order id", True
                 else:
-                    flash = cancel_pair(Client(), oid)
+                    flash = cancel_pair(sh.Shoonya(), oid)
                     err = "FAILED" in flash or "not in" in flash
             elif path == "/exit":
-                sid = (form.get("security_id") or [""])[0].strip()
-                if not sid:
-                    flash, err = "no security id", True
+                token = (form.get("token") or [""])[0].strip()
+                if not token:
+                    flash, err = "no instrument token", True
                 else:
-                    flash = exit_position(Client(), sid)
-                    err = flash.startswith("no open")
+                    flash = exit_position(sh.Shoonya(), token)
+                    err = flash.startswith("no open") or flash.startswith("No open")
+            elif path == "/shoonya/code":
+                code = (form.get("code") or [""])[0].strip()
+                if not code:
+                    flash, err = "paste the redirected address or the code", True
+                else:
+                    rec = sh.exchange_code(code)
+                    flash = f"Logged in to Shoonya as {rec['uid']}."
+                    common.log("dash", {"event": "logged_in", "uid": rec["uid"]})
             else:
                 flash, err = "unknown action", True
         except Exception as exc:                        # noqa: BLE001

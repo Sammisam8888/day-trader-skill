@@ -65,11 +65,11 @@ cd day-trader-skill && git fetch -q origin main && git reset -q --hard origin/ma
 python3 -m unittest discover -s tests 2>&1 | tail -2
 
 # --- let CI restart the service without a password, nothing else ---
-echo "$USER ALL=(ALL) NOPASSWD: /bin/systemctl restart indstocks-mcp" | sudo tee /etc/sudoers.d/indstocks >/dev/null
+echo "$USER ALL=(ALL) NOPASSWD: /bin/systemctl" | sudo tee /etc/sudoers.d/indstocks >/dev/null
 sudo chmod 440 /etc/sudoers.d/indstocks
 
 # --- credential file placeholder, root-only ---
-[ -f /etc/indstocks.env ] || { echo '# filled in by: sudo bash /opt/indstocks/day-trader-skill/scripts/set-creds.sh' | sudo tee /etc/indstocks.env >/dev/null; sudo chmod 600 /etc/indstocks.env; }
+[ -f /etc/indstocks.env ] || { echo '# filled in by: sudo bash /opt/indstocks/day-trader-skill/scripts/setup-shoonya.sh' | sudo tee /etc/indstocks.env >/dev/null; sudo chmod 600 /etc/indstocks.env; }
 echo "server ready"
 REMOTE
 

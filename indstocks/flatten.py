@@ -1,274 +1,145 @@
 """
-Close every intraday position before the broker does it for you.
+Close every intraday position before the broker does, and leave nothing
+resting into the next day.
 
-The entry side had no counterpart: five timers that open positions and
-nothing that closes them. If neither OCO leg fills, the position sits until
-the broker's own auto-square-off, which costs Rs 50 + GST per position and
-fills at whatever the market gives at that moment.
+Run by the fill monitor at the session's flat-by time and five minutes
+later; the flatten timers run it too, as a backup. Idempotent: with nothing
+open and nothing pending it does nothing.
 
-Runs at 15:05 by default -- before the broker's 15:20 cutoff, with room for
-a market order to fill and for a second attempt if the first is rejected.
+Order of work, per position:
+  1. cancel every pending SELL in that symbol (the stop), or the exchange
+     rejects the exit for selling more than is held
+  2. sell the whole quantity with a marketable LIMIT (Shoonya has no market
+     order), priced TRADER_MARKETABLE_PCT through the bid
+  3. wait, re-read, and re-price anything still open more aggressively,
+     up to three rounds
+Then cancel every remaining pending intraday BUY entry placed by this system.
 
-Cancels the resting OCO legs first. A sell while they are live is rejected:
-the shares are already committed to them.
-
-This file can place orders. It is deliberately narrow: it only ever SELLS,
-only what the broker says is held, and never more.
+Manual intraday positions are closed too (the owner asked for all intraday
+exposure to be managed). Delivery (CNC) holdings are never touched.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
 from decimal import Decimal
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import session as sess
-from client import Client
+import common                                            # noqa: E402
+import session as sess                                   # noqa: E402
+from market import to_tick                               # noqa: E402
+from shoonya import LoginRequired, Shoonya, ShoonyaError  # noqa: E402
 
-STATE_DIR = Path(os.environ.get("TRADER_STATE_DIR", "/var/lib/indstocks/auto"))
-
-
-def log(record: dict) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    record = {"ts": sess.now().isoformat(), "job": "flatten", **record}
-    with (STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl").open(
-            "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, default=str) + "\n")
-    print(json.dumps(record, default=str), flush=True)
+JOB = "flatten"
+ROUNDS = 3
+WAIT_S = float(os.environ.get("TRADER_FLATTEN_WAIT_S", "6"))
 
 
-def bot_filled_today(client) -> dict:
-    """security_id -> shares the bot actually bought today.
-
-    The flatten must sell only what this system opened. A position the
-    account owner bought by hand in the same name belongs to them, and a
-    flatten that sells it is a bug with a bill attached. Read fills from the
-    order book rather than our log: the log says what was placed, the book
-    says what traded.
-    """
-    filled = {}
-    try:
-        rows = (client.get("/order-book") or {}).get("data") or []
-    except Exception:                                   # noqa: BLE001
-        return filled
-    for r in rows if isinstance(rows, list) else []:
-        if not str(r.get("remarks", "")).startswith("auto/"):
-            continue
-        if r.get("parent_order_id"):
-            continue                                    # a leg, not an entry
-        if str(r.get("txn_type", "")).upper() != "BUY":
-            continue
-        try:
-            traded = int(r.get("traded_qty") or 0)
-        except (TypeError, ValueError):
-            continue
-        if traded > 0:
-            sid = str(r.get("security_id"))
-            filled[sid] = filled.get(sid, 0) + traded
-    return filled
+def log(rec: dict) -> dict:
+    return common.log(JOB, rec)
 
 
-def open_intraday(client) -> list:
-    """Positions the broker says are open, with a net quantity."""
-    try:
-        data = (client.get("/portfolio/positions") or {}).get("data") or {}
-    except Exception as exc:                            # noqa: BLE001
-        log({"event": "error", "reason": f"positions unreadable: {exc}"})
-        return []
-
-    rows = data if isinstance(data, list) else (
-        data.get("positions") or data.get("net_positions") or [])
-    out = []
-    for r in rows or []:
-        qty = r.get("net_qty", r.get("quantity", r.get("qty")))
-        try:
-            qty = int(qty)
-        except (TypeError, ValueError):
-            continue
-        if qty > 0 and str(r.get("product", "")).upper() in ("INTRADAY", "MIS", ""):
-            out.append({"security_id": str(r.get("security_id")),
-                        "name": r.get("name") or r.get("trading_symbol") or "?",
-                        "qty": qty,
-                        "avg_price": r.get("avg_price") or r.get("buy_avg_price")
-                        or r.get("average_price") or 0,
-                        "exchange": r.get("exchange") or "NSE"})
-    return out
+def price_for(broker, inst, side: str, round_no: int) -> Decimal:
+    """Each round reaches further through the touch: 1x, 2x, 4x the base."""
+    q = broker.quote(inst.token, inst.exch)
+    base = broker.marketable(inst, side, q)
+    if round_no == 0:
+        return base
+    ref = q["bid"] if side == "S" and q["bid"] > 0 else (q["ask"] if q["ask"] > 0 else q["ltp"])
+    pct = Decimal(common.setting("TRADER_MARKETABLE_PCT", "0.3")) * (2 ** round_no) / 100
+    if side == "S":
+        px = to_tick(ref * (1 - pct), inst.tick, mode="down")
+        return max(px, q["lc"]) if q["lc"] > 0 else px
+    px = to_tick(ref * (1 + pct), inst.tick, mode="up")
+    return min(px, q["uc"]) if q["uc"] > 0 else px
 
 
-def cancel_order(client, order_id: str, segment: str = "EQUITY") -> None:
-    """The one place a cancel is sent. `segment` is MANDATORY on
-    /smart/order/cancel: without it the broker answers 400 "Invalid request
-    payload", which on 2026-11-05 left 16 orders resting after three fills
-    while the fill monitor retried every five seconds."""
-    client.post("/smart/order/cancel", body={"order_id": str(order_id),
-                                             "segment": segment})
-
-
-def cancel_resting_legs(client, security_id: str) -> list:
-    """Cancel OCO/GTT legs holding these shares, or the sell is rejected."""
-    cancelled = []
-    try:
-        rows = (client.get("/order-book") or {}).get("data") or []
-    except Exception as exc:                            # noqa: BLE001
-        log({"event": "error", "reason": f"order book unreadable: {exc}"})
-        return cancelled
-
-    for r in rows if isinstance(rows, list) else []:
-        if str(r.get("security_id")) != str(security_id):
-            continue
-        status = str(r.get("status", "")).upper()
-        if status not in ("PENDING", "SL-PENDING", "O-PENDING", "QUEUED",
-                          "CREATED", "INITIATED", "MODIFIED"):
-            continue
-        oid = r.get("id") or r.get("order_id")
-        if not oid:
-            continue
-        try:
-            cancel_order(client, oid)
-            cancelled.append(oid)
-        except Exception as exc:                        # noqa: BLE001
-            log({"event": "cancel_failed", "order_id": oid,
-                 "reason": str(exc)[:200]})
-    return cancelled
-
-
-def cancel_all_unfilled(client) -> dict:
-    """Cancel every resting entry we placed that never triggered.
-
-    DAY validity was supposed to expire these at the close. The broker's
-    order book at 23:32 on 2026-11-04 still showed six of them as open, so
-    it does not, or not reliably. An unfilled trigger from yesterday carries
-    yesterday's levels into today, and the dedupe check reads our log rather
-    than the broker, so it would not see it. Cancel explicitly.
-
-    Returns counts. Only orders tagged auto/ -- nothing of the account
-    owner's.
-    """
-    cancelled, failed = [], []
-    try:
-        rows = (client.get("/order-book") or {}).get("data") or []
-    except Exception as exc:                            # noqa: BLE001
-        log({"event": "error", "reason": f"order book unreadable: {exc}"})
-        return {"cancelled": cancelled, "failed": failed}
-
-    for r in rows if isinstance(rows, list) else []:
-        if not str(r.get("remarks", "")).startswith("auto/"):
-            continue
-        status = str(r.get("status", "")).upper()
-        if status not in ("PENDING", "SL-PENDING", "O-PENDING", "QUEUED",
-                          "CREATED", "INITIATED", "MODIFIED"):
-            continue
-        oid = r.get("id") or r.get("order_id")
-        if not oid:
-            continue
-        try:
-            cancel_order(client, oid)
-            cancelled.append(oid)
-        except Exception as exc:                        # noqa: BLE001
-            failed.append({"order_id": oid, "reason": str(exc)[:160]})
-        time.sleep(0.3)
-    return {"cancelled": cancelled, "failed": failed}
-
-
-def sell(client, pos: dict) -> dict:
-    body = {
-        "txn_type": "SELL",
-        "exchange": pos["exchange"],
-        "segment": "EQUITY",
-        "product": "INTRADAY",
-        "order_type": "MARKET",
-        "validity": "DAY",
-        "security_id": pos["security_id"],
-        "qty": pos["qty"],
-        "algo_id": "99999",
-        "remarks": f"flat/{sess.now():%Y-%m-%d}"[:100],
-    }
-    return client.post("/order", body=body)
-
-
-def run() -> int:
-    now = sess.now()
+def run(broker=None, *, now=None, sleep=time.sleep) -> int:
+    now = now or sess.now()
     if sess.session_for(now) is None:
-        log({"event": "skipped", "reason": "not a trading day"})
         return 0
-
-    client = Client()
-    positions = open_intraday(client)
-    if not positions:
-        log({"event": "nothing_open"})
-        sweep = cancel_all_unfilled(client)
-        log({"event": "cancelled_unfilled", "count": len(sweep["cancelled"]),
-             "order_ids": sweep["cancelled"], "failed": sweep["failed"]})
-        log({"event": "flatten_done", "failed": 0,
-             "cancel_failed": len(sweep["failed"])})
-        return 1 if sweep["failed"] else 0
-
-    # Every INTRADAY position goes, manual ones included: the account owner
-    # asked for all intraday exposure to be managed and closed before the
-    # broker's own square-off (which charges Rs 50 + GST). Delivery (CNC)
-    # holdings are not positions here and are never touched. Set
-    # TRADER_FLATTEN_ALL=false to restore "only what the bot bought".
-    if os.environ.get("TRADER_FLATTEN_ALL", "true").lower() not in ("1", "true", "yes"):
-        ours = bot_filled_today(client)
-        trimmed = []
-        for pos in positions:
-            bot_qty = ours.get(pos["security_id"], 0)
-            if bot_qty <= 0:
-                log({"event": "left_alone", "name": pos["name"], "qty": pos["qty"],
-                     "reason": "not opened by this system"})
-                continue
-            if bot_qty < pos["qty"]:
-                log({"event": "trimmed", "name": pos["name"], "held": pos["qty"],
-                     "selling": bot_qty, "reason": "rest was bought manually"})
-            trimmed.append({**pos, "qty": min(bot_qty, pos["qty"])})
-        positions = trimmed
-    if not positions:
-        log({"event": "nothing_ours"})
-        sweep = cancel_all_unfilled(client)
-        log({"event": "cancelled_unfilled", "count": len(sweep["cancelled"]),
-             "order_ids": sweep["cancelled"], "failed": sweep["failed"]})
-        log({"event": "flatten_done", "failed": 0,
-             "cancel_failed": len(sweep["failed"])})
-        return 1 if sweep["failed"] else 0
-
-    log({"event": "flattening", "count": len(positions),
-         "positions": [(p["name"], p["qty"]) for p in positions]})
+    broker = broker or Shoonya()
+    try:
+        positions = [p for p in broker.positions() if p["qty"] != 0]
+        orders = broker.orders()
+    except LoginRequired as exc:
+        log({"event": "login_required", "reason": str(exc),
+             "action": "CLOSE POSITIONS MANUALLY in the Shoonya app before the broker square-off"})
+        common.notify("FLATTEN BLOCKED", "Not logged in to Shoonya. Close intraday positions by hand.",
+                      priority="urgent")
+        return 1
 
     failed = 0
-    for pos in positions:
-        cancelled = cancel_resting_legs(client, pos["security_id"])
-        if cancelled:
-            log({"event": "cancelled_legs", "name": pos["name"],
-                 "order_ids": cancelled})
-            time.sleep(1)       # let the cancels settle before selling
-
+    for rnd in range(ROUNDS):
+        if not positions:
+            break
+        for pos in positions:
+            inst = broker.instrument_for(pos)
+            side = "S" if pos["qty"] > 0 else "B"
+            # 1. clear every pending order on this symbol's closing side
+            for o in orders:
+                if o["token"] == pos["token"] and o["pending"] and o["side"] == side:
+                    try:
+                        broker.cancel(o["id"])
+                        log({"event": "cancelled", "symbol": pos["symbol"], "order_id": o["id"],
+                             "reason": "clearing the way for the exit"})
+                    except ShoonyaError as exc:
+                        log({"event": "cancel_failed", "order_id": o["id"], "reason": str(exc)[:200]})
+            # 2. exit
+            try:
+                px = price_for(broker, inst, side, rnd)
+                oid = broker.place(inst, side=side, qty=abs(pos["qty"]), price=px,
+                                   remarks=f"flat/{pos['symbol']}")
+                log({"event": "sold" if side == "S" else "covered", "symbol": pos["symbol"],
+                     "qty": abs(pos["qty"]), "price": str(px), "order_id": oid, "round": rnd + 1})
+            except ShoonyaError as exc:
+                log({"event": "sell_failed", "symbol": pos["symbol"], "qty": pos["qty"],
+                     "reason": str(exc)[:300], "round": rnd + 1})
+        # 3. verify
+        sleep(WAIT_S)
         try:
-            resp = sell(client, pos)
-            oid = ((resp or {}).get("data") or {}).get("order_id")
-            log({"event": "sold", "name": pos["name"], "qty": pos["qty"],
-                 "order_id": oid})
-        except Exception as exc:                        # noqa: BLE001
-            failed += 1
-            log({"event": "sell_failed", "name": pos["name"],
-                 "qty": pos["qty"], "reason": str(exc)[:300],
-                 "action": "CLOSE THIS MANUALLY before the broker squares it off"})
-        time.sleep(1)
+            positions = [p for p in broker.positions() if p["qty"] != 0]
+            orders = broker.orders()
+        except ShoonyaError as exc:
+            log({"event": "error", "reason": f"could not re-read positions: {exc}"})
+            break
+        # anything still open: pull our unfilled exits before re-pricing
+        for o in orders:
+            if o["pending"] and o["remarks"].startswith("flat/"):
+                try:
+                    broker.cancel(o["id"])
+                except ShoonyaError:
+                    pass
+        if positions:
+            try:
+                orders = broker.orders()
+            except ShoonyaError:
+                pass
 
-    # Sweep: every resting auto/ order that never triggered, and the legs
-    # of anything just sold. Runs even when nothing was open -- the orders
-    # that matter most here are the ones that never became positions.
-    sweep = cancel_all_unfilled(client)
-    log({"event": "cancelled_unfilled", "count": len(sweep["cancelled"]),
-         "order_ids": sweep["cancelled"], "failed": sweep["failed"]})
+    if positions:
+        failed = len(positions)
+        names = ", ".join(f"{p['symbol']} {p['qty']}" for p in positions)
+        log({"event": "flatten_incomplete", "open": names,
+             "action": "CLOSE THESE MANUALLY before the broker square-off"})
+        common.notify("FLATTEN INCOMPLETE", f"Still open: {names}. Close by hand.", priority="urgent")
 
-    log({"event": "flatten_done", "failed": failed,
-         "cancel_failed": len(sweep["failed"])})
-    return 1 if (failed or sweep["failed"]) else 0
+    # sweep: every pending entry this system placed, and any orphan stop
+    swept = 0
+    ours = common.our_order_ids()
+    for o in orders:
+        if not o["pending"]:
+            continue
+        if o["id"] in ours or o["remarks"].startswith(("auto/", "stop/", "tgt/", "man/", "flat/", "chat/")):
+            try:
+                broker.cancel(o["id"])
+                swept += 1
+            except ShoonyaError as exc:
+                log({"event": "cancel_failed", "order_id": o["id"], "reason": str(exc)[:200]})
+    log({"event": "flatten_done", "still_open": failed, "swept": swept})
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

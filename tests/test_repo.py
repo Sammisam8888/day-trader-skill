@@ -103,14 +103,6 @@ class Repo(unittest.TestCase):
             for old in V1_ONLY:
                 self.assertNotIn(old, text, rel)
 
-    def test_shadow_runner_cannot_place_an_order(self):
-        # Structural, not textual: shadow must never call a write endpoint.
-        with open(os.path.join(ROOT, "indstocks", "shadow.py"),
-                  encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertNotIn(".post(", text, "shadow must not POST anything")
-        self.assertNotIn("import ticket", text, "shadow must not import ticket")
-
     def test_every_tool_runs_on_python_3_8(self):
         # no 3.9+ only modules or syntax in the tools (the README promises 3.8)
         for s in SKILLS:

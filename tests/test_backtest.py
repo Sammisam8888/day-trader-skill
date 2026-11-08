@@ -10,7 +10,7 @@ from _load import load  # noqa: E402
 
 _b = load("indstocks", "backtest")
 _s = load("indstocks", "session")
-_bars = load("indstocks", "bars")
+_bars = load("indstocks", "market")
 
 DAY = date(2026, 11, 4)
 

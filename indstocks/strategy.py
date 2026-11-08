@@ -25,9 +25,8 @@ from typing import Iterable, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from bars import Candle, opening_range  # noqa: E402
+from market import Candle, opening_range, to_tick  # noqa: E402
 from session import IST, Session  # noqa: E402
-from smartorder import to_tick  # noqa: E402
 
 WAITING = "waiting"
 TRIGGERED = "triggered"

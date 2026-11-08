@@ -1,14 +1,11 @@
-# Closes open intraday positions before the broker's own square-off.
-#
-# 15:05 leaves time for a market order to fill and for a retry, ahead of the
-# broker's 15:20 cutoff and its Rs 50 + GST charge. 15:12 is a second pass
-# for anything the first attempt could not close.
 [Unit]
-Description=Flatten intraday positions before the close
+Description=Backup flatten (the fill monitor flattens at the flat-by time)
 
 [Timer]
-OnCalendar=Mon-Fri *-*-* 15:05:00 Asia/Kolkata
-OnCalendar=Mon-Fri *-*-* 15:12:00 Asia/Kolkata
+# Normal days flatten at 15:05 from the fill monitor; Muhurat at 15:10.
+# These are the backup passes. With nothing open the flatten does nothing.
+OnCalendar=*-*-* 15:08:00 Asia/Kolkata
+OnCalendar=*-*-* 15:14:00 Asia/Kolkata
 Persistent=false
 
 [Install]

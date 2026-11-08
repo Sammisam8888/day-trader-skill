@@ -1,265 +1,81 @@
 """
-Watch what is actually happening, every few minutes, all session.
+A second pair of eyes, every few minutes. It reports; it never trades.
 
-The entry side needed no monitoring: a resting trigger fires at exchange
-speed whether or not anything is looking. What needed monitoring and had
-none was everything AFTER a fill.
-
-Today three orders filled at 14:43 and nothing in this system noticed. No
-check that the stops armed, no record of the position, no warning. The
-account owner found out from a phone notification.
-
-This watches for the states that cost money:
-
-  UNPROTECTED   a filled position whose OCO leg is missing or dead. Shares
-                held with no stop is the worst state this system can reach,
-                and it is silent.
-  DUPLICATE     several resting orders in one symbol. If they all fire the
-                position is a multiple of the intended size.
-  STALE         a trigger the market has already passed, which can no longer
-                do what it was placed to do.
-  NEAR CLOSE    anything still open approaching the square-off deadline.
-
-It reports. It does not trade: no POST, no cancel, no sell. Flattening is a
-separate job with its own deadline, and a watcher that also acts is a
-watcher whose bugs place orders.
+  LOGIN       no Shoonya session in the half hour before the open: nothing
+              can trade or be protected until someone taps Log in.
+  MONITOR     the fill monitor service is not running: fills would go
+              unprotected and the flatten would rely on the timers alone.
+  UNPROTECTED an intraday long with no pending SELL order: no stop at the
+              exchange. The monitor should fix this within seconds; if it
+              is still true here, something is wrong.
+  NEAR CLOSE  anything still open after the flat-by time.
 """
 
 from __future__ import annotations
 
-import json
 import os
+import subprocess
 import sys
-import urllib.request
-from decimal import Decimal
-from pathlib import Path
+from datetime import timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import session as sess
-from client import Client
+import common                                            # noqa: E402
+import session as sess                                   # noqa: E402
+from shoonya import LoginRequired, Shoonya, ShoonyaError, load_token  # noqa: E402
 
-STATE_DIR = Path(os.environ.get("TRADER_STATE_DIR", "/var/lib/indstocks/auto"))
-
-DEAD = {"CANCELLED", "REJECTED", "FAILED", "EXPIRED", "ABORTED",
-        "PARTIALLY FILLED - CANCELLED", "PARTIALLY FILLED - EXPIRED"}
-LIVE = {"PENDING", "SL-PENDING", "O-PENDING", "QUEUED", "CREATED",
-        "INITIATED", "MODIFIED", "PROCESSING"}
+JOB = "watch"
 
 
-# Push alerts to a phone via ntfy.sh. Free, no account: pick a topic name
-# nobody will guess, subscribe in the ntfy app, and set it here. A log file
-# on a server nobody is reading is not an alert.
-NTFY_TOPIC = os.environ.get("TRADER_NTFY_TOPIC", "").strip()
-
-
-def push(title: str, body: str, priority: str = "high") -> None:
-    if not NTFY_TOPIC:
-        return
+def monitor_running() -> bool:
     try:
-        req = urllib.request.Request(
-            f"https://ntfy.sh/{NTFY_TOPIC}", data=body.encode("utf-8"),
-            headers={"Title": title, "Priority": priority,
-                     "Tags": "warning"}, method="POST")
-        urllib.request.urlopen(req, timeout=10).read()
-    except Exception as exc:                            # noqa: BLE001
-        log({"event": "push_failed", "reason": str(exc)[:120]})
+        r = subprocess.run(["systemctl", "is-active", "fillmonitor"], capture_output=True,
+                           text=True, timeout=5)
+        return r.stdout.strip() == "active"
+    except Exception:                                   # noqa: BLE001
+        return True                                     # cannot tell; do not cry wolf
 
 
-def log(record: dict) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    record = {"ts": sess.now().isoformat(), "job": "watch", **record}
-    with (STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl").open(
-            "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, default=str) + "\n")
-    print(json.dumps(record, default=str), flush=True)
-
-
-def order_rows(client) -> list:
-    try:
-        data = (client.get("/order-book") or {}).get("data") or []
-    except Exception as exc:                            # noqa: BLE001
-        log({"event": "error", "reason": f"order book: {exc}"})
+def alerts(broker, now) -> list:
+    session = sess.session_for(now)
+    if session is None:
         return []
-    if isinstance(data, list):
-        return data
-    for key in ("orders", "order_data", "order_book"):
-        if isinstance(data.get(key), list):
-            return data[key]
-    return []
-
-
-def positions(client) -> list:
-    try:
-        data = (client.get("/portfolio/positions") or {}).get("data") or {}
-    except Exception as exc:                            # noqa: BLE001
-        log({"event": "error", "reason": f"positions: {exc}"})
-        return []
-    rows = data if isinstance(data, list) else (
-        data.get("positions") or data.get("net_positions") or [])
     out = []
-    for r in rows or []:
-        try:
-            qty = int(r.get("net_qty", r.get("quantity", r.get("qty", 0))))
-        except (TypeError, ValueError):
-            continue
-        if qty:
-            out.append({"security_id": str(r.get("security_id")),
-                        "name": r.get("name") or "?", "qty": qty})
+    if session.open - timedelta(minutes=45) <= now < session.close and load_token(now) is None:
+        out.append(("LOGIN", "No Shoonya session. Open the dashboard and tap Log in."))
+        return out
+    if not (session.open <= now < session.close + timedelta(minutes=10)):
+        return out
+    if not monitor_running():
+        out.append(("MONITOR", "fillmonitor service is not running"))
+    try:
+        positions = [p for p in broker.positions() if p["qty"] != 0]
+        orders = broker.orders()
+    except LoginRequired:
+        return [("LOGIN", "Shoonya session ended. Log in from the dashboard.")]
+    except ShoonyaError as exc:
+        return [("ERROR", f"broker unreadable: {exc}")]
+    pending_sell = {o["token"] for o in orders if o["pending"] and o["side"] == "S"}
+    for p in positions:
+        if p["qty"] > 0 and p["token"] not in pending_sell and now < session.flat_by:
+            out.append(("UNPROTECTED", f"{p['symbol']} x{p['qty']} has no stop at the exchange"))
+        if now >= session.flat_by + timedelta(minutes=8):
+            out.append(("NEAR CLOSE", f"{p['symbol']} x{p['qty']} still open after the flatten"))
     return out
 
 
-def flatten_outcome() -> tuple:
-    """(ran, failed_count) from today's log."""
-    path = STATE_DIR / f"{sess.now():%Y-%m-%d}.jsonl"
-    ran, failed = False, 0
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if rec.get("job") == "flatten" and rec.get("event") == "flatten_done":
-                ran = True
-                failed = int(rec.get("failed") or 0)
-    except OSError:
-        pass
-    return ran, failed
-
-
-def check(client) -> dict:
-    rows = order_rows(client)
-    ours = [r for r in rows if "auto/" in str(r.get("remarks", ""))
-            or "flat/" in str(r.get("remarks", ""))]
-
-    by_id = {str(r.get("id")): r for r in ours}
-    alerts = []
-
-    # Parents that traded, and whether a live child is holding the shares.
-    for r in ours:
-        if r.get("parent_order_id"):
-            continue                        # this row IS a child leg
-        try:
-            traded = int(r.get("traded_qty") or 0)
-        except (TypeError, ValueError):
-            traded = 0
-        if traded <= 0:
-            continue
-
-        child_id = str(r.get("child_order_id") or "")
-        child = by_id.get(child_id)
-        if child is None:
-            child = next((c for c in ours
-                          if str(c.get("parent_order_id")) == str(r.get("id"))), None)
-        cstatus = str((child or {}).get("status", "")).upper()
-
-        if child is None or cstatus in DEAD:
-            alerts.append({
-                "level": "UNPROTECTED",
-                "name": r.get("name"), "order_id": r.get("id"),
-                "filled_qty": traded, "child_status": cstatus or "missing",
-                "action": "shares held with no stop -- place one or flatten now",
-            })
-            continue
-
-        # Partial fill: the child leg was created for the full order. If it
-        # fires for more shares than were bought, the excess is a SHORT sale.
-        try:
-            child_qty = int(child.get("requested_qty") or 0)
-        except (TypeError, ValueError):
-            child_qty = 0
-        try:
-            requested = int(r.get("requested_qty") or 0)
-        except (TypeError, ValueError):
-            requested = 0
-        if child_qty and traded < child_qty:
-            alerts.append({
-                "level": "PARTIAL_FILL",
-                "name": r.get("name"), "order_id": r.get("id"),
-                "filled_qty": traded, "requested_qty": requested,
-                "child_qty": child_qty,
-                "action": f"stop/target leg is for {child_qty} but only {traded} "
-                          f"are held; if it fires you are short "
-                          f"{child_qty - traded}. Modify the leg to {traded}.",
-            })
-
-    # Several resting orders in one symbol: all of them can fire.
-    resting = {}
-    for r in ours:
-        if str(r.get("status", "")).upper() not in LIVE:
-            continue
-        if r.get("parent_order_id"):
-            continue
-        resting.setdefault(str(r.get("security_id")), []).append(r)
-    for sid, group in resting.items():
-        if len(group) > 1:
-            alerts.append({
-                "level": "DUPLICATE",
-                "name": group[0].get("name"), "count": len(group),
-                "order_ids": [g.get("id") for g in group],
-                "action": "cancel the extras; if all fire the position multiplies",
-            })
-
-    # Orders from a previous session still resting. DAY validity does not
-    # reliably clear them, and a stale trigger carries stale levels.
-    today = sess.now().strftime("%Y-%m-%d")
-    stale = [r for r in ours
-             if str(r.get("status", "")).upper() in LIVE
-             and today not in str(r.get("remarks", ""))]
-    if stale:
-        alerts.append({
-            "level": "STALE_ORDERS",
-            "count": len(stale),
-            "order_ids": [r.get("id") for r in stale],
-            "remarks": sorted({str(r.get("remarks")) for r in stale}),
-            "action": "cancel these; their levels are from another day",
-        })
-
-    open_positions = positions(client)
-    now = sess.now()
-    session = sess.session_for(now)
-    if open_positions and session and now >= session.flat_by:
-        # Past flat-by with something open. Did the flatten job run at all?
-        ran, failed = flatten_outcome()
-        if not ran:
-            reason = "the flatten job did NOT run"
-        elif failed:
-            reason = f"the flatten job ran but {failed} sell(s) failed"
-        else:
-            reason = "flatten reported done but positions remain"
-        alerts.append({
-            "level": "NEAR_CLOSE",
-            "positions": [(p["name"], p["qty"]) for p in open_positions],
-            "flatten": reason,
-            "action": "square off in the app NOW; the broker charges "
-                      "Rs 50+GST per position at 15:20",
-        })
-
-    return {"resting": sum(len(g) for g in resting.values()),
-            "positions": open_positions, "alerts": alerts}
-
-
-def run() -> int:
-    now = sess.now()
-    if sess.session_for(now) is None:
+def run(broker=None, now=None) -> int:
+    now = now or sess.now()
+    broker = broker or Shoonya()
+    found = alerts(broker, now)
+    if not found:
+        common.log(JOB, {"event": "ok"})
         return 0
-    if not (sess.MARKET_OPEN <= now.time() <= sess.MARKET_CLOSE):
-        return 0
-
-    state = check(Client())
-    if state["alerts"]:
-        for a in state["alerts"]:
-            log({"event": "ALERT", **a})
-        worst = {"UNPROTECTED": 0, "PARTIAL_FILL": 1, "NEAR_CLOSE": 2,
-                 "DUPLICATE": 3, "STALE_ORDERS": 4}
-        top = min(state["alerts"], key=lambda a: worst.get(a["level"], 9))
-        push(f"{top['level']}: {top.get('name') or 'positions'}",
-             top.get("action", ""),
-             priority="urgent" if top["level"] == "UNPROTECTED" else "high")
-    else:
-        log({"event": "ok", "resting": state["resting"],
-             "open_positions": len(state["positions"])})
-    return 1 if any(a["level"] == "UNPROTECTED" for a in state["alerts"]) else 0
+    for level, msg in found:
+        common.log(JOB, {"event": "ALERT", "level": level, "action": msg})
+        common.notify(f"trader: {level}", msg,
+                      priority="urgent" if level in ("UNPROTECTED", "NEAR CLOSE") else "high")
+    return 1
 
 
 if __name__ == "__main__":

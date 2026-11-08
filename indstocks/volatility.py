@@ -29,7 +29,7 @@ from typing import Dict, Iterable, List, Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from bars import Candle  # noqa: E402
+from market import Candle  # noqa: E402
 
 DEFAULT_THRESHOLDS = (Decimal("1"), Decimal("2"), Decimal("3"),
                       Decimal("5"), Decimal("10"))

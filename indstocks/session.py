@@ -27,7 +27,17 @@ OPENING_RANGE_MINUTES = 15
 # one at 10:30 has five hours. Afternoon breakouts are the ones that get
 # sold into the close at whatever price is there.
 LAST_ENTRY = time(12, 30)
-FLAT_BY = time(15, 15)
+# Our own square-off, ahead of the broker's (Shoonya MIS ~15:15-15:20). The
+# fill monitor runs the flatten at this moment; the flatten timers are a
+# backup for when the monitor is down.
+FLAT_BY = time(15, 5)
+
+# Special sessions: (open, last_entry, flat_by, close). A date here trades
+# even on a weekend or a listed holiday. Muhurat 2026: Sunday 8 Nov,
+# 14:20-15:30 (NSE circular; pre-open 14:05-14:20).
+SPECIAL_SESSIONS = {
+    "2026-11-08": (time(14, 20), time(14, 55), time(15, 10), time(15, 30)),
+}
 
 # NSE trading holidays. 2026 confirmed; extend each year. A date missing here
 # is treated as a trading day, so an unlisted holiday means wasted API calls
@@ -44,6 +54,8 @@ def now(clock=None) -> datetime:
 
 
 def is_trading_day(d: date, holidays: Optional[Iterable[str]] = None) -> bool:
+    if d.isoformat() in SPECIAL_SESSIONS:
+        return True
     if d.weekday() >= 5:            # Saturday, Sunday
         return False
     hol = set(holidays) if holidays is not None else HOLIDAYS_2026
@@ -60,8 +72,12 @@ class Session:
     day: date
 
     @property
+    def special(self) -> Optional[tuple]:
+        return SPECIAL_SESSIONS.get(self.day.isoformat())
+
+    @property
     def open(self) -> datetime:
-        return at(self.day, MARKET_OPEN)
+        return at(self.day, self.special[0] if self.special else MARKET_OPEN)
 
     @property
     def opening_range_end(self) -> datetime:
@@ -69,15 +85,15 @@ class Session:
 
     @property
     def last_entry(self) -> datetime:
-        return at(self.day, LAST_ENTRY)
+        return at(self.day, self.special[1] if self.special else LAST_ENTRY)
 
     @property
     def flat_by(self) -> datetime:
-        return at(self.day, FLAT_BY)
+        return at(self.day, self.special[2] if self.special else FLAT_BY)
 
     @property
     def close(self) -> datetime:
-        return at(self.day, MARKET_CLOSE)
+        return at(self.day, self.special[3] if self.special else MARKET_CLOSE)
 
     def phase(self, t: datetime) -> str:
         """Where in the day we are: one of

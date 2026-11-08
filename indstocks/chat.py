@@ -33,11 +33,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import common                                           # noqa: E402
 import session as sess                                  # noqa: E402
-from autotrader import available_cash, day_pnl          # noqa: E402
-from flatten import (cancel_all_unfilled, cancel_resting_legs,  # noqa: E402
-                     open_intraday, sell)
-from instruments import Instruments                     # noqa: E402
+from shoonya import ShoonyaError                        # noqa: E402
 
 # Indirections so tests can stub them without patching the real modules.
 _sleep = time.sleep
@@ -126,7 +124,7 @@ def act_frequency(minutes: int) -> str:
     """Scan every N minutes. Rewrites the timer drop-in and reloads it."""
     if not 2 <= minutes <= 60:
         return "Scan interval must be between 2 and 60 minutes."
-    spec = f"Mon-Fri *-*-* 09..14:00/{minutes}:00 Asia/Kolkata"
+    spec = f"*-*-* 09..15:00/{minutes}:00 Asia/Kolkata"
     TIMER_DROPIN.parent.mkdir(parents=True, exist_ok=True)
     TIMER_DROPIN.write_text(f"[Timer]\nOnCalendar=\nOnCalendar={spec}\n", encoding="utf-8")
     try:
@@ -135,8 +133,8 @@ def act_frequency(minutes: int) -> str:
     except Exception as exc:                            # noqa: BLE001
         return f"Wrote the schedule but could not reload the timer: {exc}"
     write_env({"TRADER_SCAN_MINUTES": str(minutes)})
-    return (f"Scanning every {minutes} minutes from 09:00 to 14:50. "
-            f"Each scan costs nothing; only fills cost Rs 10.")
+    return (f"Scanning every {minutes} minutes through the entry window. "
+            f"Each scan costs nothing; only fills cost brokerage.")
 
 
 def act_limits(**kv) -> str:
@@ -169,77 +167,104 @@ def act_limits(**kv) -> str:
     return "Set " + ", ".join(f"{k}={v}" for k, v in updates.items()) + ". Applies from the next scan."
 
 
-def act_cancel_all(client) -> str:
-    got = cancel_all_unfilled(client)
-    return (f"Cancelled {len(got['cancelled'])} resting order(s)"
-            + (f"; {len(got['failed'])} failed" if got["failed"] else "") + ".")
+def act_cancel_all(broker) -> str:
+    """Cancel every pending BUY entry. Stops protecting open positions stay."""
+    n, failed = 0, []
+    for o in broker.orders():
+        if o["pending"] and o["side"] == "B":
+            try:
+                broker.cancel(o["id"])
+                n += 1
+            except ShoonyaError as exc:
+                failed.append(f"{o['symbol']}: {exc}")
+    common.log("chat", {"event": "cancel_all", "count": n, "failed": failed})
+    return (f"Cancelled {n} pending entr{'y' if n == 1 else 'ies'}. Stops on open positions are kept."
+            + (f" Failed: {'; '.join(failed)}" if failed else ""))
 
 
-def act_sell(client, symbol: str, qty: int | None = None) -> str:
-    want = symbol.upper()
-    for p in open_intraday(client):
-        if want in (str(p["name"]).upper(), str(p["security_id"])) or \
-                want.split()[0] in str(p["name"]).upper():
-            n = min(qty or p["qty"], p["qty"])
-            cancel_resting_legs(client, p["security_id"])
-            _sleep(1)
-            resp = sell(client, {**p, "qty": n})
-            oid = ((resp or {}).get("data") or {}).get("order_id")
-            chat_log("system", f"sold {p['name']} x{n}", {"order_id": oid})
-            return f"Selling {p['name']} x{n} at market (order {oid})."
-    return f"No open intraday position matching {symbol}."
+def _match(positions: list, symbol: str):
+    want = symbol.strip().upper()
+    for p in positions:
+        if want in (p["symbol"].upper(), p["tsym"].upper(), p["token"]):
+            return p
+    return next((p for p in positions if p["symbol"].upper().startswith(want)), None)
 
 
-def act_buy(client, symbol: str, qty: int) -> str:
-    """Market buy, INTRADAY, capped at half of cash and 1 position's worth.
-    The fill monitor then protects it with the manual stop/target."""
+def act_sell(broker, symbol: str, qty: int | None = None) -> str:
+    """Exit an intraday long: cancel its pending sells (the stop), then a
+    marketable limit for the quantity."""
+    p = _match([x for x in broker.positions() if x["qty"] > 0], symbol)
+    if not p:
+        return f"No open intraday position matching {symbol}."
+    n = min(qty or p["qty"], p["qty"])
+    for o in broker.orders():
+        if o["pending"] and o["side"] == "S" and o["token"] == p["token"]:
+            try:
+                broker.cancel(o["id"])
+            except ShoonyaError:
+                pass
+    _sleep(1)
+    inst = broker.instrument_for(p)
+    px = broker.marketable(inst, "S")
+    oid = broker.place(inst, side="S", qty=n, price=px, remarks=f"chat/{p['symbol']}")
+    common.log("chat", {"event": "chat_sell", "symbol": p["symbol"], "qty": n,
+                        "price": str(px), "order_id": oid})
+    left = p["qty"] - n
+    return (f"Selling {p['symbol']} x{n} at limit {px} (order {oid})."
+            + (f" {left} left; the fill monitor will re-protect them." if left else ""))
+
+
+def act_buy(broker, symbol: str, qty: int) -> str:
+    """Marketable-limit intraday buy, capped at half of cash. The fill
+    monitor then guards it with the manual stop/target %."""
     if qty <= 0:
         return "Quantity must be positive."
-    master = Instruments(client=client, source="equity").load()
     try:
-        inst = master.resolve(symbol.upper())
+        inst = broker.instrument(symbol.upper())
     except KeyError:
         return f"Unknown symbol {symbol}."
-    code = f"NSE_{inst.security_id}"
-    ltp = Decimal(str(((client.get("/market/quotes/ltp", params={"scrip-codes": code})
-                        .get("data") or {}).get(code, {}) or {}).get("live_price")))
-    cash = available_cash(client) or Decimal(0)
-    value = ltp * qty
+    q = broker.quote(inst.token, inst.exch)
+    cash = broker.cash()
+    value = q["ltp"] * qty
     cap = cash * MAX_BUY_VALUE_PCT / 100
     if value > cap:
-        return (f"{qty} x {ltp} = {value:.0f} is over the chat buy cap of {cap:.0f} "
-                f"(half of cash {cash:.0f}). Try up to {int(cap / ltp)} shares.")
-    body = {"txn_type": "BUY", "exchange": "NSE", "segment": "EQUITY",
-            "product": "INTRADAY", "order_type": "MARKET", "validity": "DAY",
-            "security_id": str(inst.security_id), "qty": qty, "algo_id": "99999",
-            "remarks": f"chat/{symbol.upper()}/{sess.now():%Y-%m-%d}"[:100]}
-    resp = client.post("/order", body=body)
-    oid = ((resp or {}).get("data") or {}).get("order_id")
-    chat_log("system", f"bought {symbol.upper()} x{qty} ~{ltp}", {"order_id": oid})
-    env = read_env()
-    return (f"Buying {symbol.upper()} x{qty} at market (~{ltp}, order {oid}). The fill "
-            f"monitor will sell it at +{env.get('TRADER_MANUAL_TARGET_PCT', '1.0')}% or "
-            f"-{env.get('TRADER_MANUAL_STOP_PCT', '0.5')}%, and the 15:05 flatten closes it.")
+        return (f"{qty} x {q['ltp']} = {value:.0f} is over the chat buy cap of {cap:.0f} "
+                f"(half of cash {cash:.0f}). Try up to {int(cap / q['ltp'])} units.")
+    px = broker.marketable(inst, "B", q)
+    oid = broker.place(inst, side="B", qty=qty, price=px, remarks=f"chat/{inst.symbol}")
+    common.log("chat", {"event": "chat_buy", "symbol": inst.symbol, "qty": qty,
+                        "price": str(px), "order_id": oid})
+    return (f"Buying {inst.symbol} x{qty} at limit {px} (order {oid}). The fill monitor will sell "
+            f"it at +{common.setting('TRADER_MANUAL_TARGET_PCT', '1.0')}% or "
+            f"-{common.setting('TRADER_MANUAL_STOP_PCT', '0.5')}%, and the flatten closes it.")
 
 
-def act_status(client) -> str:
-    env = read_env()
+def act_status(broker) -> str:
+    env_ = read_env()
     halted = HALT_FILE.exists()
-    cash = available_cash(client)
-    r, u = day_pnl(client)
-    pos = open_intraday(client)
-    rows = (client.get("/order-book") or {}).get("data") or []
-    resting = [x for x in rows if isinstance(x, dict) and not x.get("parent_order_id")
-               and str(x.get("status", "")).upper() in ("PENDING", "SL-PENDING", "TRIGGER PENDING", "O-PENDING")
-               and int(x.get("traded_qty") or 0) == 0]
-    parts = [("HALTED" if halted else ("LIVE" if env.get("TRADER_LIVE", "").lower() == "true" else "SHADOW")),
-             f"cash {cash:.0f}" if cash is not None else "cash ?",
-             f"P&L today {r + u:+.2f} (realised {r:+.2f}, open {u:+.2f})",
-             f"{len(pos)} open position(s): " + (", ".join(f"{p['name']} x{p['qty']}" for p in pos) or "none"),
-             f"{len(resting)} resting order(s): " + (", ".join(str(x.get('name')) for x in resting) or "none"),
-             f"limits: max {env.get('TRADER_MAX_CONCURRENT', '2')} positions, "
-             f"{env.get('TRADER_MAX_LEVERAGE', '1.0')}x leverage, daily loss {env.get('TRADER_DAILY_LOSS', '?')}"]
-    return "\n".join(parts)
+    try:
+        cash = broker.cash()
+        pos = broker.positions()
+        orders = broker.orders()
+    except ShoonyaError as exc:
+        return f"Broker unreadable: {exc}"
+    r = sum((p["realised"] for p in pos), Decimal(0))
+    u = sum((p["unrealised"] for p in pos), Decimal(0))
+    open_ = [p for p in pos if p["qty"] != 0]
+    resting = [o for o in orders if o["pending"] and o["side"] == "B"]
+    stops = [o for o in orders if o["pending"] and o["side"] == "S"]
+    return "\n".join([
+        "HALTED" if halted else ("LIVE" if env_.get("TRADER_LIVE", "").lower() == "true" else "SHADOW"),
+        f"cash {cash:.0f}",
+        f"P&L today {r + u:+.2f} (realised {r:+.2f}, open {u:+.2f}) before charges",
+        f"{len(open_)} open: " + (", ".join(f"{p['symbol']} x{p['qty']} @ {p['avg']}" for p in open_) or "none"),
+        f"{len(resting)} resting entr{'y' if len(resting) == 1 else 'ies'}: "
+        + (", ".join(f"{o['symbol']} trg {o['trigger']}" for o in resting) or "none"),
+        f"{len(stops)} stop(s) at the exchange: " + (", ".join(f"{o['symbol']} {o['trigger']}" for o in stops) or "none"),
+        f"symbols {env_.get('TRADER_SYMBOLS', common.DEFAULT_SYMBOLS)}; max "
+        f"{env_.get('TRADER_MAX_CONCURRENT', '2')} positions, {env_.get('TRADER_MAX_LEVERAGE', '1.0')}x, "
+        f"daily loss {env_.get('TRADER_DAILY_LOSS', '1500')}",
+    ])
 
 
 def act_why(symbol: str | None = None) -> str:
@@ -264,7 +289,8 @@ def act_why(symbol: str | None = None) -> str:
         elif ev == "placed":
             out.append(f"{ts} {s}: placed {r.get('qty')} @ trigger {r.get('entry')}, stop {r.get('stop')}, "
                        f"target {r.get('target')}, net if target {r.get('net_if_target')}")
-        elif ev in ("unsized", "skip", "rejected_locally", "order_failed", "halted", "cancelled_on_fill", "sold"):
+        elif ev in ("unsized", "skip", "no_data", "order_failed", "halted", "entry_cancelled",
+                    "sold", "stop_placed", "stop_moved", "target_exit", "stop_failed", "login_required"):
             out.append(f"{ts} {s}: {ev} -- {r.get('reason') or ''}")
     if not out:
         return f"Nothing logged for {symbol} today." if symbol else "No decisions yet today."
@@ -293,20 +319,20 @@ def handle_command(text: str, client) -> str | None:
     if re.fullmatch(r"(cancel|cancel all|cancel all orders|cancel everything|pull all orders)\b.*", t):
         return act_cancel_all(client)
     if re.fullmatch(r"(sell|exit|close|flatten)\s*(all|everything)?", t):
-        msgs = [act_sell(client, p["name"]) for p in open_intraday(client)]
+        msgs = [act_sell(client, p["symbol"]) for p in client.positions() if p["qty"] > 0]
         return "\n".join(msgs) or "Nothing open to sell."
     m = re.fullmatch(r"(?:sell|exit|close)\s+(?:(\d+)\s+)?([a-z&\-\. ]+?)(?:\s+(\d+))?", t)
     if m:
         qty = m.group(1) or m.group(3)
         return act_sell(client, m.group(2).strip(), int(qty) if qty else None)
-    m = re.fullmatch(r"buy\s+(\d+)\s+([a-z&\-\.]+)|buy\s+([a-z&\-\.]+)\s+(\d+)", t)
+    m = re.fullmatch(r"buy\s+(\d+)\s+([a-z0-9&\-\.]+)|buy\s+([a-z0-9&\-\.]+)\s+(\d+)", t)
     if m:
         qty = m.group(1) or m.group(4)
         sym = m.group(2) or m.group(3)
         return act_buy(client, sym, int(qty))
     if re.fullmatch(r"(status|state|how are we|what'?s happening|summary|report)\b.*", t):
         return act_status(client)
-    m = re.fullmatch(r"why(?:\s+(?:did|was|is|not|no)\s+)?\s*([a-z&\-\.]+)?.*", t)
+    m = re.fullmatch(r"why(?:\s+(?:did|was|is|not|no)\s+)?\s*([a-z0-9&\-\.]+)?.*", t)
     if m and t.startswith("why"):
         sym = m.group(1)
         if sym in ("did", "was", "is", "not", "no", "nothing", "it", "this", "that", None):
@@ -320,6 +346,11 @@ def handle_command(text: str, client) -> str | None:
                "target pct": "manual_target_pct", "stop pct": "manual_stop_pct",
                "reward to cost": "reward_to_cost", "cost gate": "reward_to_cost", "ttl": "resting_ttl_min"}[m.group(1)]
         return act_limits(**{key: m.group(2)})
+    m = re.fullmatch(r"(?:trade|symbols?|watch)\s+([a-z0-9, ]+)", t)
+    if m and not t.startswith("trade every"):
+        syms = ",".join(s.strip().upper() for s in re.split(r"[ ,]+", m.group(1)) if s.strip())
+        write_env({"TRADER_SYMBOLS": syms})
+        return f"Trading list is now {syms}. Applies from the next scan."
     if re.fullmatch(r"(help|\?|what can you do|commands)\b.*", t):
         return HELP
     return None
@@ -328,7 +359,8 @@ def handle_command(text: str, client) -> str | None:
 HELP = """I can do these, with or without an AI key:
 - stop / continue
 - scan every N minutes  (or: faster / slower)
-- buy 10 RELIANCE  /  sell RELIANCE  /  sell all  /  cancel all
+- buy 50 NIFTYBEES  /  sell NIFTYBEES  /  sell all  /  cancel all
+- symbols NIFTYBEES SENSEXIETF
 - status  /  why  /  why HDFCBANK
 - set max loss 500, daily loss 1500, max positions 3, leverage 1.5, target pct 1.5, stop pct 0.7
 With an ANTHROPIC_API_KEY saved in Controls, you can just talk to me."""
@@ -390,9 +422,9 @@ def handle_model(text: str, client, key: str) -> str:
     env = read_env()
     system = (
         "You are the control desk for an automated NSE intraday trading bot on the owner's own "
-        "INDstocks account. Be brief and concrete; rupees, not vibes. Use the tools when the owner "
+        "Shoonya (Finvasia) account, trading NSE ETFs intraday. Be brief and concrete; rupees, not vibes. Use the tools when the owner "
         "asks for an action; otherwise answer from the state below. Never invent orders or prices. "
-        "Round-trip charges are about Rs 43 per filled trade; break-even is roughly 0.11% of position. "
+        "Brokerage is Rs 5 or 0.03% per executed order; a round trip on Rs 12k costs about Rs 15. "
         f"Scan interval currently {env.get('TRADER_SCAN_MINUTES', '10')} minutes.\n\nSTATE:\n" + context)
     msgs = [{"role": h["role"] if h["role"] in ("user", "assistant") else "user",
              "content": h["text"]} for h in history(12) if h.get("role") in ("user", "assistant")]
@@ -452,9 +484,9 @@ def find_claude() -> str | None:
 
 
 CLI_SYSTEM = """You are the control desk for an automated NSE intraday trading bot on the
-owner's own INDstocks account. Be brief and concrete; rupees, not vibes. Never invent orders,
-prices or fills: everything you know is in STATE below. Round-trip charges are about Rs 43 per
-filled trade; break-even is roughly 0.11% of position value.
+owner's own Shoonya (Finvasia) account, trading NSE ETFs intraday. Be brief and concrete; rupees,
+not vibes. Never invent orders, prices or fills: everything you know is in STATE below. Brokerage
+is Rs 5 or 0.03% per executed order; a round trip on Rs 12k costs about Rs 15.
 
 Reply with ONE JSON object and nothing else:
 {"reply": "<what to say to the owner, plain text>", "actions": [ {"name": ..., "args": {...}} ]}

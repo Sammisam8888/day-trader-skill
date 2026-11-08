@@ -59,21 +59,31 @@ jobs:
           [ -d "$VENV" ] || python3 -m venv "$VENV"
           if [ -f requirements.txt ]; then "$VENV/bin/pip" install -q -r requirements.txt; fi
           python3 -m unittest discover -s tests
-          # Restart only if the unit exists; early on there is nothing to run yet.
-          for unit in indstocks-mcp dashboard fillmonitor; do
-            if systemctl list-unit-files | grep -q "^$unit\.service"; then
-              sudo systemctl restart "$unit"
-              sleep 2
-              systemctl is-active --quiet "$unit" || { journalctl -u "$unit" -n 50 --no-pager; exit 1; }
-            fi
+          # Broker change (INDstocks -> Shoonya): LIVE goes off ONCE, so a new
+          # adapter never sends its first order without the owner saying so.
+          if [ ! -f /var/lib/indstocks/.broker-shoonya ]; then
+            sudo sed -i '/^TRADER_LIVE=/d' /etc/indstocks.env
+            echo 'TRADER_LIVE=false' | sudo tee -a /etc/indstocks.env >/dev/null
+            sudo mkdir -p /var/lib/indstocks && sudo touch /var/lib/indstocks/.broker-shoonya
+          fi
+          # Units come from the repo on every deploy, so a schedule change in
+          # git is a schedule change on the box. INDstocks-only units are
+          # removed: that broker is no longer used.
+          for u in indstocks-mcp.service shadow.timer shadow.service; do
+            sudo systemctl disable --now "$u" >/dev/null 2>&1 || true
+            sudo rm -f "/etc/systemd/system/$u"
           done
-          # Long-running services are installed from the repo so a new one
-          # (like fillmonitor) comes up on the next deploy without a hand step.
+          for u in auto.service auto.timer flatten.service flatten.timer watch.service \
+                   watch.timer fillmonitor.service dashboard.service; do
+            sudo cp "scripts/$u" "/etc/systemd/system/$u"
+          done
+          sudo rm -rf /etc/systemd/system/auto.timer.d
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now auto.timer flatten.timer watch.timer >/dev/null
           for unit in dashboard fillmonitor; do
-            if [ ! -f /etc/systemd/system/$unit.service ]; then
-              sudo cp scripts/$unit.service /etc/systemd/system/$unit.service
-              sudo systemctl daemon-reload
-              sudo systemctl enable --now $unit
-            fi
+            sudo systemctl enable "$unit" >/dev/null
+            sudo systemctl restart "$unit"
+            sleep 2
+            systemctl is-active --quiet "$unit" || { journalctl -u "$unit" -n 50 --no-pager; exit 1; }
           done
           REMOTE

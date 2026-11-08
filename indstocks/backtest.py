@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import charges                                          # noqa: E402
 import session as sess                                  # noqa: E402
 import strategy as strat                                # noqa: E402
-from bars import Bars, Candle, opening_range, scrip_code  # noqa: E402
+from market import Candle, opening_range  # noqa: E402
 
 NOTIONAL = Decimal(os.environ.get("BT_NOTIONAL", "12500"))
 FLAT_AT = time(15, 5)
@@ -107,8 +107,7 @@ def simulate_day(day_candles: List[Candle], session, tick: Decimal, *,
             "net": gross - cost, "fill_px": fill_px, "exit_px": exit_px, "qty": qty}
 
 
-def run(client, master, symbols: List[str], days: int, last_entry: time) -> dict:
-    bars = Bars(client, "5minute")
+def run(broker, symbols: List[str], days: int, last_entry: time) -> dict:
     end = sess.now()
     start = end - timedelta(days=int(days * 1.5) + 7)
     results = {"breakout": [], "retest": []}
@@ -116,21 +115,21 @@ def run(client, master, symbols: List[str], days: int, last_entry: time) -> dict
 
     for sym in symbols:
         try:
-            inst = master.resolve(sym)
+            inst = broker.instrument(sym)
         except KeyError:
             continue
         candles: List[Candle] = []
         t0 = start
         while t0 < end:
             t1 = min(t0 + timedelta(days=7), end)
-            candles += bars.fetch_one(scrip_code(inst), t0, t1)
+            candles += broker.candles(inst.token, t0, t1, interval=5)
             t0 = t1
         for d, cs in sorted(by_day(candles).items())[-days:]:
             session = sess.session_for(datetime.combine(d, time(10, 0), tzinfo=sess.IST))
-            if session is None:
+            if session is None or session.special:
                 continue
             for variant in ("breakout", "retest"):
-                r = simulate_day(cs, session, inst.tick_size, variant=variant, last_entry=last_entry)
+                r = simulate_day(cs, session, inst.tick, variant=variant, last_entry=last_entry)
                 if r and r.get("filled"):
                     results[variant].append({**r, "symbol": sym, "day": d})
                     per_symbol[sym][variant] += r["net"]

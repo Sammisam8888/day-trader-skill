@@ -29,22 +29,7 @@ jobs:
           echo "== claude cli"; sudo -u ubuntu -H bash -lc 'command -v claude; claude --version' 2>&1
           D=$(TZ=Asia/Kolkata date +%F)
           echo "== log $D (last 120)"; sudo tail -n 120 /var/lib/indstocks/auto/$D.jsonl | cut -c1-400
-          echo "== live book and positions"
-          cd /opt/indstocks/day-trader-skill/indstocks && sudo -E bash -c 'set -a; . /etc/indstocks.env; set +a; python3 - <<PY2
-from client import Client
-c = Client()
-rows = (c.get("/order-book") or {}).get("data") or []
-for r in rows:
-    if str(r.get("status","")).upper() in ("CANCELLED","REJECTED"): continue
-    print("ORDER", r.get("id"), r.get("txn_type"), (r.get("name") or "")[:14], r.get("status"),
-          "qty", r.get("requested_qty"), "traded", r.get("traded_qty"),
-          "trig", r.get("trigger_price"), "sl", r.get("sl_trigger_price"), "tgt", r.get("tgt_trigger_price"),
-          "parent", r.get("parent_order_id"))
-d = (c.get("/portfolio/positions") or {}).get("data") or {}
-rows = d if isinstance(d, list) else (d.get("positions") or d.get("net_positions") or [])
-for r in rows:
-    print("POS", (r.get("name") or "")[:14], r.get("product"), "qty", r.get("net_qty", r.get("quantity")), "avg", r.get("avg_price"))
-PY2'
+          echo "== shoonya"; sudo bash /opt/indstocks/day-trader-skill/scripts/shoonya-check.sh 2>&1 | tail -20
           echo "== auto.service last run"; sudo journalctl -u auto.service -n 40 --no-pager | cut -c1-300
           echo "== fillmonitor"; sudo journalctl -u fillmonitor -n 15 --no-pager | cut -c1-300
           REMOTE
