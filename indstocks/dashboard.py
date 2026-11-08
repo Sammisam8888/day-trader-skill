@@ -22,14 +22,17 @@ import subprocess
 import sys
 from datetime import datetime
 from decimal import Decimal
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer as HTTPServer
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import common
+import metrics
 import session as sess
 import shoonya as sh
+
+WEB_DIST = Path(os.path.dirname(os.path.abspath(__file__))) / "web" / "dist"
 
 STATE_DIR = Path(os.environ.get("TRADER_STATE_DIR", "/var/lib/indstocks/auto"))
 ENV_FILE = Path(os.environ.get("TRADER_ENV_FILE", "/etc/indstocks.env"))
@@ -394,12 +397,12 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
          f"<title>trader</title><style>{CSS}</style>",
          f"<div class=top><div class=head><h1>autotrader <span class=muted style='font-size:12px;font-weight:500'>Shoonya</span></h1>"
          f"<div class=muted style='font-size:13px'>{e(now.strftime('%a %d %b %H:%M'))}</div></div>"
-         f"<div class=tabs><a data-tab=chat href='?tab=chat&day={e(day)}'>Chat</a>"
-         f"<a data-tab=pos href='?tab=pos&day={e(day)}'>Positions</a>"
-         f"<a data-tab=orders href='?tab=orders&day={e(day)}'>Orders</a>"
-         f"<a data-tab=decisions href='?tab=decisions&day={e(day)}'>Decisions</a>"
-         f"<a data-tab=controls href='?tab=controls&day={e(day)}'>Controls</a>"
-         f"<a data-tab=term href='?tab=term&day={e(day)}'>Terminal</a></div>"
+         f"<div class=tabs><a data-tab=chat href='/classic?tab=chat&day={e(day)}'>Chat</a>"
+         f"<a data-tab=pos href='/classic?tab=pos&day={e(day)}'>Positions</a>"
+         f"<a data-tab=orders href='/classic?tab=orders&day={e(day)}'>Orders</a>"
+         f"<a data-tab=decisions href='/classic?tab=decisions&day={e(day)}'>Decisions</a>"
+         f"<a data-tab=controls href='/classic?tab=controls&day={e(day)}'>Controls</a>"
+         f"<a data-tab=term href='/classic?tab=term&day={e(day)}'>Terminal</a></div>"
          f"<div class=ticker><b>{e(phase)}</b> &middot; {state} &middot; cash <b>{money(cash)}</b>"
          f" &middot; {e(lim.get('TRADER_SYMBOLS', common.DEFAULT_SYMBOLS))} &middot; "
          f"max {e(lim.get('TRADER_MAX_CONCURRENT', '2'))} pos &middot; "
@@ -517,7 +520,7 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
         p.append(f"<div class=btns><form method=post action=/exit onsubmit=\"return confirm('Sell {e(r['symbol'])} x{qty} now?')\">"
                  f"<input type=hidden name=token value='{e(r['token'])}'><input type=hidden name=day value='{e(day)}'><input type=hidden name=tab value=pos>"
                  f"<button class=btn-x>&#10162; Insta Exit</button></form>"
-                 f"<a class=btn data-tab=orders href='?tab=orders&day={e(day)}'>Orders</a></div></div>")
+                 f"<a class=btn data-tab=orders href='/classic?tab=orders&day={e(day)}'>Orders</a></div></div>")
     if pos and cash:
         lev = held_value / cash
         p.append(f"<div class=meta style='margin:-4px 0 8px'>Held &#8377;{money(held_value)} against cash "
@@ -685,12 +688,12 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
     p.append("<div class='sub' style='margin:20px 0'>Reachable only over Tailscale or localhost. "
              "Cancel and Exit reduce exposure; the only way to open a position from here is a chat 'buy', capped at half of cash.</div>"
              "</section></div>"
-             f"<div class=nav><a data-tab=chat href='?tab=chat&day={e(day)}'><span>&#128172;</span>Chat</a>"
-             f"<a data-tab=pos href='?tab=pos&day={e(day)}'><span>&#8377;</span>Positions</a>"
-             f"<a data-tab=orders href='?tab=orders&day={e(day)}'><span>&#9776;</span>Orders</a>"
-             f"<a data-tab=decisions href='?tab=decisions&day={e(day)}'><span>&#9881;</span>Decisions</a>"
-             f"<a data-tab=controls href='?tab=controls&day={e(day)}'><span>&#9211;</span>Controls</a>"
-             f"<a data-tab=term href='?tab=term&day={e(day)}'><span>&gt;_</span>Terminal</a></div>"
+             f"<div class=nav><a data-tab=chat href='/classic?tab=chat&day={e(day)}'><span>&#128172;</span>Chat</a>"
+             f"<a data-tab=pos href='/classic?tab=pos&day={e(day)}'><span>&#8377;</span>Positions</a>"
+             f"<a data-tab=orders href='/classic?tab=orders&day={e(day)}'><span>&#9776;</span>Orders</a>"
+             f"<a data-tab=decisions href='/classic?tab=decisions&day={e(day)}'><span>&#9881;</span>Decisions</a>"
+             f"<a data-tab=controls href='/classic?tab=controls&day={e(day)}'><span>&#9211;</span>Controls</a>"
+             f"<a data-tab=term href='/classic?tab=term&day={e(day)}'><span>&gt;_</span>Terminal</a></div>"
              f"<script>{TABS_JS}</script>")
     return "".join(p)
 
@@ -764,6 +767,239 @@ def write_limits(form: dict) -> str:
     return ""
 
 
+
+# ------------------------------------------------------------------ JSON API
+# The React app (indstocks/web) renders from these. State comes from the
+# fill monitor's snapshot whenever it is fresh, so opening the page costs
+# the broker nothing; otherwise one direct read, cached for 15 seconds.
+
+import threading
+import time as _time
+
+_cache: dict = {}
+_lock = threading.Lock()
+
+
+def _j(x):
+    if isinstance(x, Decimal):
+        return float(x)
+    if isinstance(x, dict):
+        return {k: _j(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_j(v) for v in x]
+    return x
+
+
+def _broker_view() -> dict:
+    snap = metrics.read_snapshot()
+    if snap:
+        return {"source": "monitor", "age": round(_time.time() - snap["ts"], 1), **snap, "login": False, "error": ""}
+    with _lock:
+        hit = _cache.get("view")
+        if hit and _time.time() - hit["at"] < 15:
+            return hit["data"]
+        b = sh.Shoonya()
+        data = live(b)
+        ltps = {}
+        if not data["login"]:
+            toks = [p["token"] for p in data["positions"] if p["qty"]] + \
+                   [o["token"] for o in data["orders"] if o["pending"]]
+            for sym in common.symbols():
+                try:
+                    toks.append(b.instrument(sym).token)
+                except Exception:                       # noqa: BLE001
+                    pass
+            try:
+                ltps = b.ltps(list(dict.fromkeys(toks)))
+            except Exception:                           # noqa: BLE001
+                ltps = {}
+        view = {"source": "direct", "age": 0, "positions": data["positions"], "orders": data["orders"],
+                "ltps": ltps, "cash": data["cash"], "login": data["login"], "error": data["error"]}
+        _cache["view"] = {"at": _time.time(), "data": view}
+        return view
+
+
+def _hm(dt) -> str:
+    return dt.strftime("%H:%M")
+
+
+AI_PREFIXES = ("auto/", "stop/", "tgt/", "man/", "flat/", "chat/", "cover/")
+
+
+def api_state() -> dict:
+    now = sess.now()
+    day = now.strftime("%Y-%m-%d")
+    session = sess.session_for(now)
+    lim = limits()
+    log = read_log(day)
+    tok = sh.load_token(now)
+    halted = HALT_FILE.exists()
+    halt_reason = ""
+    if halted:
+        try:
+            halt_reason = HALT_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    v = _broker_view() if tok else {"positions": [], "orders": [], "ltps": {}, "cash": None,
+                                    "login": True, "error": "", "source": "none", "age": None}
+    positions, orders, ltps = v["positions"], v["orders"], v["ltps"]
+    whys = placed_records(log)
+    ours = common.our_order_ids(day)
+    pending_sell = {o["token"]: o for o in orders if o["pending"] and o["side"] == "S"}
+    bot_tokens = {w.get("token") for oid, w in whys.items()
+                  if any(o["id"] == oid and o["filled"] > 0 for o in orders)}
+
+    pos_out = []
+    for p in positions:
+        if not p["qty"]:
+            continue
+        ltp = ltps.get(p["token"]) or p["ltp"] or p["avg"]
+        plan = next((w for w in whys.values() if w.get("token") == p["token"]), {})
+        so = pending_sell.get(p["token"])
+        inv = p["avg"] * p["qty"]
+        pnl_ = (ltp - p["avg"]) * p["qty"]
+        pos_out.append({"symbol": p["symbol"], "token": p["token"], "qty": p["qty"], "avg": p["avg"],
+                        "ltp": ltp, "invested": inv, "current": ltp * p["qty"], "pnl": pnl_,
+                        "pct": (pnl_ / inv * 100) if inv else 0,
+                        "source": "ai" if p["token"] in bot_tokens else "manual",
+                        "stop": so["trigger"] if so else (plan.get("stop") and Decimal(plan["stop"])),
+                        "stop_live": bool(so), "target": plan.get("target") and Decimal(plan["target"]),
+                        "entry": plan.get("entry") and Decimal(plan["entry"]), "why": plan.get("why", "")})
+
+    ord_out = []
+    for o in orders:
+        ai = o["id"] in ours or o["remarks"].startswith(AI_PREFIXES)
+        why = whys.get(o["id"], {})
+        r = o["remarks"]
+        kind = ("entry" if r.startswith("auto/") or why else "stop" if r.startswith("stop/") or (o["side"] == "S" and o["type"] == "SL-LMT")
+                else "target" if r.startswith("tgt/") else "flatten" if r.startswith("flat/")
+                else "chat" if r.startswith("chat/") else "exit" if o["side"] == "S" else "buy")
+        cls, label = status_label(o)
+        ord_out.append({**{k: o[k] for k in ("id", "symbol", "token", "side", "type", "qty", "filled", "avg",
+                                             "price", "trigger", "status", "pending", "time", "reason")},
+                        "label": label, "tone": cls, "kind": kind, "source": "ai" if ai else "manual",
+                        "ltp": ltps.get(o["token"]),
+                        "plan": {k: why.get(k) for k in ("why", "stop", "target", "risk", "gross_if_target",
+                                                         "costs", "net_if_target", "position_value", "leverage")}
+                        if why else None})
+    ord_out.sort(key=lambda x: (not x["pending"], x["time"] or ""), reverse=False)
+
+    summ = metrics.pnl(positions, ltps)
+    trades = metrics.closed_trades(positions)
+    wins = sum(1 for x in trades if x["net"] > 0)
+    hist = [h for h in metrics.history(30) if h["day"] != day]
+    hist.append({"day": day, "net": float(summ["net"]), "trades": len(trades), "wins": wins})
+    all_trades = sum(int(h.get("trades") or 0) for h in hist)
+    all_wins = sum(int(h.get("wins") or 0) for h in hist)
+
+    series = [{"t": r["ts"][11:16], "net": float(Decimal(r["net"])), "realised": float(Decimal(r["realised"])),
+               "open": float(Decimal(r["open"]))} for r in log if r.get("event") == "pnl"]
+
+    hide = {"pnl", "state", "fillmonitor_start"}
+    decisions = [r for r in log if r.get("event") not in hide
+                 and not (r.get("job") == "watch" and r.get("event") == "ok")][-120:]
+
+    import chat as chat_mod
+    status = ("halted" if halted else "login" if (not tok or v["login"]) else
+              "live" if lim.get("TRADER_LIVE", "").lower() == "true" else "shadow")
+    tickers = []
+    for sym in common.symbols():
+        c = sh._load_cache().get(f"NSE:{sym}")
+        tickers.append({"symbol": sym, "token": c and c.get("token"),
+                        "ltp": ltps.get(c.get("token")) if c else None})
+
+    return _j({
+        "now": now.isoformat(timespec="seconds"), "day": day,
+        "session": ({"phase": session.phase(now), "open": _hm(session.open), "or_end": _hm(session.opening_range_end),
+                     "last_entry": _hm(session.last_entry), "flat_by": _hm(session.flat_by),
+                     "close": _hm(session.close), "special": bool(session.special)} if session else None),
+        "status": status, "halt_reason": halt_reason,
+        "login": {"ok": bool(tok) and not v["login"], "since": tok and tok["at"][11:16],
+                  "uid": tok and tok.get("uid"), "configured": bool(lim.get("SHOONYA_CLIENT_ID"))},
+        "data": {"source": v.get("source"), "age": v.get("age"), "error": v.get("error")},
+        "cash": v.get("cash"), "symbols": tickers,
+        "limits": {k.replace("TRADER_", "").lower(): val for k, val in lim.items() if k.startswith("TRADER_")},
+        "pnl": summ, "series": series,
+        "stats": {"today_trades": len(trades), "today_wins": wins,
+                  "win_rate": (all_wins / all_trades * 100) if all_trades else None,
+                  "trades": all_trades, "wins": all_wins, "history": hist},
+        "positions": pos_out, "closed": trades, "orders": ord_out,
+        "decisions": decisions[::-1], "chat": chat_mod.history(60),
+        "chat_mode": "api" if lim.get("ANTHROPIC_API_KEY") else ("claude" if chat_mod.find_claude() else "commands"),
+    })
+
+
+def api_candles(symbol: str) -> dict:
+    """5-minute candles for today (or the last session) with the plan's
+    levels, for the price chart. Cached 60 s per symbol."""
+    symbol = symbol.upper()
+    key = f"candles:{symbol}"
+    with _lock:
+        hit = _cache.get(key)
+        if hit and _time.time() - hit["at"] < 60:
+            return hit["data"]
+    now = sess.now()
+    if not sh.load_token(now):
+        return {"symbol": symbol, "candles": [], "levels": {}, "error": "not logged in"}
+    from datetime import timedelta
+    b = sh.Shoonya()
+    inst = b.instrument(symbol)
+    cs = b.candles(inst.token, now - timedelta(days=5), now)
+    if cs:
+        last_day = cs[-1].opens_at.date()
+        cs = [c for c in cs if c.opens_at.date() == last_day]
+    offset = 19800                                       # show IST on a UTC axis
+    levels = {}
+    plan = next((r for r in reversed(read_log(now.strftime("%Y-%m-%d")))
+                 if r.get("event") in ("placed", "would_place") and r.get("symbol") == symbol), None)
+    if plan:
+        levels = {k: float(Decimal(plan[k])) for k in ("range_high", "range_low", "trigger", "stop", "target")
+                  if plan.get(k)}
+    elif cs:
+        s = sess.session_for(cs[0].opens_at)
+        from market import opening_range
+        rng = opening_range(cs, s) if s else None
+        if rng:
+            levels = {"range_high": float(rng[0]), "range_low": float(rng[1])}
+    data = {"symbol": symbol, "tick": float(inst.tick),
+            "candles": [{"time": int(c.opens_at.timestamp()) + offset, "open": float(c.open), "high": float(c.high),
+                         "low": float(c.low), "close": float(c.close), "volume": c.volume} for c in cs],
+            "levels": levels, "error": ""}
+    with _lock:
+        _cache[key] = {"at": _time.time(), "data": data}
+    return data
+
+
+def api_action(body: dict) -> dict:
+    a = str(body.get("action") or "")
+    if a == "halt":
+        HALT_FILE.write_text((str(body.get("reason") or "halted from dashboard"))[:200] + "\n", encoding="utf-8")
+        return {"ok": True, "message": "Halted. No new entries. Stops, targets and the flatten keep running."}
+    if a == "resume":
+        try:
+            HALT_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return {"ok": True, "message": "Resumed. The next scan may place orders."}
+    if a == "login_code":
+        rec = sh.exchange_code(str(body.get("code") or ""))
+        common.log("dash", {"event": "logged_in", "uid": rec["uid"]})
+        return {"ok": True, "message": f"Logged in to Shoonya as {rec['uid']}."}
+    if a == "chat":
+        import chat as chat_mod
+        text = str(body.get("text") or "").strip()[:500]
+        if not text:
+            return {"ok": False, "message": "empty message"}
+        return {"ok": True, "message": chat_mod.handle(text, sh.Shoonya())}
+    if a == "cancel":
+        msg = cancel_pair(sh.Shoonya(), str(body.get("order_id") or ""))
+        return {"ok": not ("FAILED" in msg or "not in" in msg), "message": msg}
+    if a == "exit":
+        msg = exit_position(sh.Shoonya(), str(body.get("token") or ""))
+        return {"ok": not msg.lower().startswith("no open"), "message": msg}
+    return {"ok": False, "message": f"unknown action {a!r}"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, body: bytes, code: int = 200) -> None:
         self.send_response(code)
@@ -772,6 +1008,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _json(self, obj, code: int = 200) -> None:
+        body = json.dumps(obj, default=str).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _static(self, path: str) -> bool:
+        if not WEB_DIST.is_dir():
+            return False
+        rel = "index.html" if path in ("/", "") else path.lstrip("/")
+        f = (WEB_DIST / rel).resolve()
+        if not str(f).startswith(str(WEB_DIST.resolve())) or not f.is_file():
+            if rel.startswith("assets/"):
+                return False
+            f = WEB_DIST / "index.html"
+        ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
+                 ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
+                 ".woff2": "font/woff2", ".json": "application/json"}.get(f.suffix, "application/octet-stream")
+        body = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store" if f.suffix == ".html" else "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
 
     def _query(self) -> dict:
         from urllib.parse import parse_qs, urlparse
@@ -800,7 +1066,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self._redirect(sh.authorize_url())
             except sh.ShoonyaError as exc:
-                return self._redirect("/?" + urlencode({"tab": "pos", "flash": str(exc), "err": "1"}))
+                return self._redirect("/?" + urlencode({"flash": str(exc), "err": "1"}))
         if path == "/shoonya/callback":
             code = (q.get("code") or [""])[0]
             try:
@@ -809,7 +1075,19 @@ class Handler(BaseHTTPRequestHandler):
                 msg, err = f"Logged in to Shoonya as {rec['uid']}.", "0"
             except Exception as exc:                    # noqa: BLE001
                 msg, err = f"login failed: {exc}", "1"
-            return self._redirect("/?" + urlencode({"tab": "pos", "flash": msg[:300], "err": err}))
+            return self._redirect("/?" + urlencode({"flash": msg[:300], "err": err}))
+        if path == "/api/state":
+            try:
+                return self._json(api_state())
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+        if path == "/api/candles":
+            try:
+                return self._json(api_candles((q.get("symbol") or ["NIFTYBEES"])[0]))
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"candles": [], "levels": {}, "error": str(exc)[:200]})
+        if path != "/classic" and self._static(path):
+            return
         flash = (q.get("flash") or [""])[0]
         err = (q.get("err") or ["0"])[0] == "1"
         try:
@@ -822,6 +1100,12 @@ class Handler(BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlparse
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
+        if path == "/api/action":
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8") or "{}") if length else {}
+                return self._json(api_action(body))
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"ok": False, "message": f"{type(exc).__name__}: {exc}"[:300]})
         form = parse_qs(self.rfile.read(length).decode("utf-8")) if length else {}
         flash, err = "", False
         try:
@@ -881,7 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
             tab = "pos"
         q = urlencode({"tab": tab, "day": self._day(form), "flash": flash[:300], "err": "1" if err else "0"})
         self.send_response(303)
-        self.send_header("Location", "/?" + q)
+        self.send_header("Location", "/classic?" + q)
         self.send_header("Content-Length", "0")
         self.end_headers()
 

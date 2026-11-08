@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+/* Terminal palette: neutral surfaces, colour reserved for direction.
+   Up/down are ALWAYS paired with a sign or label (tradecn's rule), so
+   nothing depends on colour alone. */
+@theme {
+  --color-bg: #07090d;
+  --color-panel: #0d1117;
+  --color-panel-2: #121821;
+  --color-line: #1c2430;
+  --color-line-2: #263041;
+  --color-fg: #e6edf3;
+  --color-dim: #8b98a9;
+  --color-faint: #5b6779;
+  --color-up: #34d399;
+  --color-up-bg: #0d2a20;
+  --color-down: #fb7185;
+  --color-down-bg: #2e1219;
+  --color-warn: #fbbf24;
+  --color-warn-bg: #2b2210;
+  --color-info: #60a5fa;
+  --color-info-bg: #0f1f38;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+html, body, #root { height: 100%; }
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  background-image:
+    radial-gradient(1200px 500px at 10% -10%, #0f2a2233 0%, transparent 60%),
+    radial-gradient(900px 400px at 110% 0%, #1a1f3a33 0%, transparent 60%);
+  background-attachment: fixed;
+}
+.num { font-variant-numeric: tabular-nums lining-nums; font-feature-settings: "tnum" 1, "lnum" 1; }
+
+@keyframes flash-up   { 0% { background: #34d39940; } 100% { background: transparent; } }
+@keyframes flash-down { 0% { background: #fb718540; } 100% { background: transparent; } }
+.flash-up   { animation: flash-up 900ms ease-out; border-radius: 4px; }
+.flash-down { animation: flash-down 900ms ease-out; border-radius: 4px; }
+
+@keyframes ping-soft { 0% { transform: scale(1); opacity: .7; } 80%,100% { transform: scale(2.4); opacity: 0; } }
+.dot-ping { animation: ping-soft 1.6s cubic-bezier(0,0,.2,1) infinite; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #263041; border-radius: 8px; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

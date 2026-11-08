@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import common                                            # noqa: E402
 import flatten as flatten_mod                            # noqa: E402
+import metrics                                           # noqa: E402
 import session as sess                                   # noqa: E402
 from market import to_tick                               # noqa: E402
 from shoonya import D, Instrument, LoginRequired, Shoonya, ShoonyaError  # noqa: E402
@@ -136,7 +137,12 @@ def tick(broker, now: datetime, state: dict) -> dict:
                if str(p.get("order_id")) in book and book[str(p["order_id"])]["pending"]
                and book[str(p["order_id"])]["filled"] == 0]
     tokens = list(held) + [str(p["token"]) for p, _ in resting]
-    ltps = broker.ltps(tokens) if tokens else {}
+    for sym in common.symbols():                     # the dashboard's ticker
+        try:
+            tokens.append(broker.instrument(sym).token)
+        except (KeyError, ShoonyaError):
+            pass
+    ltps = broker.ltps(list(dict.fromkeys(tokens))) if tokens else {}
 
     # 1-3. every filled auto entry: protect, take target, trail
     for p in placements:
@@ -292,6 +298,9 @@ def tick(broker, now: datetime, state: dict) -> dict:
 
     out["held"] = len(held)
     out["resting"] = len(resting) - out["cancelled"]
+    # One read of the broker per tick, shared: the dashboard renders from
+    # this instead of polling Shoonya itself.
+    state["snap"] = {"positions": positions, "orders": orders, "ltps": ltps}
     return out
 
 
@@ -326,6 +335,20 @@ def run() -> int:
         if got.get("idle"):
             time.sleep(30)
             continue
+        snap = state.pop("snap", None)
+        if snap is not None:
+            if time.monotonic() - state.get("cash_at", -1e9) > 60:
+                try:
+                    state["cash"] = broker.cash()
+                    state["cash_at"] = time.monotonic()
+                except ShoonyaError:
+                    pass
+            metrics.write_snapshot({**snap, "cash": state.get("cash")})
+            minute = now.strftime("%H:%M")
+            if state.get("pnl_minute") != minute:
+                state["pnl_minute"] = minute
+                log({"event": "pnl", **{k: str(v) for k, v in
+                                         metrics.pnl(snap["positions"], snap["ltps"]).items()}})
         key = (got.get("held"), got.get("resting"))
         if key != last or any(got.get(k) for k in ("protected", "cancelled", "sold", "moved")):
             log({"event": "state", **got})
