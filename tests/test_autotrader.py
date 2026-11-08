@@ -53,6 +53,14 @@ class Placement(unittest.TestCase):
         self.assertEqual(len(values), 2)
         self.assertLessEqual(sum(values), D("25000"), "both filling still fits in cash at 1.0x")
 
+    def test_a_large_concurrent_cap_does_not_shrink_orders(self):
+        reset(TRADER_MAX_CONCURRENT="20")
+        b = broker()
+        autotrader.run(b, now=AT)
+        values = [p["qty"] * p["price"] for p in b.placed]
+        self.assertEqual(len(values), 2)
+        self.assertGreater(min(values), D("11000"), "cash splits across 2 symbols, not 20 slots")
+
     def test_shadow_mode_places_nothing(self):
         reset(TRADER_LIVE="false")
         b = broker()

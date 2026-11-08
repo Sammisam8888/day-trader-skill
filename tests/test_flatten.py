@@ -72,6 +72,12 @@ class TestFlatten(unittest.TestCase):
         self.assertEqual(flatten.run(b, now=AT, sleep=lambda s: None), 0)
         self.assertEqual(b.placed, [])
 
+    def test_does_nothing_before_flat_by(self):
+        b = FakeBroker(positions=[position(NIFTY, 40, "281")])
+        early = datetime(2026, 11, 8, 12, 0, tzinfo=sess.IST)
+        self.assertEqual(flatten.run(b, now=early, sleep=lambda s: None), 0)
+        self.assertEqual((b.placed, common.events("login_required")), ([], []))
+
     def test_not_logged_in_is_loud(self):
         class NoLogin(FakeBroker):
             def positions(self, intraday_only=True):

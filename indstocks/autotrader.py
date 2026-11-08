@@ -139,7 +139,10 @@ def run(broker=None, now=None) -> int:
     free_cash = max(buying_power - exposure, Decimal(0))
     free_slots = max(limits.max_concurrent_positions - len(held_syms), 0)
     viable = max(int(free_cash / min_order_value()), 1) if free_cash > 0 else 0
-    slots = min(free_slots, viable)
+    # ...and never more slots than symbols that can still be entered: with
+    # two ETFs and a cap of 20, cash splits two ways, not twenty.
+    enterable = len([s for s in common.symbols() if s not in held_syms])
+    slots = min(free_slots, viable, enterable)
     per_order = (free_cash / slots) if slots else Decimal(0)
     # sizing applies max_leverage itself; hand it cash-equivalent
     per_order_cash = per_order / limits.max_leverage if limits.max_leverage > 0 else Decimal(0)

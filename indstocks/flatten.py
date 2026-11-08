@@ -59,7 +59,12 @@ def price_for(broker, inst, side: str, round_no: int) -> Decimal:
 
 def run(broker=None, *, now=None, sleep=time.sleep) -> int:
     now = now or sess.now()
-    if sess.session_for(now) is None:
+    session = sess.session_for(now)
+    if session is None:
+        return 0
+    if now < session.flat_by:
+        # Only at flatten time. A timer firing on deploy or a clock edge
+        # must not close positions early or cry "close manually".
         return 0
     broker = broker or Shoonya()
     try:
