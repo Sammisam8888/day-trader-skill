@@ -1,0 +1,75 @@
+// Shapes returned by indstocks/dashboard.py. Numbers arrive as JSON
+// numbers (Decimals converted server-side); missing values are null.
+
+export type Status = "live" | "shadow" | "halted" | "login";
+
+export interface Session {
+  phase: string; open: string; or_end: string; last_entry: string;
+  flat_by: string; close: string; special: boolean;
+}
+export interface Position {
+  symbol: string; token: string; qty: number; avg: number; ltp: number;
+  invested: number; current: number; pnl: number; pct: number;
+  source: "ai" | "manual"; stop: number | null; stop_live: boolean;
+  target: number | null; entry: number | null; why: string;
+}
+export interface Plan {
+  why?: string; stop?: string; target?: string; risk?: string; gross_if_target?: string;
+  costs?: string; net_if_target?: string; position_value?: string; leverage?: string;
+}
+export interface Order {
+  id: string; symbol: string; token: string; side: "B" | "S"; type: string;
+  qty: number; filled: number; avg: number; price: number; trigger: number;
+  status: string; pending: boolean; time: string; reason: string;
+  label: string; tone: "wait" | "fill" | "dead"; kind: string;
+  source: "ai" | "manual"; ltp: number | null; plan: Plan | null;
+}
+export interface Closed {
+  symbol: string; token: string; qty: number; buy_avg: number; sell_avg: number;
+  gross: number; charges: number; net: number;
+}
+export interface Day { day: string; net: number | string | null; trades: number; wins: number }
+export interface LogEvent { ts: string; job?: string; event: string; [k: string]: unknown }
+export interface ChatMsg { ts: string; role: string; text: string }
+
+export interface State {
+  now: string; day: string; session: Session | null; status: Status; halt_reason: string;
+  login: { ok: boolean; since: string | null; uid: string | null; configured: boolean };
+  data: { source: string; age: number | null; error: string };
+  cash: number | null;
+  symbols: { symbol: string; token: string | null; ltp: number | null }[];
+  limits: Record<string, string>;
+  pnl: { realised: number; open: number; charges: number; net: number };
+  series: { t: string; net: number; realised: number; open: number }[];
+  stats: { today_trades: number; today_wins: number; win_rate: number | null;
+           trades: number; wins: number; history: Day[] };
+  positions: Position[]; closed: Closed[]; orders: Order[];
+  decisions: LogEvent[]; chat: ChatMsg[]; chat_mode: string;
+  error?: string;
+}
+
+export interface Candles {
+  symbol: string; tick?: number; error: string;
+  candles: { time: number; open: number; high: number; low: number; close: number; volume: number }[];
+  levels: { range_high?: number; range_low?: number; trigger?: number; stop?: number; target?: number };
+}
+
+export async function getState(): Promise<State> {
+  const r = await fetch("/api/state", { cache: "no-store" });
+  if (!r.ok) throw new Error(`state ${r.status}`);
+  return r.json();
+}
+
+export async function getCandles(symbol: string): Promise<Candles> {
+  const r = await fetch(`/api/candles?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+  return r.json();
+}
+
+export async function act(action: string, body: Record<string, unknown> = {}):
+    Promise<{ ok: boolean; message: string }> {
+  const r = await fetch("/api/action", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...body }),
+  });
+  return r.json();
+}

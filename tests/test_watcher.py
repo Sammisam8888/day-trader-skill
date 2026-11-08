@@ -150,3 +150,63 @@ class TestDashboard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestApi(unittest.TestCase):
+    """The JSON API the React dashboard renders from."""
+
+    def setUp(self):
+        reset()
+        sh.save_token("T", "FN245398", "FN245398")
+        sess.now = lambda clock=None: at(10, 30)
+
+    def tearDown(self):
+        import metrics
+        metrics.SNAPSHOT.unlink(missing_ok=True)
+
+    def test_state_from_the_monitor_snapshot_needs_no_broker(self):
+        import dashboard, metrics
+        from decimal import Decimal as Dd
+        metrics.write_snapshot({"positions": [position(NIFTY, 44, "281.02")],
+                                "orders": [order("S1", NIFTY, side="S", qty=44, trigger="280.30", price="278.90",
+                                                 remarks="stop/NIFTYBEES")],
+                                "ltps": {NIFTY.token: Dd("282.00")}, "cash": Dd("26319")})
+        orig = sh.Shoonya
+        sh.Shoonya = lambda *a, **k: (_ for _ in ()).throw(AssertionError("no broker call expected"))
+        try:
+            s = dashboard.api_state()
+        finally:
+            sh.Shoonya = orig
+        self.assertEqual(s["data"]["source"], "monitor")
+        self.assertEqual(s["positions"][0]["symbol"], "NIFTYBEES")
+        self.assertTrue(s["positions"][0]["stop_live"])
+        self.assertAlmostEqual(s["positions"][0]["pnl"], 43.12)
+        self.assertEqual(s["orders"][0]["kind"], "stop")
+        self.assertEqual(s["orders"][0]["source"], "ai")
+        self.assertEqual(s["cash"], 26319.0)
+
+    def test_logged_out_state(self):
+        import dashboard
+        sh.clear_token()
+        s = dashboard.api_state()
+        self.assertEqual(s["status"], "login")
+        self.assertFalse(s["login"]["ok"])
+
+    def test_actions(self):
+        import common, dashboard
+        self.assertTrue(dashboard.api_action({"action": "halt", "reason": "test"})["ok"])
+        self.assertTrue(common.KILL_SWITCH.exists())
+        self.assertTrue(dashboard.api_action({"action": "resume"})["ok"])
+        self.assertFalse(common.KILL_SWITCH.exists())
+        self.assertFalse(dashboard.api_action({"action": "rm -rf"})["ok"])
+
+    def test_pnl_series_and_journal(self):
+        import common, dashboard
+        common.log("fill", {"event": "pnl", "realised": "0", "open": "12.5", "charges": "3", "net": "9.5"})
+        s = dashboard.api_state()
+        self.assertEqual(s["series"][-1]["net"], 9.5)
+        self.assertEqual(s["stats"]["history"][-1]["day"], "2026-11-11")
+
+    def test_built_frontend_is_committed(self):
+        dist = Path(ROOT, "indstocks", "web", "dist", "index.html")
+        self.assertTrue(dist.is_file(), "run `npm run build` in indstocks/web and commit dist/")

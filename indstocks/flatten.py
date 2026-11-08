@@ -144,6 +144,17 @@ def run(broker=None, *, now=None, sleep=time.sleep) -> int:
             except ShoonyaError as exc:
                 log({"event": "cancel_failed", "order_id": o["id"], "reason": str(exc)[:200]})
     log({"event": "flatten_done", "still_open": failed, "swept": swept})
+    try:
+        import metrics
+        allpos = broker.positions()
+        trades = metrics.closed_trades(allpos)
+        summ = metrics.pnl(allpos, {})
+        log({"event": "day_summary", "net": str(summ["net"]), "realised": str(summ["realised"]),
+             "charges": str(summ["charges"]), "trades": len(trades),
+             "wins": sum(1 for x in trades if x["net"] > 0),
+             "detail": [{k: str(v) for k, v in x.items()} for x in trades]})
+    except ShoonyaError:
+        pass
     return 1 if failed else 0
 
 
