@@ -7,6 +7,10 @@ Pure arithmetic on an injected clock, so it is fully testable offline.
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Iterable, Optional
@@ -52,16 +56,62 @@ HOLIDAYS_2026 = {
 }
 
 
+# The live calendar: NSE's published holiday list (synced daily) and dated
+# additions (holidays, special sessions) made by Claude's control commands
+# or by hand. Read on every check, cached by file mtime.
+CALENDAR_FILE = Path(os.environ.get("TRADER_STATE_DIR", "/var/lib/indstocks/auto")) / "control" / "calendar.json"
+_cal_cache: dict = {"mtime": None, "data": {}}
+
+
+def calendar() -> dict:
+    try:
+        m = CALENDAR_FILE.stat().st_mtime
+    except OSError:
+        return {}
+    if _cal_cache["mtime"] != m:
+        try:
+            _cal_cache["data"] = json.loads(CALENDAR_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _cal_cache["data"] = {}
+        _cal_cache["mtime"] = m
+    return _cal_cache["data"]
+
+
+def _t(s: str) -> time:
+    hh, mm = (int(x) for x in s.split(":"))
+    return time(hh, mm)
+
+
+def special_for(d: date) -> Optional[tuple]:
+    iso = d.isoformat()
+    extra = (calendar().get("special") or {}).get(iso)
+    if extra:
+        try:
+            return tuple(_t(x) for x in (extra["open"], extra["last_entry"], extra["flat_by"], extra["close"]))
+        except (KeyError, ValueError):
+            pass
+    return SPECIAL_SESSIONS.get(iso)
+
+
+def holidays_for(year: int) -> set:
+    cal = calendar()
+    nse = (cal.get("nse_holidays") or {}).get(str(year))
+    base = set(nse) if nse else {x for x in HOLIDAYS_2026 if x.startswith(f"{year}-")}
+    return base | {x for x in (cal.get("holidays") or {}) if x.startswith(f"{year}-")}
+
+
 def now(clock=None) -> datetime:
     return (clock() if clock else datetime.now(IST)).astimezone(IST)
 
 
 def is_trading_day(d: date, holidays: Optional[Iterable[str]] = None) -> bool:
-    if d.isoformat() in SPECIAL_SESSIONS:
+    if holidays is None and special_for(d):
+        return True
+    if holidays is not None and d.isoformat() in SPECIAL_SESSIONS:
         return True
     if d.weekday() >= 5:            # Saturday, Sunday
         return False
-    hol = set(holidays) if holidays is not None else HOLIDAYS_2026
+    hol = set(holidays) if holidays is not None else holidays_for(d.year)
     return d.isoformat() not in hol
 
 
@@ -76,7 +126,7 @@ class Session:
 
     @property
     def special(self) -> Optional[tuple]:
-        return SPECIAL_SESSIONS.get(self.day.isoformat())
+        return special_for(self.day)
 
     @property
     def open(self) -> datetime:

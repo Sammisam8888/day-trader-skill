@@ -14,6 +14,10 @@ function decisionLine(d: BrainDecision) {
     return <><b className={d.side === "BUY" ? "text-up" : "text-down"}>{d.side}</b> {d.symbol} · {d.order} {price(d.entry)} · SL {price(d.stop)} · TP {price(d.target)}{d.size != null && d.size !== 1 ? ` · size ${d.size}` : ""}{d.confidence != null ? ` · conf ${d.confidence}` : ""}</>;
   if (d.action === "adjust") return <><b className="text-info">ADJUST</b> {d.symbol}{d.stop != null ? ` · SL → ${price(d.stop)}` : ""}{d.target != null ? ` · TP → ${price(d.target)}` : ""}</>;
   if (d.action === "exit") return <><b className="text-warn">EXIT</b> {d.symbol}</>;
+  if (d.action === "control") {
+    const c = d as BrainDecision & { command?: string; args?: Record<string, unknown> };
+    return <><b className="text-warn">CONTROL</b> {c.command} {c.args ? Object.entries(c.args).filter(([k]) => k !== "reason").map(([k, v]) => `${k}=${v}`).join(" ") : ""}</>;
+  }
   if (d.action === "cancel") return <><b className="text-dim">CANCEL</b> {d.order_id}</>;
   return <>{d.action}</>;
 }
@@ -88,7 +92,7 @@ export default function Brain({ onTrade, focus }: { onTrade: (day: string, id: s
             <div>
               <div className="num text-sm font-semibold">{c.ts.slice(11, 19)}</div>
               <div className="mt-1 flex flex-wrap gap-1">
-                <Badge tone={c.source === "claude" ? "info" : "warn"}>{c.source === "claude" ? "Claude" : c.source === "rules" ? "rule" : c.source}</Badge>
+                <Badge tone={c.source === "claude" ? "info" : c.source === "ops" ? "up" : "warn"}>{c.source === "claude" ? "Claude" : c.source === "rules" ? "rule" : c.source === "ops" ? "ops review" : c.source}</Badge>
               </div>
               {c.latency_s != null && <div className="num mt-1 text-[11px] text-faint">{c.latency_s}s</div>}
             </div>

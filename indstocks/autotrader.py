@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import brain                                             # noqa: E402
 import common                                            # noqa: E402
+import control                                           # noqa: E402
 import regime                                            # noqa: E402
 import risk as risk_mod                                  # noqa: E402
 import sentiment                                         # noqa: E402
@@ -241,6 +242,8 @@ def run(broker=None, now=None, *, decide=None) -> int:
     exposure = sum((abs(p["avg"] * p["qty"]) for p in held), Decimal(0))
     realised = sum((p["realised"] for p in positions), Decimal(0))
     unrealised = sum((p["unrealised"] for p in positions), Decimal(0))
+    if control.check_raises(realised + unrealised):
+        limits = common.limits()
     if realised + unrealised <= -limits.daily_loss_limit:
         log({"event": "halted", "reason": "daily loss limit reached", "realised": str(realised),
              "unrealised": str(unrealised), "limit": str(limits.daily_loss_limit)})
@@ -285,6 +288,7 @@ def run(broker=None, now=None, *, decide=None) -> int:
     budget = max_resting() - len(resting)
 
     placed = 0
+    stop_entries = False
     for i, d in enumerate(out.get("decisions", [])):
         action = str(d.get("action", "")).lower()
         sym = str(d.get("symbol", "")).upper()
@@ -322,6 +326,11 @@ def run(broker=None, now=None, *, decide=None) -> int:
                 log({"event": "would_exit", "symbol": sym, "reason": why})
                 act(i, "would_exit", "shadow mode: nothing sent")
             continue
+        if action == "control":
+            act(i, *control.apply(d, by="claude", day_pnl=realised + unrealised, broker=broker, now=now))
+            if common.halted():
+                stop_entries = True
+            continue
         if action == "adjust":
             act(i, *adjust(broker, d, held, orders, placements, limits, realised + unrealised))
             continue
@@ -330,6 +339,9 @@ def run(broker=None, now=None, *, decide=None) -> int:
             continue
 
         side = "B" if str(d.get("side", "")).upper() in ("BUY", "B", "LONG") else "S"
+        if stop_entries:
+            act(i, "refused", f"halted: {common.halted()}")
+            continue
         if placed >= budget:
             log({"event": "refused", "symbol": sym, "reason": "resting-order ceiling reached"})
             act(i, "refused", "resting-order ceiling reached")
@@ -352,6 +364,8 @@ def run(broker=None, now=None, *, decide=None) -> int:
             "BUY" if side == "B" else "SELL", sym, mood, now, ((direction or {}).get("market") or {}).get("state"))
         if mood_refusal:
             problems.append(mood_refusal)
+        if ("BUY" if side == "B" else "SELL") not in control.sides_allowed():
+            problems.append(f"only {'/'.join(control.sides_allowed())} today (control)")
         if slots <= 0:
             problems.append("no free slot or buying power")
         if problems:
@@ -371,7 +385,7 @@ def run(broker=None, now=None, *, decide=None) -> int:
             act(i, "refused", str(exc)[:300])
             continue
         size = min(max(Decimal(str(d.get("size", 1) or 1)), Decimal("0.25")), Decimal(1))
-        size = max(size * Decimal(str(mood_mult)), Decimal("0.25"))
+        size = max(size * Decimal(str(mood_mult)) * control.size_mult(), Decimal("0.25"))
         lev = limits.max_leverage if limits.max_leverage > 0 else Decimal(1)
         sizing = risk_mod.size_position(plan, slot_cash * size / lev, limits)
         if not sizing.ok:

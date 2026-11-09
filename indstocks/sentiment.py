@@ -306,6 +306,15 @@ def calendar(today: date, symbols: List[str], get: Callable = nse_json) -> dict:
                 ev["stocks"][sym] = {"what": purpose[:120], "results": results}
     except Exception as exc:                            # noqa: BLE001
         ev["error"] = f"NSE calendar unreachable: {str(exc)[:100]}"
+    try:
+        import control
+        for e in control.calendar_events(today):
+            if e.get("symbol"):
+                ev["stocks"][e["symbol"]] = {"what": e["what"], "results": bool(e.get("results"))}
+            else:
+                ev["market"].append({"what": e["what"], "at": e.get("at"), "window": bool(e.get("at"))})
+    except Exception:                                   # noqa: BLE001
+        pass
     extra = common.setting("TRADER_EVENTS_FILE")
     if extra and os.path.exists(extra):
         try:

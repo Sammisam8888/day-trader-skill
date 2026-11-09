@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily ops review: NSE calendar sync and Claude's day verdict
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/ops.py
+TimeoutStartSec=420
+User=root

@@ -78,6 +78,15 @@ jobs:
             done
             sudo touch /var/lib/indstocks/.profile-claude-aggressive-v1
           fi
+          # Ceilings for Claude's set_risk_today raises (one time; edit the env
+          # file to change, delete a line to forbid raising that limit).
+          if [ ! -f /var/lib/indstocks/.profile-ceilings-v1 ]; then
+            for kv in TRADER_CEIL_MAX_LOSS=900 TRADER_CEIL_MAX_TRADES=12 TRADER_CEIL_MAX_CONCURRENT=4 \
+                      TRADER_CEIL_MAX_LEVERAGE=2.5; do
+              k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
+            done
+            sudo touch /var/lib/indstocks/.profile-ceilings-v1
+          fi
           # Units come from the repo on every deploy, so a schedule change in
           # git is a schedule change on the box. INDstocks-only units are
           # removed: that broker is no longer used.
@@ -87,12 +96,12 @@ jobs:
           done
           for u in auto.service auto.timer flatten.service flatten.timer watch.service \
                    watch.timer fillmonitor.service dashboard.service login.service login.timer \
-                   sentiment.service sentiment.timer; do
+                   sentiment.service sentiment.timer ops.service ops.timer; do
             sudo cp "scripts/$u" "/etc/systemd/system/$u"
           done
           sudo rm -rf /etc/systemd/system/auto.timer.d
           sudo systemctl daemon-reload
-          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer >/dev/null
+          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer >/dev/null
           for unit in dashboard fillmonitor; do
             sudo systemctl enable "$unit" >/dev/null
             sudo systemctl restart "$unit"

@@ -4,6 +4,7 @@ import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Too
 import { getSentiment, type Score, type SentimentResp } from "../api";
 import { clsx } from "../fmt";
 import { Badge, Card, Empty, Row } from "../ui";
+import Control from "./Control";
 
 const toneOf = (x: number | null | undefined, cut = 0.3) => (x == null ? "dim" : x >= cut ? "up" : x <= -cut ? "down" : "dim");
 const word = (x: number) => (x >= 0.3 ? "bullish" : x <= -0.3 ? "bearish" : "neutral");
@@ -58,6 +59,7 @@ export default function Market() {
   const blocked = s ? Object.entries(s.tilt.blocked) : [];
   return (
     <div className="space-y-4">
+      <Control />
       {!s ? <Card title="Market sentiment"><Empty>No sentiment collected yet. It runs at 08:45 and every 15 minutes in the session.</Empty></Card> : (
         <>
           <div className="grid gap-4 lg:grid-cols-3">

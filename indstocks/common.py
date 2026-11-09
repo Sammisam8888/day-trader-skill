@@ -49,7 +49,38 @@ def symbols() -> List[str]:
     return [s.strip().upper() for s in raw.split(",") if s.strip()]
 
 
+def day_control() -> dict:
+    """Today's control state (control.py): halt, risk overrides."""
+    try:
+        return json.loads((STATE_DIR / "control" / f"day-{sess.now().strftime('%Y-%m-%d')}.json")
+                          .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def limits() -> risk_mod.Limits:
+    """The owner's limits with today's control overrides applied (control.py
+    has already checked every override against the owner's ceilings)."""
+    import dataclasses
+    lim = base_limits()
+    risk = day_control().get("risk") or {}
+    fields = {"max_loss_per_trade": ("max_loss_per_trade", Decimal), "daily_loss_limit": ("daily_loss_limit", Decimal),
+              "max_trades": ("max_trades_per_day", int), "max_concurrent": ("max_concurrent_positions", int),
+              "max_leverage": ("max_leverage", Decimal)}
+    changes = {}
+    for k, (attr, typ) in fields.items():
+        if k in risk:
+            try:
+                v = typ(str(risk[k]))
+            except Exception:                           # noqa: BLE001
+                continue
+            if k == "daily_loss_limit" and v > lim.daily_loss_limit:
+                continue                                # never raised, whatever the file says
+            changes[attr] = v
+    return dataclasses.replace(lim, **changes) if changes else lim
+
+
+def base_limits() -> risk_mod.Limits:
     return risk_mod.Limits(
         max_loss_per_trade=Decimal(setting("TRADER_MAX_LOSS", "500")),
         daily_loss_limit=Decimal(setting("TRADER_DAILY_LOSS", "1500")),
@@ -63,6 +94,9 @@ def limits() -> risk_mod.Limits:
 
 
 def halted() -> Optional[str]:
+    h = day_control().get("halt")
+    if h:
+        return f"halted for today by {h.get('by')}: {h.get('reason')}"
     if KILL_SWITCH.exists():
         try:
             reason = KILL_SWITCH.read_text(encoding="utf-8").strip()

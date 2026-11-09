@@ -146,6 +146,7 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
         "direction": {"market": direction["market"],
                       "stocks": {s: {"score": x["score"], "state": x["state"]} for s, x in trends.items()}},
         "sentiment": sentiment_view(now),
+        "control": control_view(),
         "positions": [position_view(p, orders, ours, adj, limits) for p in held],
         "resting_entries": [{"order_id": o["id"], "symbol": ours[o["id"]]["symbol"],
                              "side": "BUY" if o["side"] == "B" else "SELL", "type": o["type"],
@@ -215,6 +216,26 @@ Rules the code enforces (anything else is refused, so don't waste a decision):
 - at most {max_conc} positions at once, {max_entries} entries per symbol per day, leverage {lev}x.
 - shorts allowed: {shorts}. Symbols: only those listed in markets.
 
+CONTROL COMMANDS. Besides trades you may steer the system for today with a decision
+{{"action":"control","command":"<name>","args":{{...}},"reason":"..."}}. STATE.control shows today's
+overrides, the owner's limits and ceilings, the next days' calendar and commands already issued.
+- halt_today {{reason}}: no new entries for the rest of today (open positions stay protected).
+  Use when the day is genuinely untradeable: violent chop with no structure, a shock headline,
+  a run of stops, data that looks broken.
+- flatten_now {{reason}}: close everything now and halt today. Only for a real emergency.
+- resume_today {{reason}}: lift a halt you set earlier.
+- set_risk_today {{max_loss_per_trade, max_trades, max_concurrent, max_leverage, size, sides}}: any
+  subset. Lowering is always accepted. Raising is accepted only up to owner_ceilings, only after
+  09:45 and only while today's P&L is >= 0; it reverts by itself if the day turns red. The daily
+  loss limit can only be lowered. size (0.25-1) scales every new entry; sides BUY/SELL/BOTH.
+  Raise only on a clean trend day where your trades are working, never to win back losses.
+- calendar_add {{kind: holiday|special_session|event, date: YYYY-MM-DD, ...}}: holiday {{what, source}};
+  special_session {{open, last_entry, flat_by, close (HH:MM), what, source}}; event {{what, at (HH:MM,
+  optional: no entries 20 min before to 40 min after), symbol (optional), results (bool), source}}.
+  Add only what you have real evidence for, and say where it came from.
+- calendar_remove {{kind, date}}; notify {{message}}: a note to the owner's phone.
+Commands are rare. Most scans need none.
+
 Reply with ONE JSON object, nothing else:
 {{"view": "<one or two sentences on the market>",
   "decisions": [
@@ -233,12 +254,15 @@ def find_claude() -> Optional[str]:
     return chat.find_claude()
 
 
-def run_cli(prompt: str, timeout: int = TIMEOUT) -> str:
-    """One `claude -p` call with no tools: text in, text out."""
+def run_cli(prompt: str, timeout: int = TIMEOUT, tools: str = "") -> str:
+    """One `claude -p` call: text in, text out. No tools unless `tools` names
+    read-only ones (the ops review may search the web to check a calendar)."""
     exe = find_claude()
     if not exe:
         raise RuntimeError("claude CLI not found on this box")
-    cmd = ["sudo", "-u", CLI_USER, "-H", exe, "-p", "--output-format", "json", "--tools", ""]
+    cmd = ["sudo", "-u", CLI_USER, "-H", exe, "-p", "--output-format", "json", "--tools", tools]
+    if tools:
+        cmd += ["--allowedTools", *tools.split(",")]
     model = common.setting("TRADER_BRAIN_MODEL")
     if model:
         cmd[6:6] = ["--model", model]
@@ -279,6 +303,16 @@ def parse_obj(raw: str) -> dict:
     if not isinstance(out, dict):
         raise ValueError("reply is not a JSON object")
     return out
+
+
+def control_view() -> dict:
+    import control
+    v = control.state_view()
+    return {"halt": v["halt"], "today_overrides": v["risk"], "raised": v["raised"],
+            "owner_limits": v["base"], "owner_ceilings": v["ceilings"],
+            "next_days": [d for d in v["upcoming"][:7]],
+            "commands_today": [{k: h.get(k) for k in ("ts", "by", "command", "outcome", "message")}
+                               for h in v["history"][-6:]]}
 
 
 def sentiment_view(now) -> Optional[dict]:
