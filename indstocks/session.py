@@ -42,10 +42,13 @@ SPECIAL_SESSIONS = {
 # NSE trading holidays. 2026 confirmed; extend each year. A date missing here
 # is treated as a trading day, so an unlisted holiday means wasted API calls
 # and no candles, not a bad order.
+# NSE equity holidays 2026 (weekdays). Corrected 2026-11-09 against the
+# published list: Balipratipada is 10 Nov, Dussehra 20 Oct, Gurpurb 24 Nov.
 HOLIDAYS_2026 = {
-    "2026-01-26", "2026-02-15", "2026-03-03", "2026-03-20", "2026-03-31",
-    "2026-04-01", "2026-04-03", "2026-04-14", "2026-05-01", "2026-08-15",
-    "2026-08-28", "2026-10-02", "2026-10-21", "2026-11-09", "2026-12-25",
+    "2026-01-15", "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31",
+    "2026-04-03", "2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26",
+    "2026-09-14", "2026-10-02", "2026-10-20", "2026-11-10", "2026-11-24",
+    "2026-12-25",
 }
 
 
