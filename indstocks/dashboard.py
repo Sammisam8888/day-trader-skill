@@ -240,7 +240,7 @@ def cancel_pair(broker, order_id: str) -> str:
 
 def exit_position(broker, token: str) -> str:
     import chat as chat_mod
-    pos = [p for p in broker.positions() if p["token"] == token and p["qty"] > 0]
+    pos = [p for p in broker.positions() if p["token"] == token and p["qty"] != 0]
     if not pos:
         return f"no open intraday position with token {token}"
     return chat_mod.act_sell(broker, pos[0]["symbol"])
@@ -845,7 +845,7 @@ def api_state() -> dict:
     positions, orders, ltps = v["positions"], v["orders"], v["ltps"]
     whys = placed_records(log)
     ours = common.our_order_ids(day)
-    pending_sell = {o["token"]: o for o in orders if o["pending"] and o["side"] == "S"}
+    pending_close = {(o["token"], o["side"]): o for o in orders if o["pending"]}
     bot_tokens = {w.get("token") for oid, w in whys.items()
                   if any(o["id"] == oid and o["filled"] > 0 for o in orders)}
 
@@ -855,7 +855,7 @@ def api_state() -> dict:
             continue
         ltp = ltps.get(p["token"]) or p["ltp"] or p["avg"]
         plan = next((w for w in whys.values() if w.get("token") == p["token"]), {})
-        so = pending_sell.get(p["token"])
+        so = pending_close.get((p["token"], "S" if p["qty"] > 0 else "B"))
         inv = p["avg"] * p["qty"]
         pnl_ = (ltp - p["avg"]) * p["qty"]
         pos_out.append({"symbol": p["symbol"], "token": p["token"], "qty": p["qty"], "avg": p["avg"],
@@ -871,7 +871,7 @@ def api_state() -> dict:
         ai = o["id"] in ours or o["remarks"].startswith(AI_PREFIXES)
         why = whys.get(o["id"], {})
         r = o["remarks"]
-        kind = ("entry" if r.startswith("auto/") or why else "stop" if r.startswith("stop/") or (o["side"] == "S" and o["type"] == "SL-LMT")
+        kind = ("entry" if r.startswith("auto/") or why else "stop" if r.startswith("stop/")
                 else "target" if r.startswith("tgt/") else "flatten" if r.startswith("flat/")
                 else "chat" if r.startswith("chat/") else "exit" if o["side"] == "S" else "buy")
         cls, label = status_label(o)
@@ -879,7 +879,7 @@ def api_state() -> dict:
                                              "price", "trigger", "status", "pending", "time", "reason")},
                         "label": label, "tone": cls, "kind": kind, "source": "ai" if ai else "manual",
                         "ltp": ltps.get(o["token"]),
-                        "plan": {k: why.get(k) for k in ("why", "stop", "target", "risk", "gross_if_target",
+                        "plan": {k: why.get(k) for k in ("why", "stop", "target", "risk", "gross_if_target", "decided_by", "confidence",
                                                          "costs", "net_if_target", "position_value", "leverage")}
                         if why else None})
     ord_out.sort(key=lambda x: (not x["pending"], x["time"] or ""), reverse=False)

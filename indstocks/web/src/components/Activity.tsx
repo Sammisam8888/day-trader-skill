@@ -7,6 +7,7 @@ const TONE: Record<string, string> = {
   logged_in: "up", flatten_done: "up", day_summary: "info",
   blocked: "down", stop_failed: "down", order_failed: "down", sell_failed: "down", ALERT: "down",
   flatten_incomplete: "down", error: "down", halted: "down", login_required: "warn",
+  brain_view: "info", brain_unavailable: "warn", refused: "warn",
   skip: "dim", no_data: "dim", unsized: "warn", entry_cancelled: "warn", run_start: "dim", run_end: "dim",
 };
 
@@ -22,6 +23,8 @@ function detail(r: LogEvent): string {
     case "ALERT": return `${g("level")}: ${g("action")}`;
     case "run_start": return `cash ₹${g("cash")} · fills ${g("fills")} · resting ${g("resting")} · per order ₹${g("per_order")}`;
     case "day_summary": return `net ₹${g("net")} · ${g("wins")}/${g("trades")} wins`;
+    case "brain_view": return `${g("source") === "claude" ? "Claude" : "Rule"}: ${g("view")} (${g("decisions")} decision${g("decisions") === "1" ? "" : "s"})`;
+    case "refused": return `${g("reason")}${r.decider_reason ? ` · idea: ${g("decider_reason")}` : ""}`;
     default: {
       const skip = new Set(["ts", "event", "job", "symbol", "name", "live"]);
       return Object.entries(r).filter(([k]) => !skip.has(k)).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ").slice(0, 260);

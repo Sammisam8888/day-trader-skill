@@ -20,8 +20,8 @@ AT = datetime(2026, 11, 11, 10, 30, tzinfo=sess.IST)
 sess.now = lambda clock=None: AT
 
 
-def plan(oid="P1", inst=NIFTY, qty=40, ts=None, **kw):
-    rec = {"event": "placed", "order_id": oid, "symbol": inst.symbol, "tsym": inst.tsym,
+def plan(oid="P1", inst=NIFTY, qty=40, ts=None, side="B", **kw):
+    rec = {"event": "placed", "order_id": oid, "symbol": inst.symbol, "tsym": inst.tsym, "side": side,
            "token": inst.token, "exch": "NSE", "tick": "0.01", "qty": qty,
            "trigger": "281.01", "entry": "281.03", "stop": "280.30", "target": "282.49",
            "range_high": "281.00", "range_low": "279.60",
@@ -148,22 +148,22 @@ class Prune(unittest.TestCase):
         fm.tick(b, AT, {})
         self.assertIn("P2", b.cancelled)            # 16,861 held + 18,000 > 25,000
 
-    def test_price_below_the_range_low_kills_the_setup(self):
+    def test_price_through_the_planned_stop_kills_the_setup(self):
         plan("P1")
-        b = FakeBroker(orders=[order("P1", NIFTY)], quotes={NIFTY.token: {"ltp": "279.50"}})
+        b = FakeBroker(orders=[order("P1", NIFTY)], quotes={NIFTY.token: {"ltp": "280.20"}})
         fm.tick(b, AT, {})
         self.assertEqual(b.cancelled, ["P1"])
 
     def test_inside_the_range_it_stays(self):
         plan("P1")
-        b = FakeBroker(orders=[order("P1", NIFTY)], quotes={NIFTY.token: {"ltp": "280.50"}})
+        b = FakeBroker(orders=[order("P1", NIFTY)], quotes={NIFTY.token: {"ltp": "280.80"}})
         fm.tick(b, AT, {})
         self.assertEqual(b.cancelled, [])
 
     def test_ttl(self):
         reset(TRADER_RESTING_TTL_MIN="30")
         plan("P1", ts=(AT - timedelta(minutes=45)).isoformat())
-        b = FakeBroker(orders=[order("P1", NIFTY)], quotes={NIFTY.token: {"ltp": "280.50"}})
+        b = FakeBroker(orders=[order("P1", NIFTY)], quotes={NIFTY.token: {"ltp": "280.80"}})
         fm.tick(b, AT, {})
         self.assertEqual(b.cancelled, ["P1"])
 
@@ -201,10 +201,50 @@ class ManualAndShorts(unittest.TestCase):
         fm.tick(b, AT, {})
         self.assertEqual(b.placed, [])
 
-    def test_a_short_is_bought_back(self):
-        b = FakeBroker(positions=[position(NIFTY, -40, "281.00")], quotes={NIFTY.token: {"ltp": "281"}})
+    def test_a_manual_short_is_covered_at_its_threshold(self):
+        b = FakeBroker(positions=[position(NIFTY, -40, "281.00")], quotes={NIFTY.token: {"ltp": "278.10"}})
         fm.tick(b, AT, {})
         self.assertEqual((b.placed[0]["side"], b.placed[0]["qty"]), ("B", 40))
+
+    def test_a_manual_short_inside_the_band_is_held(self):
+        b = FakeBroker(positions=[position(NIFTY, -40, "281.00")], quotes={NIFTY.token: {"ltp": "280.50"}})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.placed, [])
+
+
+class Shorts(unittest.TestCase):
+    """A bot short: stop is a BUY above, target below, trail moves down."""
+
+    def setUp(self):
+        reset()
+        plan("P1", side="S", entry="279.53", stop="280.30", target="278.00")
+
+    def short_book(self, ltp, stop_id=None):
+        orders = [order("P1", NIFTY, side="S", status="COMPLETE", qty=40, filled=40, avg="279.55")]
+        if stop_id:
+            orders.append(order(stop_id, NIFTY, side="B", qty=40, trigger="280.30", price="281.71", remarks="stop/NIFTYBEES"))
+        return FakeBroker(orders=orders, positions=[position(NIFTY, -40, "279.55")], quotes={NIFTY.token: {"ltp": ltp}})
+
+    def test_the_stop_is_a_buy_above(self):
+        b = self.short_book("279.40")
+        fm.tick(b, AT, {})
+        s = b.placed[0]
+        self.assertEqual((s["side"], s["qty"], s["trigger"]), ("B", 40, D("280.30")))
+        self.assertGreater(s["price"], s["trigger"])
+
+    def test_target_below_buys_back(self):
+        common.log("fill", {"event": "stop_placed", "parent": "P1", "order_id": "S1", "trigger": "280.30"})
+        b = self.short_book("277.90", stop_id="S1")
+        fm.tick(b, AT, {})
+        self.assertEqual(b.cancelled, ["S1"])
+        self.assertEqual(b.placed[0]["side"], "B")
+
+    def test_trail_moves_the_stop_down_only(self):
+        common.log("fill", {"event": "stop_placed", "parent": "P1", "order_id": "S1", "trigger": "280.30"})
+        b = self.short_book("278.78", stop_id="S1")                 # +1R from 279.55 (R 0.75)
+        fm.tick(b, AT, {})
+        self.assertEqual(b.modified[0]["trigger"], D("279.55"))
+        self.assertIsNone(fm.new_stop(D("279.55"), D("280.30"), D("279.00"), D("0.01"), D("279.55"), "S"))
 
 
 class FlattenHandOff(unittest.TestCase):

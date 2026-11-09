@@ -94,10 +94,52 @@ class ExitPlan:
     target: Decimal
     risk_per_share: Decimal
     reward_to_risk: Decimal
+    side: str = "B"                 # "B" long, "S" short
 
     @property
     def is_sane(self) -> bool:
+        if self.side == "S":
+            return self.target < self.entry < self.stop
         return self.stop < self.entry < self.target
+
+
+def make_plan(side: str, entry: Decimal, stop: Decimal, target: Decimal, tick: Decimal,
+              *, min_risk_ticks: int = 2) -> ExitPlan:
+    """A plan from explicit levels (Claude's or the rule's), either side.
+
+    Rounding never tightens the stop: a long stop rounds down, a short stop
+    up. Targets round toward the entry, so the reward is never overstated.
+    """
+    entry = to_tick(entry, tick)
+    if side == "S":
+        stop = to_tick(stop, tick, mode="up")
+        target = to_tick(target, tick, mode="up")
+        if not (target < entry < stop):
+            raise PlanError(f"short plan must be target < entry < stop, got {target} / {entry} / {stop}")
+    else:
+        stop = to_tick(stop, tick, mode="down")
+        target = to_tick(target, tick, mode="down")
+        if not (stop < entry < target):
+            raise PlanError(f"long plan must be stop < entry < target, got {stop} / {entry} / {target}")
+    risk = abs(entry - stop)
+    if risk < tick * min_risk_ticks:
+        raise PlanError(f"risk {risk} is under {min_risk_ticks} ticks; too tight to survive the spread")
+    return ExitPlan(entry, stop, target, risk, abs(target - entry) / risk, side)
+
+
+def plan_breakdown(range_high: Decimal, range_low: Decimal, tick: Decimal, *,
+                   reward_multiple: Decimal = Decimal(2), slippage_ticks: int = 2) -> ExitPlan:
+    """The short mirror of plan_trigger_exit: sell below the range low,
+    stop at the midpoint, target 2R below."""
+    entry = to_tick(range_low - tick - tick * slippage_ticks, tick, mode="down")
+    stop = to_tick((range_high + range_low) / 2, tick, mode="up")
+    if stop <= entry:
+        raise PlanError(f"stop {stop} is not above entry {entry}")
+    risk = stop - entry
+    if risk < tick * 2:
+        raise PlanError(f"risk {risk} is under 2 ticks")
+    target = to_tick(entry - risk * reward_multiple, tick, mode="down")
+    return ExitPlan(entry, stop, target, risk, (entry - target) / risk, "S")
 
 
 class PlanError(ValueError):

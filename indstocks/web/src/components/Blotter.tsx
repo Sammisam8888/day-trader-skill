@@ -48,7 +48,7 @@ function OrderRow({ o, onCancel, wide }: { o: Order; onCancel: (o: Order) => voi
       {o.reason && <div className="px-4 pb-2 text-xs text-down">{o.reason}</div>}
       {open && o.plan && (
         <div className="mx-4 mb-3 rounded-xl border border-line bg-bg/60 p-3">
-          <p className="mb-2 text-[13px] leading-relaxed text-dim"><b className="text-fg">Why: </b>{o.plan.why}</p>
+          <p className="mb-2 text-[13px] leading-relaxed text-dim"><b className="text-fg">{o.plan.decided_by === "claude" ? "Claude's reasoning: " : "Why: "}</b>{o.plan.why}</p>
           <Row k="Stop / target" v={<><span className="text-down">{price(o.plan.stop)}</span> / <span className="text-up">{price(o.plan.target)}</span></>} />
           <Row k="Position value" v={money(o.plan.position_value)} />
           <Row k="Leverage (order / cash)" v={`${o.plan.leverage}x`} />

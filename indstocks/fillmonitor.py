@@ -62,37 +62,45 @@ def inst_of(p: dict) -> Instrument:
                       D(p.get("tick"), "0.01"), 1)
 
 
-def stop_limit(trigger: Decimal, tick: Decimal) -> Decimal:
-    """Limit for a sell stop: far enough under the trigger to fill in a gap."""
+def stop_limit(trigger: Decimal, tick: Decimal, side: str = "S") -> Decimal:
+    """Limit for a stop order, far enough past the trigger to fill in a gap.
+    side is the STOP's side: S (protecting a long) or B (protecting a short)."""
     band = trigger * S("TRADER_STOP_BAND_PCT", "0.5") / 100
+    if side == "B":
+        return to_tick(trigger + band, tick, mode="up")
     return to_tick(trigger - band, tick, mode="down")
 
 
 def new_stop(entry: Decimal, stop: Decimal, ltp: Decimal, tick: Decimal,
-             current: Decimal):
-    """Where the stop should be now, or None if it should not move."""
-    r = entry - stop
+             current: Decimal, side: str = "B"):
+    """Where the stop should be now, or None if it should not move.
+    side is the POSITION's side. Breakeven at +1R, then trail 1R behind
+    price; a long's stop only rises, a short's only falls."""
+    r = abs(entry - stop)
     if r <= 0 or ltp <= 0:
         return None
-    gain_r = (ltp - entry) / r
+    gain_r = ((ltp - entry) if side == "B" else (entry - ltp)) / r
     be = S("TRADER_BREAKEVEN_R", "1.0")
     if gain_r < be:
         return None
-    cand = entry
-    if gain_r >= be + Decimal("0.5"):
-        cand = max(entry, ltp - r * S("TRADER_TRAIL_R", "1.0"))
-    cand = to_tick(cand, tick, mode="down")
-    return cand if cand > current else None
+    trail = S("TRADER_TRAIL_R", "1.0")
+    if side == "B":
+        cand = entry if gain_r < be + Decimal("0.5") else max(entry, ltp - r * trail)
+        cand = to_tick(cand, tick, mode="down")
+        return cand if cand > current else None
+    cand = entry if gain_r < be + Decimal("0.5") else min(entry, ltp + r * trail)
+    cand = to_tick(cand, tick, mode="up")
+    return cand if (current <= 0 or cand < current) else None
 
 
-def manual_decision(avg: Decimal, ltp: Decimal):
+def manual_decision(avg: Decimal, ltp: Decimal, side: str = "B"):
     if avg <= 0 or ltp <= 0:
         return None
-    move = (ltp - avg) / avg * 100
+    move = (ltp - avg) / avg * 100 * (1 if side == "B" else -1)
     if move >= S("TRADER_MANUAL_TARGET_PCT", "1.0"):
-        return f"up {move:.2f}%"
+        return f"in profit {move:.2f}%"
     if move <= -S("TRADER_MANUAL_STOP_PCT", "0.5"):
-        return f"down {-move:.2f}%"
+        return f"in loss {-move:.2f}%"
     return None
 
 
@@ -102,6 +110,10 @@ def latest_by(events: list, key: str) -> dict:
         if e.get(key):
             out[str(e[key])] = e
     return out
+
+
+def opp(side: str) -> str:
+    return "S" if side == "B" else "B"
 
 
 # ------------------------------------------------------------------ tick
@@ -125,7 +137,7 @@ def tick(broker, now: datetime, state: dict) -> dict:
     orders = broker.orders()
     book = {o["id"]: o for o in orders}
     positions = broker.positions()
-    held = {p["token"]: p for p in positions if p["qty"] > 0}
+    held = {p["token"]: p for p in positions if p["qty"] != 0}
 
     placements = common.events("placed")
     stops = latest_by(common.events("stop_placed"), "parent")
@@ -149,9 +161,10 @@ def tick(broker, now: datetime, state: dict) -> dict:
         o = book.get(str(p.get("order_id")))
         if not o or o["filled"] <= 0:
             continue
+        side = p.get("side", "B")
         pos = held.get(str(p["token"]))
-        if not pos:
-            continue                                      # already closed
+        if not pos or (pos["qty"] > 0) != (side == "B"):
+            continue                                      # closed (or flipped)
         inst = inst_of(p)
         pid = str(p["order_id"])
         ex = exits.get(pid)
@@ -159,29 +172,27 @@ def tick(broker, now: datetime, state: dict) -> dict:
             eo = book.get(str(ex.get("order_id")))
             if eo and eo["pending"]:                       # exit not filled yet: re-price
                 try:
-                    broker.modify(eo, inst, qty=eo["qty"],
-                                  price=broker.marketable(inst, "S"))
+                    broker.modify(eo, inst, qty=eo["qty"], price=broker.marketable(inst, opp(side)))
                 except ShoonyaError as exc:
                     log({"event": "modify_failed", "order_id": eo["id"], "reason": str(exc)[:200]})
             continue
 
-        want = min(o["filled"], pos["qty"])
+        want = min(o["filled"], abs(pos["qty"]))
         st = stops.get(pid)
         so = book.get(str(st["order_id"])) if st else None
         stop_px = D(st.get("trigger")) if st else D(p["stop"])
         if so is None or (so["dead"] and so["filled"] == 0):
             try:
-                oid = broker.place(inst, side="S", qty=want, price=stop_limit(stop_px, inst.tick),
+                oid = broker.place(inst, side=opp(side), qty=want,
+                                   price=stop_limit(stop_px, inst.tick, opp(side)),
                                    trigger=stop_px, remarks=f"stop/{p['symbol']}")
                 log({"event": "stop_placed", "parent": pid, "order_id": oid, "symbol": p["symbol"],
-                     "qty": want, "trigger": str(stop_px)})
+                     "side": opp(side), "qty": want, "trigger": str(stop_px)})
                 out["protected"] += 1
             except ShoonyaError as exc:
-                log({"event": "stop_failed", "parent": pid, "symbol": p["symbol"],
-                     "reason": str(exc)[:300]})
+                log({"event": "stop_failed", "parent": pid, "symbol": p["symbol"], "reason": str(exc)[:300]})
                 common.notify(f"UNPROTECTED {p['symbol']}",
-                              f"Stop could not be placed: {exc}. Retrying every few seconds.",
-                              priority="urgent")
+                              f"Stop could not be placed: {exc}. Retrying every few seconds.", priority="urgent")
             continue
         if not so["pending"]:
             continue                                       # stop executed
@@ -195,7 +206,8 @@ def tick(broker, now: datetime, state: dict) -> dict:
         ltp = ltps.get(str(p["token"]))
         if ltp is None:
             continue
-        if ltp >= D(p["target"]):
+        hit = ltp >= D(p["target"]) if side == "B" else ltp <= D(p["target"])
+        if hit:
             try:
                 broker.cancel(so["id"])
             except ShoonyaError as exc:
@@ -203,7 +215,7 @@ def tick(broker, now: datetime, state: dict) -> dict:
                      "reason": f"stop cancel failed ({exc}); it has probably executed"})
                 continue
             try:
-                eid = broker.place(inst, side="S", qty=want, price=broker.marketable(inst, "S"),
+                eid = broker.place(inst, side=opp(side), qty=want, price=broker.marketable(inst, opp(side)),
                                    remarks=f"tgt/{p['symbol']}")
                 log({"event": "target_exit", "parent": pid, "order_id": eid, "symbol": p["symbol"],
                      "qty": want, "ltp": str(ltp), "target": p["target"]})
@@ -211,16 +223,17 @@ def tick(broker, now: datetime, state: dict) -> dict:
             except ShoonyaError as exc:
                 log({"event": "exit_failed", "symbol": p["symbol"], "reason": str(exc)[:300]})
                 common.notify(f"UNPROTECTED {p['symbol']}",
-                              f"Stop cancelled for target but the sell failed: {exc}", priority="urgent")
+                              f"Stop cancelled for target but the exit failed: {exc}", priority="urgent")
             continue
         entry = o["avg"] if o["avg"] > 0 else D(p["entry"])
-        moved = new_stop(entry, D(p["stop"]), ltp, inst.tick, so["trigger"])
+        moved = new_stop(entry, D(p["stop"]), ltp, inst.tick, so["trigger"], side)
         if moved is not None:
             try:
-                broker.modify(so, inst, qty=so["qty"], price=stop_limit(moved, inst.tick), trigger=moved)
+                broker.modify(so, inst, qty=so["qty"], price=stop_limit(moved, inst.tick, opp(side)), trigger=moved)
+                be = to_tick(entry, inst.tick, mode="down" if side == "B" else "up")
                 log({"event": "stop_moved", "parent": pid, "order_id": so["id"], "symbol": p["symbol"],
                      "from": str(so["trigger"]), "to": str(moved), "ltp": str(ltp),
-                     "reason": "breakeven" if moved == to_tick(entry, inst.tick, mode="down") else "trailing"})
+                     "reason": "breakeven" if moved == be else "trailing"})
                 out["moved"] += 1
             except ShoonyaError as exc:
                 log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})
@@ -232,7 +245,7 @@ def tick(broker, now: datetime, state: dict) -> dict:
         cancel_all = "past the last-entry time"
     elif len(held) >= limits.max_concurrent_positions:
         cancel_all = f"{len(held)} position(s) open, cap {limits.max_concurrent_positions}"
-    exposure = sum((p["avg"] * p["qty"] for p in held.values()), Decimal(0))
+    exposure = sum((abs(p["avg"] * p["qty"]) for p in held.values()), Decimal(0))
     ceiling = None
     if exposure > 0:
         try:
@@ -242,11 +255,17 @@ def tick(broker, now: datetime, state: dict) -> dict:
     ttl = int(common.setting("TRADER_RESTING_TTL_MIN", "30"))
     for p, o in resting:
         why = cancel_all
+        side = p.get("side", "B")
         ltp = ltps.get(str(p["token"]))
+        if not why and str(p["token"]) in held:
+            why = f"already in {p['symbol']}: the other side's entry is no longer wanted"
         if not why and ceiling is not None and exposure + D(p["entry"]) * o["qty"] > ceiling:
             why = f"one more fill would hold {exposure + D(p['entry']) * o['qty']:.0f} > {ceiling:.0f}"
-        if not why and ltp is not None and p.get("range_low") and ltp < D(p["range_low"]):
-            why = f"price {ltp} fell below the range low {p['range_low']}"
+        if not why and ltp is not None:
+            if side == "B" and ltp <= D(p["stop"]):
+                why = f"price {ltp} is at or below the planned stop {p['stop']}: the long idea is dead"
+            if side == "S" and ltp >= D(p["stop"]):
+                why = f"price {ltp} is at or above the planned stop {p['stop']}: the short idea is dead"
         if not why and ttl > 0:
             try:
                 age = (now - datetime.fromisoformat(p["ts"])).total_seconds() / 60
@@ -263,38 +282,26 @@ def tick(broker, now: datetime, state: dict) -> dict:
         except ShoonyaError as exc:
             log({"event": "cancel_failed", "order_id": o["id"], "reason": str(exc)[:200]})
 
-    # 5. manual positions with no sell order of their own
-    pending_sell = {o["token"] for o in orders if o["pending"] and o["side"] == "S"}
+    # 5. positions this system did not open, with no closing order of their
+    #    own: guarded by the manual +/- thresholds, long or short
+    pending = {(o["token"], o["side"]) for o in orders if o["pending"]}
     for tok, pos in held.items():
-        if tok in bot_tokens or tok in pending_sell:
+        side = "B" if pos["qty"] > 0 else "S"
+        if tok in bot_tokens or (tok, opp(side)) in pending:
             continue
         ltp = ltps.get(tok) or pos["ltp"]
-        why = manual_decision(pos["avg"], ltp)
+        why = manual_decision(pos["avg"], ltp, side)
         if not why:
             continue
         inst = broker.instrument_for(pos)
         try:
-            oid = broker.place(inst, side="S", qty=pos["qty"], price=broker.marketable(inst, "S"),
-                               remarks=f"man/{pos['symbol']}")
-            log({"event": "sold", "symbol": pos["symbol"], "qty": pos["qty"], "order_id": oid,
-                 "avg": str(pos["avg"]), "ltp": str(ltp), "reason": f"manual position {why}"})
+            oid = broker.place(inst, side=opp(side), qty=abs(pos["qty"]),
+                               price=broker.marketable(inst, opp(side)), remarks=f"man/{pos['symbol']}")
+            log({"event": "sold" if side == "B" else "covered", "symbol": pos["symbol"], "qty": abs(pos["qty"]),
+                 "order_id": oid, "avg": str(pos["avg"]), "ltp": str(ltp), "reason": f"manual position {why}"})
             out["sold"] += 1
         except ShoonyaError as exc:
             log({"event": "sell_failed", "symbol": pos["symbol"], "reason": str(exc)[:200]})
-
-    # 7. a short should never exist; close it
-    for pos in positions:
-        if pos["qty"] < 0 and pos["token"] not in {o["token"] for o in orders
-                                                   if o["pending"] and o["side"] == "B"}:
-            inst = broker.instrument_for(pos)
-            try:
-                oid = broker.place(inst, side="B", qty=-pos["qty"], price=broker.marketable(inst, "B"),
-                                   remarks=f"cover/{pos['symbol']}")
-                log({"event": "short_covered", "symbol": pos["symbol"], "qty": -pos["qty"], "order_id": oid})
-                common.notify(f"SHORT closed {pos['symbol']}", f"Bought back {-pos['qty']}.", priority="high")
-            except ShoonyaError as exc:
-                log({"event": "cover_failed", "symbol": pos["symbol"], "reason": str(exc)[:200]})
-                common.notify(f"SHORT OPEN {pos['symbol']}", f"Could not buy back: {exc}", priority="urgent")
 
     out["held"] = len(held)
     out["resting"] = len(resting) - out["cancelled"]

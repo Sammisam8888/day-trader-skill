@@ -122,9 +122,11 @@ def size_position(plan, cash: Decimal, limits: Limits) -> Sizing:
     # Every statutory charge, not just brokerage: STT, exchange, SEBI, IPFT,
     # stamp duty and GST. On a small position GST alone is most of the gap
     # between the flat Rs 20 this used to assume and the real figure.
-    cost = charges_mod.cost_of_plan(plan.entry, plan.target, qty).total
+    short = getattr(plan, "side", "B") == "S"
+    cost = (charges_mod.round_trip(plan.target * qty, plan.entry * qty) if short
+            else charges_mod.cost_of_plan(plan.entry, plan.target, qty)).total
     return Sizing(qty, decided_by, plan.entry * qty, risk * qty, cost,
-                  gain_at_target=(plan.target - plan.entry) * qty)
+                  gain_at_target=abs(plan.target - plan.entry) * qty)
 
 
 @dataclass
@@ -165,6 +167,19 @@ def check_entry_order(*, symbol: str, plan, sizing: Sizing, session: Session,
             f"same bet on the same index"
         )
 
+    short = getattr(plan, "side", "B") == "S"
+    if short:
+        # mirror: the target needs room above the lower circuit, the stop
+        # must stay exitable below the upper one
+        if lower_limit and lower_limit > 0:
+            room = (plan.target - lower_limit) / plan.entry * 100
+            if room < limits.min_circuit_distance_pct:
+                reasons.append(f"short target {plan.target} is within {room:.1f}% of the lower circuit {lower_limit}")
+        if upper_limit and upper_limit > 0:
+            room = (upper_limit - plan.stop) / plan.entry * 100
+            if room < limits.min_circuit_distance_pct:
+                reasons.append(f"short stop {plan.stop} is within {room:.1f}% of the upper circuit {upper_limit}")
+        upper_limit = lower_limit = None
     if upper_limit and upper_limit > 0:
         room = (upper_limit - plan.target) / plan.entry * 100
         if room < limits.min_circuit_distance_pct:
@@ -191,7 +206,8 @@ def check_entry_order(*, symbol: str, plan, sizing: Sizing, session: Session,
         reasons.append(f"sizing refused: {sizing.limit_hit}")
 
     if not plan.is_sane:
-        reasons.append(f"plan is not long-shaped: {plan.stop} / {plan.entry} / {plan.target}")
+        reasons.append(f"plan levels are not in order for a {'short' if short else 'long'}: "
+                       f"stop {plan.stop} / entry {plan.entry} / target {plan.target}")
 
     if plan.reward_to_risk < limits.min_reward_to_risk:
         reasons.append(

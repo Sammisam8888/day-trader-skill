@@ -66,6 +66,18 @@ jobs:
             echo 'TRADER_LIVE=false' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo mkdir -p /var/lib/indstocks && sudo touch /var/lib/indstocks/.broker-shoonya
           fi
+          # Profile the owner chose on 2026-11-09: Claude decides, shorts and
+          # re-entry on, 2x leverage, more symbols. Applied ONCE; later edits
+          # on the dashboard or in chat are never overwritten.
+          if [ ! -f /var/lib/indstocks/.profile-claude-aggressive-v1 ]; then
+            for kv in TRADER_DECIDER=claude TRADER_ALLOW_SHORT=true TRADER_MAX_LEVERAGE=2.0 \
+                      TRADER_MAX_CONCURRENT=3 TRADER_MAX_TRADES=8 TRADER_MAX_ENTRIES_PER_SYMBOL=2 \
+                      TRADER_MAX_RESTING=6 TRADER_DAILY_LOSS=2500 TRADER_MAX_LOSS=600 \
+                      TRADER_SYMBOLS=NIFTYBEES,BANKBEES,RELIANCE,HDFCBANK,ICICIBANK,SBIN,INFY,AXISBANK,BHARTIARTL,LT; do
+              k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
+            done
+            sudo touch /var/lib/indstocks/.profile-claude-aggressive-v1
+          fi
           # Units come from the repo on every deploy, so a schedule change in
           # git is a schedule change on the box. INDstocks-only units are
           # removed: that broker is no longer used.
