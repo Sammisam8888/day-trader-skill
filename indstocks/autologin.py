@@ -26,6 +26,7 @@ authenticator code IS retried once with the next code (clock edge).
 from __future__ import annotations
 
 import hashlib
+import http.cookiejar
 import json
 import os
 import re
@@ -153,11 +154,26 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# One cookie jar per login, shared by QuickAuth and GetAuthCode, the way a
+# browser carries the session cookie from the first response to the second.
+JAR = http.cookiejar.CookieJar()
+DEBUG = False
+
+
+def _dbg(*a) -> None:
+    if DEBUG:
+        print("[debug]", *a, file=sys.stderr, flush=True)
+
+
 def _post(path: str, body: str, ctype: str, follow: bool = True):
     req = urllib.request.Request(API + path, data=body.encode("utf-8"), method="POST",
                                  headers={"Content-Type": ctype, "User-Agent": sh.USER_AGENT,
-                                          "Origin": HOST, "Referer": LOGIN_PAGE})
-    opener = urllib.request.build_opener() if follow else urllib.request.build_opener(_NoRedirect)
+                                          "Origin": HOST, "Referer": LOGIN_PAGE,
+                                          "Accept": "application/json, text/plain, */*"})
+    handlers = [urllib.request.HTTPCookieProcessor(JAR)]
+    if not follow:
+        handlers.append(_NoRedirect)
+    opener = urllib.request.build_opener(*handlers)
     try:
         r = opener.open(req, timeout=20)
         return r.status, dict(r.headers), r.read().decode("utf-8", "replace"), r.geturl()
@@ -170,28 +186,58 @@ def quick_auth(uid: str, pwd: str, code2fa: str, client_id: str, seed: str, apk:
     body = {"apkversion": apk, "uid": uid, "pwd": sha(pwd), "factor2": code2fa,
             "appkey": sha(uid + "|" + seed), "imei": imei(), "addldivinf": sh.USER_AGENT,
             "app_key": client_id, "source": "API", "vc": "NOREN_API"}
-    status, _, text, _ = post("QuickAuth", "jData=" + json.dumps(body, separators=(",", ":")),
-                              "application/x-www-form-urlencoded")
+    status, headers, text, _ = post("QuickAuth", "jData=" + json.dumps(body, separators=(",", ":")),
+                                    "application/x-www-form-urlencoded")
+    _dbg("QuickAuth", status, "set-cookie:", [c.split("=")[0] for c in str(headers.get("Set-Cookie", "")).split(",") if "=" in c],
+         "cookies in jar:", [c.name for c in JAR])
     try:
-        return json.loads(text)
+        j = json.loads(text)
+        _dbg("QuickAuth keys:", sorted(j.keys()), "stat:", j.get("stat"), "emsg:", j.get("emsg"))
+        return j
     except ValueError:
         raise AutoLoginError(f"QuickAuth HTTP {status}: {text[:200]}")
 
 
-def auth_code(client_id: str, session_token: str, post: Callable = _post) -> str:
-    body = "jData=" + json.dumps({"app_key": client_id}, separators=(",", ":")) + "&jKey=" + session_token + "\r\n"
-    status, headers, text, final = post("GetAuthCode", body, "text/plain", follow=False)
+def _code_from(headers: dict, final: str, text: str) -> Optional[str]:
     for where in (headers.get("Location") or headers.get("location") or "", final or "", text):
         m = re.search(r"[?&]code=([^&\"'\s<]+)", where)
         if m:
             return m.group(1)
     try:
         j = json.loads(text)
-        if j.get("code"):
+        if isinstance(j, dict) and j.get("code"):
             return str(j["code"])
-        raise AutoLoginError(f"GetAuthCode: {j.get('emsg') or j}")
     except ValueError:
-        raise AutoLoginError(f"GetAuthCode HTTP {status}: no code in the response ({text[:160]!r})")
+        pass
+    return None
+
+
+def auth_code(client_id: str, session_token: str, post: Callable = _post, uid: str = "") -> str:
+    """Trade the QuickAuth session for an OAuth code. The browser posts a
+    text/plain form; servers differ on the trailing CRLF and on whether the
+    key may travel in a header, so the variants are tried in order and the
+    first that yields a code wins. Every variant is harmless to repeat."""
+    j = json.dumps({"app_key": client_id}, separators=(",", ":"))
+    ju = json.dumps({"app_key": client_id, "uid": uid}, separators=(",", ":"))
+    variants = [
+        ("form text/plain + CRLF (browser)", "jData=" + j + "&jKey=" + session_token + "\r\n", "text/plain"),
+        ("text/plain, no CRLF", "jData=" + j + "&jKey=" + session_token, "text/plain"),
+        ("urlencoded", "jData=" + j + "&jKey=" + session_token, "application/x-www-form-urlencoded"),
+        ("urlencoded with uid", "jData=" + ju + "&jKey=" + session_token, "application/x-www-form-urlencoded"),
+    ]
+    errors = []
+    for name, body, ctype in variants:
+        status, headers, text, final = post("GetAuthCode", body, ctype, follow=False)
+        code = _code_from(headers, final, text)
+        _dbg("GetAuthCode", name, "->", status, "location:", (headers.get("Location") or "")[:120],
+             "body:", text[:160].replace(session_token, "<token>"))
+        if code:
+            return code
+        try:
+            errors.append(f"{name}: {json.loads(text).get('emsg')}")
+        except (ValueError, AttributeError):
+            errors.append(f"{name}: HTTP {status}")
+    raise AutoLoginError("GetAuthCode refused every format: " + " | ".join(errors))
 
 
 def count_attempt(day: str) -> int:
@@ -241,7 +287,7 @@ def run(*, force: bool = False, post: Callable = _post, fetch: Callable = _get,
         resp = quick_auth(uid, pwd, code, client_id, seed, apk, post=post)
         if resp.get("stat") == "Ok" and resp.get("susertoken"):
             clear_guard()
-            c = auth_code(client_id, resp["susertoken"], post=post)
+            c = auth_code(client_id, resp["susertoken"], post=post, uid=uid)
             rec = sh.exchange_code(c)
             common.log("login", {"event": "logged_in", "uid": rec["uid"], "how": "auto"})
             return {"ok": True, "uid": rec["uid"]}
@@ -270,6 +316,7 @@ def configured() -> bool:
 if __name__ == "__main__":
     import session as sess
     force = "--force" in sys.argv
+    DEBUG = "--debug" in sys.argv
     if not force and sess.session_for(sess.now()) is None:
         print(json.dumps({"ok": True, "skipped": "not a trading day"}))
         raise SystemExit(0)
