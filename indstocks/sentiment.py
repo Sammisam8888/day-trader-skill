@@ -133,7 +133,7 @@ def nearest_nifty_option(rows: List[dict], today: date) -> Optional[str]:
     return best[1] if best else None
 
 
-def positioning(broker, today: date) -> dict:
+def positioning(broker, today: date, nse: Callable = nse_json) -> dict:
     out: dict = {}
     try:
         q = broker.call("GetQuotes", {"exch": "NSE", "token": VIX_TOKEN})
@@ -150,7 +150,7 @@ def positioning(broker, today: date) -> dict:
         rows = broker.search("NIFTY", "NFO")
         tsym = nearest_nifty_option(rows, today)
         if not tsym or not spot:
-            raise RuntimeError("no Nifty option found")
+            raise RuntimeError("no Nifty option on Shoonya (F&O segment not enabled)")
         atm = round(spot / 50) * 50
         ch = broker.call("GetOptionChain", {"exch": "NFO", "tsym": tsym, "strprc": str(atm), "cnt": "8"})
         calls, puts = {}, {}
@@ -175,7 +175,74 @@ def positioning(broker, today: date) -> dict:
         }
     except Exception as exc:                            # noqa: BLE001
         out["options_error"] = str(exc)[:160]
+        try:
+            out["options"] = options_from_nse(nse, today)
+            out.pop("options_error", None)
+        except Exception as exc2:                       # noqa: BLE001
+            out["options_error"] += f"; NSE: {str(exc2)[:120]}"
     return out
+
+
+def _chain_rows(data) -> list:
+    if isinstance(data, dict):
+        for k in ("filtered", "records"):
+            v = data.get(k)
+            if isinstance(v, dict) and isinstance(v.get("data"), list):
+                return v["data"]
+        if isinstance(data.get("data"), list):
+            return data["data"]
+    return []
+
+
+def options_from_nse(get: Callable, today: date, width: int = 8) -> dict:
+    """Nifty option chain from NSE: nearest expiry, +-width strikes around spot."""
+    data, expiry = None, None
+    try:
+        info = get("option-chain-contract-info?symbol=NIFTY")
+        dates = []
+        for s in info.get("expiryDates") or []:
+            try:
+                dates.append(datetime.strptime(s, "%d-%b-%Y").date())
+            except ValueError:
+                continue
+        nxt = min((d for d in dates if d >= today), default=None)
+        if nxt:
+            expiry = nxt.strftime("%d-%b-%Y")
+            data = get(f"option-chain-v3?type=Indices&symbol=NIFTY&expiry={expiry}")
+    except Exception:                                   # noqa: BLE001
+        data = None
+    if not _chain_rows(data):
+        data = get("option-chain-indices?symbol=NIFTY")
+    rows = _chain_rows(data)
+    recs = data.get("records") or {} if isinstance(data, dict) else {}
+    spot = float(recs.get("underlyingValue") or 0) or next(
+        (float(r.get("CE", r.get("PE", {})).get("underlyingValue") or 0) for r in rows if r.get("CE") or r.get("PE")), 0)
+    if expiry is None:
+        exps = sorted({r.get("expiryDate") for r in rows if r.get("expiryDate")},
+                      key=lambda s: datetime.strptime(s, "%d-%b-%Y"))
+        expiry = next((e for e in exps if datetime.strptime(e, "%d-%b-%Y").date() >= today), None)
+    rows = [r for r in rows if not expiry or r.get("expiryDate") in (None, expiry)]
+    if not rows or not spot:
+        raise RuntimeError("NSE option chain empty")
+    strikes = sorted({float(r["strikePrice"]) for r in rows})
+    atm = min(strikes, key=lambda k: abs(k - spot))
+    i = strikes.index(atm)
+    keep = set(strikes[max(0, i - width): i + width + 1])
+    calls, puts = {}, {}
+    for r in rows:
+        k = float(r["strikePrice"])
+        if k not in keep:
+            continue
+        if r.get("CE"):
+            calls[k] = (int(r["CE"].get("openInterest") or 0), int(r["CE"].get("changeinOpenInterest") or 0))
+        if r.get("PE"):
+            puts[k] = (int(r["PE"].get("openInterest") or 0), int(r["PE"].get("changeinOpenInterest") or 0))
+    ce, pe = sum(v[0] for v in calls.values()), sum(v[0] for v in puts.values())
+    if not ce or not pe:
+        raise RuntimeError("NSE option chain has no open interest")
+    return {"source": "NSE", "expiry": expiry, "atm": atm, "pcr": round(pe / ce, 2),
+            "call_wall": max(calls, key=lambda k: calls[k][0]), "put_wall": max(puts, key=lambda k: puts[k][0]),
+            "call_oi_added": sum(v[1] for v in calls.values()), "put_oi_added": sum(v[1] for v in puts.values())}
 
 
 # ------------------------------------------------------------------ flows
@@ -457,7 +524,7 @@ def run(broker=None, now: Optional[datetime] = None, *, news_run: Optional[Calla
         from shoonya import Shoonya
         broker = Shoonya()
     try:
-        snap["positioning"] = positioning(broker, today)
+        snap["positioning"] = positioning(broker, today, nse)
     except Exception as exc:                            # noqa: BLE001
         snap["positioning"] = {"error": str(exc)[:160]}
     snap["flows"] = flows(nse)

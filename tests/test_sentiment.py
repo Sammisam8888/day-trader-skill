@@ -219,3 +219,41 @@ class EndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NseChain(unittest.TestCase):
+    def chain(self):
+        rows = []
+        for k, ce, pe in ((24900, 100, 900), (25000, 500, 700), (25100, 1200, 200), (26000, 99999, 1)):
+            rows.append({"strikePrice": k, "expiryDate": "17-Nov-2026",
+                         "CE": {"openInterest": ce, "changeinOpenInterest": 10},
+                         "PE": {"openInterest": pe, "changeinOpenInterest": 5}})
+        return {"records": {"underlyingValue": 25010, "data": rows}}
+
+    def test_v3_with_contract_info(self):
+        def get(api):
+            if api.startswith("option-chain-contract-info"):
+                return {"expiryDates": ["10-Nov-2026", "17-Nov-2026", "24-Nov-2026"]}
+            self.assertIn("expiry=17-Nov-2026", api)
+            return self.chain()
+        o = sentiment.options_from_nse(get, date(2026, 11, 11), width=1)
+        self.assertEqual((o["atm"], o["pcr"], o["call_wall"], o["put_wall"]), (25000.0, 1.0, 25100.0, 24900.0))
+
+    def test_falls_back_to_the_legacy_endpoint(self):
+        def get(api):
+            if api.startswith("option-chain-indices"):
+                return self.chain()
+            raise OSError("404")
+        self.assertEqual(sentiment.options_from_nse(get, date(2026, 11, 11), width=1)["expiry"], "17-Nov-2026")
+
+    def test_positioning_uses_nse_when_shoonya_has_no_fo(self):
+        class NoFO(Chain):
+            def search(self, text, exch="NSE"):
+                return []
+        def get(api):
+            if api.startswith("option-chain-indices"):
+                return self.chain()
+            raise OSError("x")
+        p = sentiment.positioning(NoFO(), date(2026, 11, 11), get)
+        self.assertEqual(p["options"]["source"], "NSE")
+        self.assertNotIn("options_error", p)
