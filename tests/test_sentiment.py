@@ -82,9 +82,9 @@ class Collect(unittest.TestCase):
         self.assertIn("error", sentiment.calendar(DAY, ["SBIN"], boom))
 
     def test_calendar_results_and_expiry(self):
-        ev = sentiment.calendar(date(2026, 11, 24), ["SBIN", "INFY"],
-                                lambda api: [{"symbol": "SBIN", "date": "24-Nov-2026", "purpose": "Financial Results"},
-                                             {"symbol": "TCS", "date": "24-Nov-2026", "purpose": "Financial Results"}])
+        ev = sentiment.calendar(date(2026, 11, 23), ["SBIN", "INFY"],
+                                lambda api: [{"symbol": "SBIN", "date": "23-Nov-2026", "purpose": "Financial Results"},
+                                             {"symbol": "TCS", "date": "23-Nov-2026", "purpose": "Financial Results"}])
         self.assertTrue(ev["stocks"]["SBIN"]["results"])
         self.assertNotIn("TCS", ev["stocks"])
         self.assertIn("Nifty monthly expiry", [e["what"] for e in ev["market"]])
@@ -257,3 +257,17 @@ class NseChain(unittest.TestCase):
         p = sentiment.positioning(NoFO(), date(2026, 11, 11), get)
         self.assertEqual(p["options"]["source"], "NSE")
         self.assertNotIn("options_error", p)
+
+
+class Expiry(unittest.TestCase):
+    def test_tuesday(self):
+        self.assertEqual(sentiment.expiry_day(date(2026, 11, 17)), date(2026, 11, 17))
+
+    def test_holiday_tuesday_moves_to_monday(self):
+        self.assertEqual(sentiment.expiry_day(date(2026, 11, 9)), date(2026, 11, 9))
+        ev = sentiment.calendar(date(2026, 11, 9), [], lambda api: [])
+        self.assertIn("Nifty weekly expiry", [e["what"] for e in ev["market"]])
+
+    def test_wednesday_is_not_expiry(self):
+        ev = sentiment.calendar(date(2026, 11, 11), [], lambda api: [])
+        self.assertNotIn("Nifty weekly expiry", [e["what"] for e in ev["market"]])

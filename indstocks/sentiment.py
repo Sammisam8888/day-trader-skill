@@ -205,7 +205,8 @@ def options_from_nse(get: Callable, today: date, width: int = 8) -> dict:
                 dates.append(datetime.strptime(s, "%d-%b-%Y").date())
             except ValueError:
                 continue
-        nxt = min((d for d in dates if d >= today), default=None)
+        after_close = sess.now().date() == today and sess.now().time() >= time(15, 30)
+        nxt = min((d for d in dates if d > today or (d == today and not after_close)), default=None)
         if nxt:
             expiry = nxt.strftime("%d-%b-%Y")
             data = get(f"option-chain-v3?type=Indices&symbol=NIFTY&expiry={expiry}")
@@ -272,12 +273,22 @@ def last_weekday(d: date, weekday: int) -> date:
     return x
 
 
+def expiry_day(d: date) -> date:
+    """This week's Nifty expiry: Tuesday, or the trading day before it when
+    Tuesday is a holiday."""
+    x = d + timedelta(days=(1 - d.weekday()) % 7) if d.weekday() <= 1 else d - timedelta(days=d.weekday() - 1)
+    while not sess.is_trading_day(x):
+        x -= timedelta(days=1)
+    return x
+
+
 def calendar(today: date, symbols: List[str], get: Callable = nse_json) -> dict:
     ev: dict = {"market": [], "stocks": {}}
     if today.isoformat() in RBI_POLICY:
         ev["market"].append({"what": "RBI policy decision", "at": "10:00", "window": True})
-    if today.weekday() == 1:                            # NSE index options expire on Tuesdays
-        monthly = last_weekday(today, 1) == today
+    if expiry_day(today) == today:
+        tue = today + timedelta(days=(1 - today.weekday()) % 7)
+        monthly = last_weekday(tue, 1) == tue
         ev["market"].append({"what": f"Nifty {'monthly' if monthly else 'weekly'} expiry", "window": False})
     try:
         rows = get("event-calendar")
