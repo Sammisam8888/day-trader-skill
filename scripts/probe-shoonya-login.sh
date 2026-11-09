@@ -16,11 +16,11 @@ m = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 e = m.rfind("export{")
 exp = m[e:e + 2500]
 print("== export tail:", exp[:1200])
-alias = dict((b, a) for a, b in re.findall(r"(\w+) as (\w+)", exp))
+alias = dict((b, a) for a, b in re.findall(r"([\w$]+) as ([\w$]+)", exp))
 for pub in ("j", "k"):
     local = alias.get(pub, pub)
     print(f"== export {pub} -> local {local}")
-    for mm in list(re.finditer(r"[,;\s{(]" + re.escape(local) + r"=", m))[:3]:
+    for mm in list(re.finditer(r"[,;\s{(]" + re.escape(local) + r"=(?!=)", m))[:3]:
         print(f"   def: {m[mm.start():mm.start() + 260]}")
 PY2
 rm -rf "$D"
