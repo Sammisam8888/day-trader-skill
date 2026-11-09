@@ -915,7 +915,8 @@ def api_state() -> dict:
                      "close": _hm(session.close), "special": bool(session.special)} if session else None),
         "status": status, "halt_reason": halt_reason,
         "login": {"ok": bool(tok) and not v["login"], "since": tok and tok["at"][11:16],
-                  "uid": tok and tok.get("uid"), "configured": bool(lim.get("SHOONYA_CLIENT_ID"))},
+                  "uid": tok and tok.get("uid"), "configured": bool(lim.get("SHOONYA_CLIENT_ID")),
+                  "auto": __import__("autologin").configured()},
         "data": {"source": v.get("source"), "age": v.get("age"), "error": v.get("error")},
         "cash": v.get("cash"), "symbols": tickers,
         "limits": {k.replace("TRADER_", "").lower(): val for k, val in lim.items() if k.startswith("TRADER_")},
@@ -981,6 +982,13 @@ def api_action(body: dict) -> dict:
         except FileNotFoundError:
             pass
         return {"ok": True, "message": "Resumed. The next scan may place orders."}
+    if a == "autologin":
+        import autologin
+        try:
+            r = autologin.run(force=True)
+            return {"ok": True, "message": f"Logged in to Shoonya as {r.get('uid')} (automatic)."}
+        except autologin.AutoLoginError as exc:
+            return {"ok": False, "message": f"auto-login failed: {exc}"}
     if a == "login_code":
         rec = sh.exchange_code(str(body.get("code") or ""))
         common.log("dash", {"event": "logged_in", "uid": rec["uid"]})

@@ -1,0 +1,9 @@
+[Unit]
+Description=Shoonya daily auto-login
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/autologin.py
+User=root

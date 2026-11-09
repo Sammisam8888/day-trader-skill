@@ -65,7 +65,8 @@ function Login({ s, toast }: { s: State; toast: (m: string, ok: boolean) => void
         </div>
         {s.login.configured ? (
           <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[360px]">
-            <a href="/shoonya/login" className="rounded-lg bg-info px-4 py-2.5 text-center text-sm font-semibold text-[#04101f] hover:brightness-110">Log in to Shoonya</a>
+            {s.login.auto && <Btn variant="solid" onClick={async () => { const r = await act("autologin"); toast(r.message, r.ok); }}>Log in automatically</Btn>}
+            <a href="/shoonya/login" className="rounded-lg bg-info px-4 py-2.5 text-center text-sm font-semibold text-[#04101f] hover:brightness-110">{s.login.auto ? "Log in manually" : "Log in to Shoonya"}</a>
             <form className="flex gap-2" onSubmit={async (e) => { e.preventDefault(); const r = await act("login_code", { code }); toast(r.message, r.ok); setCode(""); }}>
               <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="or paste the redirected URL / code"
                 className="min-w-0 flex-1 rounded-lg border border-line-2 bg-bg px-3 py-2 text-sm outline-none focus:border-info" />

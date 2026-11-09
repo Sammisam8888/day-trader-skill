@@ -68,6 +68,14 @@ def run(broker=None, now=None) -> int:
     now = now or sess.now()
     broker = broker or Shoonya()
     found = alerts(broker, now)
+    if any(level == "LOGIN" for level, _ in found):
+        import autologin
+        if autologin.configured():
+            try:
+                autologin.run()
+                found = alerts(broker, now)
+            except autologin.AutoLoginError as exc:
+                common.log(JOB, {"event": "autologin_failed", "reason": str(exc)[:200]})
     if not found:
         common.log(JOB, {"event": "ok"})
         return 0
