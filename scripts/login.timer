@@ -1,0 +1,11 @@
+[Unit]
+Description=Shoonya auto-login before the open (no-op once logged in)
+
+[Timer]
+OnCalendar=*-*-* 08:40:00 Asia/Kolkata
+OnCalendar=*-*-* 08:55:00 Asia/Kolkata
+OnCalendar=*-*-* 13:45:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -34,7 +34,7 @@ export interface ChatMsg { ts: string; role: string; text: string }
 
 export interface State {
   now: string; day: string; session: Session | null; status: Status; halt_reason: string;
-  login: { ok: boolean; since: string | null; uid: string | null; configured: boolean };
+  login: { ok: boolean; since: string | null; uid: string | null; configured: boolean; auto: boolean };
   data: { source: string; age: number | null; error: string };
   cash: number | null;
   symbols: { symbol: string; token: string | null; ltp: number | null }[];
