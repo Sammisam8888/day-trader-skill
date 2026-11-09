@@ -95,7 +95,13 @@ export default function Brain({ onTrade, focus }: { onTrade: (day: string, id: s
             <div className="text-[13px] text-dim">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-faint lg:hidden">Server asked · </span>
               {c.asked.symbols} markets · cash {money0(c.asked.cash)} · {c.asked.positions} open · {c.asked.resting} resting · P&L {signed(c.asked.pnl)}
-              <div className="text-[11px] text-faint">{c.phase.replace(/_/g, " ")}</div>
+              {c.asked.direction && (
+                <div className="mt-1 flex items-center gap-1.5">
+                  <Badge tone={c.asked.direction.state === "UP" ? "up" : c.asked.direction.state === "DOWN" ? "down" : "dim"}>
+                    MARKET {c.asked.direction.state} {c.asked.direction.score > 0 ? "+" : ""}{c.asked.direction.score}</Badge>
+                  <span className="text-[11px] text-faint">{c.asked.direction.allowed.length === 1 ? (c.asked.direction.allowed[0] === "BUY" ? "longs only" : "shorts only") : "with each stock's trend"}</span>
+                </div>)}
+              <div className="text-[11px] text-faint" title={c.asked.direction?.why}>{c.phase.replace(/_/g, " ")}</div>
               <button onClick={() => setPrompt(c.id)} className="mt-1 inline-flex items-center gap-1 text-xs text-info hover:underline"><FileText size={12} />full prompt ({Math.round(c.prompt_chars / 1000)}k chars)</button>
             </div>
             <div className="text-[13px]">

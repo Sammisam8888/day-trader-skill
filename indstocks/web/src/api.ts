@@ -80,7 +80,8 @@ export interface BrainDecision { action: string; symbol?: string; side?: string;
   stop?: number; target?: number; size?: number; confidence?: number; reason?: string; order_id?: string }
 export interface BrainCall {
   id: string; ts: string; source: string; phase: string; latency_s: number | null; error: string | null;
-  asked: { symbols: number; cash: string; exposure: string; positions: number; resting: number; pnl: string };
+  asked: { symbols: number; cash: string; exposure: string; positions: number; resting: number; pnl: string;
+    direction?: { state: string; score: number; allowed: string[]; why: string } | null };
   view: string; decisions: BrainDecision[]; reply: string; actions: BrainAction[]; prompt_chars: number;
 }
 export interface Trade {

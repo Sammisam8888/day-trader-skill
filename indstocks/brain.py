@@ -34,6 +34,7 @@ from typing import Callable, Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import common                                            # noqa: E402
+import regime                                            # noqa: E402
 import session as sess                                   # noqa: E402
 import strategy as strat                                 # noqa: E402
 from market import Candle, opening_range, to_tick        # noqa: E402
@@ -109,6 +110,13 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
             continue
         insts[sym] = (inst, candles, q)
         views.append(symbol_view(sym, inst, candles, q, session))
+    trends = {s: regime.stock_trend(c, session.day, _bars([x for x in c if x.opens_at.date() == session.day], 15))
+              for s, (_, c, _) in insts.items()}
+    for v in views:
+        if v.get("symbol") in trends:
+            v["trend"] = trends[v["symbol"]]
+    direction = {"market": regime.market(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
+                 "stocks": trends}
     held = [p for p in positions if p["qty"] != 0]
     exposure = sum((abs(p["avg"] * p["qty"]) for p in held), Decimal(0))
     realised = sum((p["realised"] for p in positions), Decimal(0))
@@ -135,6 +143,8 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
                     "fills_today": sum(fills.values()), "max_trades": limits.max_trades_per_day,
                     "max_entries_per_symbol": int(common.setting("TRADER_MAX_ENTRIES_PER_SYMBOL", "2")),
                     "shorts_allowed": allow_short()},
+        "direction": {"market": direction["market"],
+                      "stocks": {s: {"score": x["score"], "state": x["state"]} for s, x in trends.items()}},
         "positions": [position_view(p, orders, ours, adj, limits) for p in held],
         "resting_entries": [{"order_id": o["id"], "symbol": ours[o["id"]]["symbol"],
                              "side": "BUY" if o["side"] == "B" else "SELL", "type": o["type"],
@@ -161,6 +171,17 @@ SYSTEM = """You are the trader for a small automated NSE intraday account (Shoon
 You decide entries and exits. Code you cannot override will size each order from the account's
 risk limits, reject anything that breaks them, place a protective stop the moment an entry
 fills, take the target, trail the stop (breakeven at +1R), and close everything at flat_by.
+
+DIRECTION FIRST. STATE.direction is measured by code from these same candles (VWAP, today's open,
+yesterday's close, 9/21 EMA on 5-minute closes, 15-minute swing structure; index proxy weighted
+double, plus breadth). It is a fact, not a forecast, and the code enforces it:
+- market UP: longs only. Buy the strongest stocks on pullbacks or breaks.
+- market DOWN: shorts only (SELL first, buy back lower). Short the weakest stocks on bounces into
+  VWAP or on breaks of support. On a falling day this is where the money is: do not sit out.
+- market MIXED: either side, but only with the stock's own trend (long a stock scoring up, short
+  one scoring down). A trade against a stock's own clear trend is refused.
+- FORMING (before ~09:30): resting opening-range triggers either way are fine; they are re-checked.
+If you hold a position against the current direction, consider tightening its stop or exiting.
 
 Your job each scan: look at every market, then decide. Most scans the right answer is no new
 entry. Prefer clean structure (opening-range breaks/breakdowns, VWAP reclaims/rejections,
@@ -271,7 +292,7 @@ def rules(ctx: dict, insts: dict, session) -> dict:
         if not (lo <= ltp <= hi):
             continue
         for side in ("BUY", "SELL") if allow_short() else ("BUY",):
-            if (sym, side) in resting:
+            if (sym, side) in resting or regime.check(side, sym, ctx.get("direction")):
                 continue
             try:
                 p = strat.plan_trigger_exit(hi, lo, inst.tick) if side == "BUY" else strat.plan_breakdown(hi, lo, inst.tick)

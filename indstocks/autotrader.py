@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import brain                                             # noqa: E402
 import common                                            # noqa: E402
+import regime                                            # noqa: E402
 import risk as risk_mod                                  # noqa: E402
 import session as sess                                   # noqa: E402
 import strategy as strat                                 # noqa: E402
@@ -184,6 +185,30 @@ def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, 
     return "adjusted", "; ".join(changes)
 
 
+def retire_against(broker, orders: list, placements: list, direction: dict, rec: dict) -> None:
+    """A resting entry the market has turned against is cancelled: a buy
+    trigger left from 09:30 must not fill into a falling market at 11:00."""
+    ours = {str(p.get("order_id")): p for p in placements}
+    for o in orders:
+        p = ours.get(o["id"])
+        if not p or not o["pending"] or o["filled"] > 0:
+            continue
+        why = regime.check("BUY" if o["side"] == "B" else "SELL", p["symbol"], direction)
+        if not why:
+            continue
+        if common.live():
+            try:
+                broker.cancel(o["id"])
+            except ShoonyaError as exc:
+                log({"event": "cancel_failed", "order_id": o["id"], "reason": str(exc)[:200]})
+                continue
+        log({"event": "entry_cancelled", "symbol": p["symbol"], "order_id": o["id"],
+             "reason": f"direction changed: {why}"})
+        key = (p["symbol"], p.get("side", "B"))
+        if key in rec["resting"]:
+            rec["resting"].remove(key)
+
+
 def run(broker=None, now=None, *, decide=None) -> int:
     now = now or sess.now()
     session = sess.session_for(now)
@@ -236,6 +261,10 @@ def run(broker=None, now=None, *, decide=None) -> int:
     log({"event": "brain_view", "call_id": call_id, "source": out.get("source"),
          "view": str(out.get("view", ""))[:500], "decisions": len(out.get("decisions", []))})
     actions: list = []
+    direction = (out.get("ctx") or {}).get("direction")
+    if direction:
+        log({"event": "direction", "call_id": call_id, **direction["market"]})
+        retire_against(broker, orders, placements, direction, rec)
 
     def act(i: int, outcome: str, reason: str = "", **extra) -> None:
         actions.append({"decision": i, "outcome": outcome, "reason": reason, **extra})
@@ -314,6 +343,9 @@ def run(broker=None, now=None, *, decide=None) -> int:
             problems.append(f"{sym} already entered {rec['by_symbol'][sym]} time(s) today (max {max_entries()})")
         if side == "S" and not brain.allow_short():
             problems.append("shorts are switched off")
+        against = regime.check("BUY" if side == "B" else "SELL", sym, direction)
+        if against:
+            problems.append(against)
         if slots <= 0:
             problems.append("no free slot or buying power")
         if problems:
@@ -392,7 +424,8 @@ def run(broker=None, now=None, *, decide=None) -> int:
         "phase": session.phase(now), "latency_s": tr.get("latency_s"), "error": tr.get("error"),
         "asked": {"symbols": len(out.get("ctx", {}).get("markets", [])), "cash": str(cash),
                   "exposure": str(exposure), "positions": len(held), "resting": len(resting),
-                  "pnl": str(realised + unrealised)},
+                  "pnl": str(realised + unrealised),
+                  "direction": (direction or {}).get("market")},
         "prompt": tr.get("prompt", ""), "reply": tr.get("raw", ""),
         "view": out.get("view", ""), "decisions": out.get("decisions", []), "actions": actions,
     })
