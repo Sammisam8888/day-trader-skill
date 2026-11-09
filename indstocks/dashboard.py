@@ -1052,6 +1052,24 @@ def api_trade(day: str, order_id: str) -> dict:
     })
 
 
+def api_sentiment(day: str) -> dict:
+    """The latest sentiment snapshot, today's bias over time, and the
+    scorecard: closed trades with vs against the sentiment and direction."""
+    import sentiment
+    try:
+        snap = json.loads(sentiment.latest_path().read_text())
+    except (OSError, ValueError):
+        snap = None
+    fresh = sentiment.load() is not None
+    hist = [{"ts": h.get("ts"), "bias": (h.get("tilt") or {}).get("bias"),
+             "vix": ((h.get("positioning") or {}).get("vix") or {}).get("level"),
+             "pcr": ((h.get("positioning") or {}).get("options") or {}).get("pcr")} for h in sentiment.history(day)]
+    dirs = [{"ts": r.get("ts"), "state": r.get("state"), "score": r.get("score")}
+            for r in read_log(day) if r.get("event") == "direction"]
+    return _j({"snapshot": snap, "fresh": fresh, "history": hist, "direction": dirs[-80:],
+               "scorecard": sentiment.scorecard()})
+
+
 def api_action(body: dict) -> dict:
     a = str(body.get("action") or "")
     if a == "halt":
@@ -1170,6 +1188,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_state())
             except Exception as exc:                    # noqa: BLE001
                 return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+        if path == "/api/sentiment":
+            try:
+                day = (q.get("day") or [sess.now().strftime("%Y-%m-%d")])[0]
+                datetime.strptime(day, "%Y-%m-%d")
+                return self._json(api_sentiment(day))
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"error": f"{type(exc).__name__}: {exc}"[:300]}, 500)
         if path in ("/api/brain", "/api/brain/call", "/api/trade"):
             day = (q.get("day") or [sess.now().strftime("%Y-%m-%d")])[0]
             try:

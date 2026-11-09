@@ -103,3 +103,27 @@ export async function getBrainCall(day: string, id: string): Promise<{ prompt: s
 export async function getTrade(day: string, id: string): Promise<Trade> {
   return (await fetch(`/api/trade?day=${day}&id=${encodeURIComponent(id)}`, { cache: "no-store" })).json();
 }
+
+export interface SentimentSnap {
+  ts: string;
+  positioning?: { vix?: { level: number; change_pct: number | null }; nifty?: { level: number; change_pct: number | null };
+    options?: { expiry_symbol: string; atm: number; pcr: number | null; call_wall: number; put_wall: number;
+      call_oi_added: number; put_oi_added: number }; vix_error?: string; options_error?: string };
+  flows?: { fii?: { net_cr: number; date: string }; dii?: { net_cr: number; date: string }; error?: string };
+  events?: { market: { what: string; at?: string; window: boolean }[]; stocks: Record<string, { what: string; results: boolean }>; error?: string };
+  news?: { market?: { score: number; summary: string; drivers: string[] };
+    stocks?: Record<string, { score: number; material: boolean; why: string }> };
+  news_ts?: string; news_error?: string; news_errors?: string[];
+  headlines?: { t: string; src: string; h: string }[];
+  tilt: { bias: number; size: number; blocked: Record<string, Record<string, string>>; why: string };
+}
+export interface Score { trades: number; wins: number; net: number }
+export interface SentimentResp {
+  snapshot: SentimentSnap | null; fresh: boolean;
+  history: { ts: string; bias: number; vix: number | null; pcr: number | null }[];
+  direction: { ts: string; state: string; score: number }[];
+  scorecard: { sentiment: Record<string, Score>; direction: Record<string, Score> };
+}
+export async function getSentiment(): Promise<SentimentResp> {
+  return (await fetch("/api/sentiment", { cache: "no-store" })).json();
+}

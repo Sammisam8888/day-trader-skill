@@ -30,6 +30,7 @@ import brain                                             # noqa: E402
 import common                                            # noqa: E402
 import regime                                            # noqa: E402
 import risk as risk_mod                                  # noqa: E402
+import sentiment                                         # noqa: E402
 import session as sess                                   # noqa: E402
 import strategy as strat                                 # noqa: E402
 from market import to_tick                               # noqa: E402
@@ -262,6 +263,7 @@ def run(broker=None, now=None, *, decide=None) -> int:
          "view": str(out.get("view", ""))[:500], "decisions": len(out.get("decisions", []))})
     actions: list = []
     direction = (out.get("ctx") or {}).get("direction")
+    mood = sentiment.load(now)
     if direction:
         log({"event": "direction", "call_id": call_id, **direction["market"]})
         retire_against(broker, orders, placements, direction, rec)
@@ -346,6 +348,10 @@ def run(broker=None, now=None, *, decide=None) -> int:
         against = regime.check("BUY" if side == "B" else "SELL", sym, direction)
         if against:
             problems.append(against)
+        mood_refusal, mood_mult, mood_note = sentiment.check(
+            "BUY" if side == "B" else "SELL", sym, mood, now, ((direction or {}).get("market") or {}).get("state"))
+        if mood_refusal:
+            problems.append(mood_refusal)
         if slots <= 0:
             problems.append("no free slot or buying power")
         if problems:
@@ -365,6 +371,7 @@ def run(broker=None, now=None, *, decide=None) -> int:
             act(i, "refused", str(exc)[:300])
             continue
         size = min(max(Decimal(str(d.get("size", 1) or 1)), Decimal("0.25")), Decimal(1))
+        size = max(size * Decimal(str(mood_mult)), Decimal("0.25"))
         lev = limits.max_leverage if limits.max_leverage > 0 else Decimal(1)
         sizing = risk_mod.size_position(plan, slot_cash * size / lev, limits)
         if not sizing.ok:
@@ -390,6 +397,9 @@ def run(broker=None, now=None, *, decide=None) -> int:
             "leverage": str(round(sizing.position_value / cash, 2)) if cash else "0",
             "ltp_at_placement": str(q["ltp"]), "decided_by": out.get("source"),
             "confidence": d.get("confidence"), "why": why, "call_id": call_id,
+            "size_mult": str(size), "sentiment_note": mood_note,
+            "sentiment_bias": (mood or {}).get("tilt", {}).get("bias"),
+            "direction": ((direction or {}).get("market") or {}).get("state"),
         }
         # the two extremes, after charges: target hits vs stop hits
         import charges as charges_mod
