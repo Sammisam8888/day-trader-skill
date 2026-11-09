@@ -142,10 +142,16 @@ class ClaudeDecides(unittest.TestCase):
         autotrader.run(b, now=AT, decide=claude({"action": "exit", "symbol": "NIFTYBEES", "reason": "reversal"}))
         self.assertEqual((b.placed[0]["side"], b.placed[0]["qty"]), ("B", 40))
 
-    def test_unreadable_reply_falls_back_to_rules(self):
+    def test_unreadable_reply_means_no_trade_not_a_rule_trade(self):
         b = broker()
         autotrader.run(b, now=AT, decide=lambda *a, **k: brain.decide(*a, **k, run=lambda p: "I think buy"))
-        self.assertEqual(ev("brain_unavailable")[0]["action"], "rule-based decisions this scan")
+        self.assertEqual(ev("brain_view")[0]["source"], "none")
+        self.assertEqual(b.placed, [])
+
+    def test_rule_fallback_only_when_the_owner_asks(self):
+        reset(TRADER_DECIDER="claude", TRADER_BRAIN_FALLBACK="rules", TRADER_MAX_LEVERAGE="2.0", TRADER_MAX_CONCURRENT="3")
+        b = broker()
+        autotrader.run(b, now=AT, decide=lambda *a, **k: brain.decide(*a, **k, run=lambda p: "I think buy"))
         self.assertEqual(ev("brain_view")[0]["source"], "rules")
 
     def test_the_prompt_carries_markets_account_and_limits(self):

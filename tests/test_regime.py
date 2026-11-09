@@ -96,7 +96,7 @@ def enter(side, entry, stop, target, sym="NIFTYBEES"):
 
 class Enforced(unittest.TestCase):
     def setUp(self):
-        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0", TRADER_MAX_LOSS="600")
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0", TRADER_MAX_LOSS="600", TRADER_GATES="enforce")
         sess.now = lambda clock=None: AT
         brain.find_claude = lambda: "/x/claude"
 
@@ -126,7 +126,7 @@ class Enforced(unittest.TestCase):
         autotrader.run(self.falling(), now=AT, decide=lambda *a, **k: brain.decide(*a, **k, run=run))
         state = json.loads(seen["p"].split("STATE:\n", 1)[1])
         self.assertEqual(state["direction"]["market"]["state"], "DOWN")
-        self.assertIn("shorts only", seen["p"])
+        self.assertIn("DOWN day the", seen["p"].replace("\n", " "))
 
     def test_a_resting_buy_is_cancelled_when_the_market_turns_down(self):
         common.log("auto", {"event": "placed", "symbol": "NIFTYBEES", "side": "B", "order_id": "77",
@@ -135,6 +135,28 @@ class Enforced(unittest.TestCase):
         autotrader.run(b, now=AT, decide=claude())
         self.assertIn("77", b.cancelled)
         self.assertIn("direction changed", common.events("entry_cancelled", DAY.isoformat())[-1]["reason"])
+
+
+class Advisory(Enforced):
+    """The default: Claude decides; the gate's view is recorded, not enforced."""
+    def setUp(self):
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0", TRADER_MAX_LOSS="600")
+        sess.now = lambda clock=None: AT
+        brain.find_claude = lambda: "/x/claude"
+
+    def test_a_long_into_a_falling_market_is_refused(self):
+        b = self.falling()
+        autotrader.run(b, now=AT, decide=claude(enter("BUY", 281.0, 280.2, 282.8)))
+        self.assertEqual(b.placed[0]["side"], "B", "Claude's call stands")
+        rec = common.events("placed", DAY.isoformat())[-1]
+        self.assertTrue(any("only shorts" in a for a in rec["advisory"]))
+
+    def test_a_resting_buy_is_cancelled_when_the_market_turns_down(self):
+        common.log("auto", {"event": "placed", "symbol": "NIFTYBEES", "side": "B", "order_id": "77",
+                            "token": NIFTY.token, "risk": "50"})
+        b = self.falling(orders=[order("77", NIFTY, "B", qty=50, price="281.10", trigger="281.05")])
+        autotrader.run(b, now=AT, decide=claude())
+        self.assertNotIn("77", b.cancelled, "only Claude cancels its entries")
 
 
 if __name__ == "__main__":

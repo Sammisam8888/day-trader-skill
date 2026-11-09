@@ -11,8 +11,8 @@ Shoonya has no bracket/OCO for intraday equity, so protection is built here:
   2. TARGET    When LTP reaches the plan target: cancel the stop, then sell
                with a marketable limit. If the cancel fails the stop has
                probably executed, so nothing is sold (no accidental short).
-  3. TRAIL     At +1R the stop moves to the entry; from +1.5R it trails 1R
-               under price. Only ever upward.
+  3. TRAIL     Off by default: Claude moves stops and targets (adjust).
+               TRADER_AUTO_TRAIL=true restores breakeven at +1R and a 1R trail.
   4. PRUNE     Resting entries are cancelled when fills reach the concurrent
                cap, when one more fill would breach cash x leverage, when
                price falls below the opening-range low (thesis dead), when
@@ -23,7 +23,8 @@ Shoonya has no bracket/OCO for intraday equity, so protection is built here:
                the flatten runs from here. The flatten timers are a backup.
   7. SHORTS    A negative position (should never exist) is bought back.
 
-No AI, no judgement: every action is a comparison against a logged plan.
+No judgement here: every action executes a plan Claude made (its stop,
+its target, its validity), or enforces the owner's limits and the close.
 """
 
 from __future__ import annotations
@@ -228,6 +229,8 @@ def tick(broker, now: datetime, state: dict) -> dict:
                               f"Stop cancelled for target but the exit failed: {exc}", priority="urgent")
             continue
         entry = o["avg"] if o["avg"] > 0 else D(p["entry"])
+        if common.setting("TRADER_AUTO_TRAIL", "false").lower() not in ("1", "true", "yes"):
+            continue                                    # Claude moves stops (adjust); nothing trails on its own
         moved = new_stop(entry, D(p["stop"]), ltp, inst.tick, so["trigger"], side)
         if moved is not None:
             try:
@@ -268,11 +271,13 @@ def tick(broker, now: datetime, state: dict) -> dict:
                 why = f"price {ltp} is at or below the planned stop {p['stop']}: the long idea is dead"
             if side == "S" and ltp >= D(p["stop"]):
                 why = f"price {ltp} is at or above the planned stop {p['stop']}: the short idea is dead"
-        if not why and ttl > 0:
+        life = int(p.get("valid_minutes") or ttl)
+        if not why and life > 0:
             try:
                 age = (now - datetime.fromisoformat(p["ts"])).total_seconds() / 60
-                if age >= ttl:
-                    why = f"rested {age:.0f} min without a fill (ttl {ttl})"
+                if age >= life:
+                    why = (f"rested {age:.0f} min: Claude gave it {life} min" if p.get("valid_minutes")
+                           else f"rested {age:.0f} min without a fill (ttl {ttl})")
             except (KeyError, ValueError):
                 pass
         if not why:

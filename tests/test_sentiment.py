@@ -158,7 +158,7 @@ class Tilt(unittest.TestCase):
 
 class EndToEnd(unittest.TestCase):
     def setUp(self):
-        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0")
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0", TRADER_GATES="enforce")
         sess.now = lambda clock=None: AT
         brain.find_claude = lambda: "/x/claude"
 
@@ -208,7 +208,7 @@ class EndToEnd(unittest.TestCase):
         b1 = self.broker()
         autotrader.run(b1, now=AT, decide=self.enter("BUY", 281.05, 280.30, 282.80))
         full = b1.placed[0]["qty"]
-        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0")
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0", TRADER_GATES="enforce")
         self.collect({"market": {"score": -1.0}, "stocks": {}})
         b2 = self.broker()
         autotrader.run(b2, now=AT, decide=self.enter("BUY", 281.05, 280.30, 282.80))
@@ -271,3 +271,27 @@ class Expiry(unittest.TestCase):
     def test_wednesday_is_not_expiry(self):
         ev = sentiment.calendar(date(2026, 11, 11), [], lambda api: [])
         self.assertNotIn("Nifty weekly expiry", [e["what"] for e in ev["market"]])
+
+
+class AdvisoryByDefault(EndToEnd):
+    def setUp(self):
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0")
+        sess.now = lambda clock=None: AT
+        brain.find_claude = lambda: "/x/claude"
+
+    def test_bad_news_refuses_the_long(self):
+        self.collect({"market": {"score": 0}, "stocks": {"NIFTYBEES": {"score": -0.9, "material": True, "why": "crash"}}})
+        b = self.broker()
+        autotrader.run(b, now=AT, decide=self.enter("BUY", 281.05, 280.30, 282.80))
+        self.assertEqual(len(b.placed), 1, "Claude's decision stands")
+        self.assertIn("crash", " ".join(common.events("placed", DAY.isoformat())[-1]["advisory"]))
+
+    def test_against_sentiment_is_half_size_and_recorded(self):
+        b1 = self.broker()
+        autotrader.run(b1, now=AT, decide=self.enter("BUY", 281.05, 280.30, 282.80))
+        full = b1.placed[0]["qty"]
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0")
+        self.collect({"market": {"score": -1.0}, "stocks": {}})
+        b2 = self.broker()
+        autotrader.run(b2, now=AT, decide=self.enter("BUY", 281.05, 280.30, 282.80))
+        self.assertEqual(b2.placed[0]["qty"], full, "no resizing behind Claude's back")

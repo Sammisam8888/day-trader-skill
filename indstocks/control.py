@@ -136,23 +136,89 @@ def _notify(title: str, body: str, priority: str = "high") -> None:
         pass
 
 
+def _gate(name: str, args: dict, trigger: str, f: dict, state: dict) -> Optional[str]:
+    """None if the named trigger holds for this command, else why not."""
+    import triggers as trg
+    if name == "notify":
+        return None
+    if name in ("halt_today", "flatten_now"):
+        allowed = trg.ALLOWS[name]
+    elif name == "resume_today":
+        h = state.get("halt") or {}
+        if trigger != "condition_cleared":
+            return "resume needs trigger condition_cleared"
+        try:
+            since = (f["now"] - datetime.fromisoformat(h["ts"])).total_seconds() / 60
+        except (KeyError, ValueError):
+            since = 999
+        if since < 30:
+            return f"halted {since:.0f} min ago; resume needs 30 min"
+        prev = h.get("trigger")
+        if prev and trg.check(prev, f, near_event=True)[0]:
+            return f"the halt's trigger {prev} still holds"
+        return None
+    elif name == "set_risk_today":
+        kinds = set()
+        for field in RISK:
+            if field in args and args[field] is not None:
+                try:
+                    kinds.add("raise" if RISK[field][2](str(args[field])) > base(field) else "lower")
+                except (ValueError, InvalidOperation):
+                    pass
+        if args.get("size") is not None or args.get("sides"):
+            kinds.add("lower")
+        if len(kinds) > 1:
+            return "raise and lower in separate commands"
+        allowed = trg.ALLOWS[kinds.pop() if kinds else "lower"]
+    elif name in ("calendar_add", "calendar_remove"):
+        kind = str(args.get("kind", ""))
+        src = str(args.get("source") or "")
+        official = any(d in src for d in ("nseindia.com", "bseindia.com"))
+        if kind in ("holiday", "special_session"):
+            return None if official else "holidays and special sessions need an nseindia.com / bseindia.com source"
+        return None if (src.strip() or official) else "events need a source"
+    else:
+        return None
+    if trigger not in allowed:
+        return f"{name} needs one of these triggers: {', '.join(sorted(allowed))}"
+    ok, evidence = trg.check(trigger, f, strict=(name == "flatten_now"), near_event=(name == "halt_today"))
+    if not ok:
+        return f"trigger {trigger} does not hold: {evidence}"
+    args["_evidence"] = evidence
+    return None
+
+
 def apply(cmd: dict, *, by: str = "claude", day_pnl: Optional[Decimal] = None, broker=None,
-          now: Optional[datetime] = None) -> tuple:
-    """Validate and apply one command. Returns (outcome, message)."""
+          now: Optional[datetime] = None, facts: Optional[dict] = None) -> tuple:
+    """Validate and apply one command. Returns (outcome, message).
+    Anyone but the owner must name a trigger that the data confirms."""
     now = now or sess.now()
     name = str(cmd.get("command", "")).strip()
-    args = cmd.get("args") or {k: v for k, v in cmd.items() if k not in ("action", "command")}
+    args = dict(cmd.get("args") or {k: v for k, v in cmd.items() if k not in ("action", "command")})
     reason = str(args.get("reason") or cmd.get("reason") or "")[:300]
+    trigger = str(cmd.get("trigger") or args.pop("trigger", "") or "").strip()
     if name not in COMMANDS:
         return _done(name, args, by, "refused", f"unknown command {name!r}; allowed: {', '.join(COMMANDS)}", now)
     state = today()
+    if by != "owner":
+        import triggers as trg
+        f = facts or trg.facts(day_pnl=day_pnl, now=now)
+        f.setdefault("now", now)
+        why = _gate(name, args, trigger, f, state)
+        if why:
+            return _done(name, args, by, "refused", why, now)
+        if args.get("_evidence"):
+            reason = f"{reason} [{trigger}: {args['_evidence']}]"
+            args["reason"] = reason
     if name == "halt_today":
-        state["halt"] = {"by": by, "reason": reason or "no reason given", "ts": now.isoformat(timespec="seconds")}
+        state["halt"] = {"by": by, "reason": reason or "no reason given", "ts": now.isoformat(timespec="seconds"),
+                         "trigger": trigger or None}
         write_json(day_file(), state)
         _notify("trader: halted for today", f"{by}: {reason}")
         return _done(name, args, by, "applied", f"no new entries for the rest of today: {reason}", now)
     if name == "flatten_now":
-        state["halt"] = {"by": by, "reason": f"flatten: {reason}", "ts": now.isoformat(timespec="seconds")}
+        state["halt"] = {"by": by, "reason": f"flatten: {reason}", "ts": now.isoformat(timespec="seconds"),
+                         "trigger": trigger or None}
         write_json(day_file(), state)
         closed = 0
         if broker is not None and common.live():
@@ -195,7 +261,7 @@ def apply(cmd: dict, *, by: str = "claude", day_pnl: Optional[Decimal] = None, b
 def _done(name, args, by, outcome, msg, now) -> tuple:
     state = today()
     _record(state, {"ts": now.isoformat(timespec="seconds"), "by": by, "command": name,
-                    "args": {k: v for k, v in (args or {}).items() if k != "reason"},
+                    "args": {k: v for k, v in (args or {}).items() if k not in ("reason", "_evidence")},
                     "reason": str((args or {}).get("reason", ""))[:300], "outcome": outcome, "message": msg})
     write_json(day_file(), state)
     common.log(JOB, {"event": "control", "by": by, "command": name, "outcome": outcome, "message": msg[:300]})

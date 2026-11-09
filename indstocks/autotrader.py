@@ -187,6 +187,19 @@ def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, 
     return "adjusted", "; ".join(changes)
 
 
+def gates_enforced() -> bool:
+    """TRADER_GATES=enforce makes the direction/sentiment gates refuse trades;
+    the default, advisory, leaves every trading decision to Claude."""
+    return common.setting("TRADER_GATES", "advisory").lower() == "enforce"
+
+
+def valid_minutes(d: dict):
+    try:
+        return max(5, min(int(d.get("valid_minutes")), 180))
+    except (TypeError, ValueError):
+        return None
+
+
 def retire_against(broker, orders: list, placements: list, direction: dict, rec: dict) -> None:
     """A resting entry the market has turned against is cancelled: a buy
     trigger left from 09:30 must not fill into a falling market at 11:00."""
@@ -269,7 +282,8 @@ def run(broker=None, now=None, *, decide=None) -> int:
     mood = sentiment.load(now)
     if direction:
         log({"event": "direction", "call_id": call_id, **direction["market"]})
-        retire_against(broker, orders, placements, direction, rec)
+        if gates_enforced():
+            retire_against(broker, orders, placements, direction, rec)
 
     def act(i: int, outcome: str, reason: str = "", **extra) -> None:
         actions.append({"decision": i, "outcome": outcome, "reason": reason, **extra})
@@ -327,7 +341,10 @@ def run(broker=None, now=None, *, decide=None) -> int:
                 act(i, "would_exit", "shadow mode: nothing sent")
             continue
         if action == "control":
-            act(i, *control.apply(d, by="claude", day_pnl=realised + unrealised, broker=broker, now=now))
+            import triggers as trg
+            facts = trg.facts(day_pnl=realised + unrealised, realised=realised, orders=orders,
+                              markets=(out.get("ctx") or {}).get("markets"), now=now)
+            act(i, *control.apply(d, by="claude", day_pnl=realised + unrealised, broker=broker, now=now, facts=facts))
             if common.halted():
                 stop_entries = True
             continue
@@ -357,13 +374,17 @@ def run(broker=None, now=None, *, decide=None) -> int:
             problems.append(f"{sym} already entered {rec['by_symbol'][sym]} time(s) today (max {max_entries()})")
         if side == "S" and not brain.allow_short():
             problems.append("shorts are switched off")
+        # Direction and sentiment are Claude's inputs. In "advisory" mode (the
+        # default) they never refuse or resize Claude's trade; what they would
+        # have said is recorded next to it, so the scorecard can judge both.
         against = regime.check("BUY" if side == "B" else "SELL", sym, direction)
-        if against:
-            problems.append(against)
         mood_refusal, mood_mult, mood_note = sentiment.check(
             "BUY" if side == "B" else "SELL", sym, mood, now, ((direction or {}).get("market") or {}).get("state"))
-        if mood_refusal:
-            problems.append(mood_refusal)
+        advisory = [x for x in (against, mood_refusal, mood_note) if x]
+        if gates_enforced():
+            problems += [x for x in (against, mood_refusal) if x]
+        else:
+            mood_mult = 1.0
         if ("BUY" if side == "B" else "SELL") not in control.sides_allowed():
             problems.append(f"only {'/'.join(control.sides_allowed())} today (control)")
         if slots <= 0:
@@ -411,7 +432,8 @@ def run(broker=None, now=None, *, decide=None) -> int:
             "leverage": str(round(sizing.position_value / cash, 2)) if cash else "0",
             "ltp_at_placement": str(q["ltp"]), "decided_by": out.get("source"),
             "confidence": d.get("confidence"), "why": why, "call_id": call_id,
-            "size_mult": str(size), "sentiment_note": mood_note,
+            "size_mult": str(size), "sentiment_note": mood_note, "advisory": advisory,
+            "valid_minutes": valid_minutes(d),
             "sentiment_bias": (mood or {}).get("tilt", {}).get("bias"),
             "direction": ((direction or {}).get("market") or {}).get("state"),
         }
@@ -437,7 +459,7 @@ def run(broker=None, now=None, *, decide=None) -> int:
             act(i, "failed", f"broker rejected: {exc}"[:300])
             continue
         log({"event": "placed", "order_id": oid, **record})
-        act(i, "placed", summary, order_id=oid)
+        act(i, "placed", summary + (f" · noted: {'; '.join(advisory)}" if advisory else ""), order_id=oid)
         resting.add((sym, side))
         placed += 1
 

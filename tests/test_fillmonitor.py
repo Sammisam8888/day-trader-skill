@@ -85,7 +85,7 @@ class Protect(unittest.TestCase):
 
 class TargetAndTrail(unittest.TestCase):
     def setUp(self):
-        reset()
+        reset(TRADER_AUTO_TRAIL="true")
         plan()
         common.log("fill", {"event": "stop_placed", "parent": "P1", "order_id": "S1",
                             "symbol": "NIFTYBEES", "qty": 40, "trigger": "280.30"})
@@ -225,7 +225,7 @@ class Shorts(unittest.TestCase):
     """A bot short: stop is a BUY above, target below, trail moves down."""
 
     def setUp(self):
-        reset()
+        reset(TRADER_AUTO_TRAIL="true")
         plan("P1", side="S", entry="279.53", stop="280.30", target="278.00")
 
     def short_book(self, ltp, stop_id=None):
@@ -291,3 +291,29 @@ class FlattenHandOff(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoAutoTrail(unittest.TestCase):
+    """By default nothing moves Claude's stop: at +1.64R it stays where Claude put it."""
+    def setUp(self):
+        reset()
+    def broker(self, ltp, **kw):
+        return FakeBroker(orders=[filled_entry(), order("S1", NIFTY, side="S", qty=40, price="278.90",
+                                                        trigger="280.30", remarks="stop/NIFTYBEES")],
+                          positions=[position(NIFTY, 40, "281.02")], quotes={NIFTY.token: {"ltp": ltp}}, **kw)
+
+    def test_by_default_nothing_moves_claudes_stop(self):
+        b = self.broker("282.20")
+        fm.tick(b, AT, {})
+        self.assertEqual(b.modified, [])
+
+    def test_claudes_valid_minutes_expire_a_resting_entry(self):
+        reset()
+        plan("R1", ts=(AT - timedelta(minutes=12)).isoformat(), valid_minutes=10)
+        plan("R2", ts=(AT - timedelta(minutes=12)).isoformat(), valid_minutes=20, inst=SENSEX)
+        b = FakeBroker(orders=[order("R1", NIFTY, "B", trigger="281.01", price="281.03"),
+                               order("R2", SENSEX, "B", trigger="281.01", price="281.03")],
+                       quotes={NIFTY.token: {"ltp": "280.90", "uc": "300", "lc": "260"},
+                               SENSEX.token: {"ltp": "280.90", "uc": "300", "lc": "260"}})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.cancelled, ["R1"])
