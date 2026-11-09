@@ -30,15 +30,19 @@ def fetch(url):
 
 
 class Post:
-    def __init__(self, *quick):
+    def __init__(self, *quick, refuse_first=0):
         self.quick = list(quick)
         self.calls = []
+        self.refuse = refuse_first
 
     def __call__(self, path, body, ctype, follow=True):
         self.calls.append((path, body, ctype, follow))
         if path == "QuickAuth":
             return 200, {}, json.dumps(self.quick.pop(0)), ""
         if path == "GetAuthCode":
+            if self.refuse:
+                self.refuse -= 1
+                return 200, {}, '{"stat":"Not_Ok","emsg":"Session Expired :  Invalid Session Key"}', ""
             return 302, {"Location": "http://100.127.19.72:8080/shoonya/callback?code=CODE9"}, "", ""
         raise AssertionError(path)
 
@@ -103,6 +107,21 @@ class Flow(unittest.TestCase):
         self.assertEqual((path, ctype, follow), ("GetAuthCode", "text/plain", False))
         self.assertTrue(body.startswith('jData={"app_key":"FN245398_U"}&jKey=SESS'))
         self.assertEqual(self.exchanged, ["CODE9"])
+
+    def test_getauthcode_formats_are_tried_in_order(self):
+        post = Post({"stat": "Ok", "susertoken": "SESS"}, refuse_first=2)
+        self.assertTrue(self.run_al(post)["ok"])
+        gac = [c for c in post.calls if c[0] == "GetAuthCode"]
+        self.assertEqual(len(gac), 3)
+        self.assertTrue(gac[0][1].endswith("\r\n"))
+        self.assertFalse(gac[1][1].endswith("\r\n"))
+        self.assertEqual(gac[2][2], "application/x-www-form-urlencoded")
+        self.assertEqual(self.exchanged, ["CODE9"])
+
+    def test_every_format_refused_is_reported(self):
+        post = Post({"stat": "Ok", "susertoken": "SESS"}, refuse_first=9)
+        with self.assertRaisesRegex(al.AutoLoginError, "refused every format"):
+            self.run_al(post)
 
     def test_a_bad_otp_is_retried_once(self):
         post = Post({"stat": "Not_Ok", "emsg": "Invalid OTP"}, {"stat": "Ok", "susertoken": "S"})
