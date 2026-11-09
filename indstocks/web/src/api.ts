@@ -127,3 +127,14 @@ export interface SentimentResp {
 export async function getSentiment(): Promise<SentimentResp> {
   return (await fetch("/api/sentiment", { cache: "no-store" })).json();
 }
+
+export interface ControlHist { ts: string; by: string; command: string; args: Record<string, unknown>; reason: string; outcome: string; message: string }
+export interface ControlState {
+  halt: { by: string; reason: string; ts: string } | null;
+  risk: Record<string, string>; raised: Record<string, string>; history: ControlHist[];
+  upcoming: { date: string; dow: string; trading: boolean; special: string | null; events: string[] }[];
+  nse_synced: string | null; ceilings: Record<string, string | null>; base: Record<string, string>;
+}
+export async function getControl(): Promise<ControlState> {
+  return (await fetch("/api/control", { cache: "no-store" })).json();
+}

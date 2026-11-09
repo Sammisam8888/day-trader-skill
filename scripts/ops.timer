@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily ops review at 08:50, every day including weekends and holidays
+
+[Timer]
+# Runs on non-trading days too, so a weekend special session (Muhurat) or a
+# new holiday is caught ahead of time. Sentiment runs at 08:45 first.
+OnCalendar=*-*-* 08:50:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target

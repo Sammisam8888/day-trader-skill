@@ -1081,6 +1081,14 @@ def api_action(body: dict) -> dict:
         except FileNotFoundError:
             pass
         return {"ok": True, "message": "Resumed. The next scan may place orders."}
+    if a == "control_undo":
+        import control
+        outcome, msg = control.undo(str(body.get("day") or sess.now().strftime("%Y-%m-%d")), int(body.get("index", -1)))
+        return {"ok": outcome == "applied", "message": f"{outcome}: {msg}"}
+    if a == "control_resume":
+        import control
+        outcome, msg = control.apply({"command": "resume_today", "reason": "owner, from the dashboard"}, by="owner")
+        return {"ok": outcome == "applied", "message": f"{outcome}: {msg}"}
     if a == "autologin":
         import autologin
         try:
@@ -1188,6 +1196,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_state())
             except Exception as exc:                    # noqa: BLE001
                 return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+        if path == "/api/control":
+            try:
+                import control
+                return self._json(_j(control.state_view()))
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"error": f"{type(exc).__name__}: {exc}"[:300]}, 500)
         if path == "/api/sentiment":
             try:
                 day = (q.get("day") or [sess.now().strftime("%Y-%m-%d")])[0]
