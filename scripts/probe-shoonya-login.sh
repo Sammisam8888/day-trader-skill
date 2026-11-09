@@ -10,21 +10,17 @@ curl -sS -A "$UA" "$B/investor-entry-level/login" -o "$D/p.html"
 MAIN=$(grep -oE '/OAuthlogin/assets/index-[a-z0-9]+\.js' "$D/p.html" | head -1)
 curl -sS -A "$UA" "https://api.shoonya.com$MAIN" -o "$D/main.js"
 echo "== config files referenced"; grep -oE '"[^"]*\.json"' "$D/main.js" | sort -u | head
-LOGIN=$(grep -oE '\./Login-[a-z0-9]+\.js' "$D/main.js" | head -1)
-curl -sS -A "$UA" "$B/assets/${LOGIN#./}" -o "$D/c.js"
-python3 - "$D/c.js" "$D/main.js" <<'PY2'
+python3 - "$D/main.js" <<'PY2'
 import re, sys
-s = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-m = open(sys.argv[2], encoding="utf-8", errors="replace").read()
-print("== import header:", s[:700])
-i = s.find("let r={app_key:")
-print("== after QuickAuth Ok:", s[i:i + 1500])
-for name in ("X", "ft", "gt", "ut"):
-    for mm in list(re.finditer(r"[,;\s(]" + name + r"=", s))[:2]:
-        print(f"== def {name}:", s[mm.start():mm.start() + 400])
-k = m.find("getAuthCode")
-print("== main getAuthCode uses:", [m[x.start() - 300:x.start() + 300] for x in re.finditer("getAuthCode", m)][:3])
-j = m.find("async postOAuth")
-print("== postOAuth:", m[j:j + 700])
+m = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+e = m.rfind("export{")
+exp = m[e:e + 2500]
+print("== export tail:", exp[:1200])
+alias = dict((b, a) for a, b in re.findall(r"(\w+) as (\w+)", exp))
+for pub in ("j", "k"):
+    local = alias.get(pub, pub)
+    print(f"== export {pub} -> local {local}")
+    for mm in list(re.finditer(r"[,;\s{(]" + re.escape(local) + r"=", m))[:3]:
+        print(f"   def: {m[mm.start():mm.start() + 260]}")
 PY2
 rm -rf "$D"
