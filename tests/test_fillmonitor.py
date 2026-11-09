@@ -103,6 +103,15 @@ class TargetAndTrail(unittest.TestCase):
         self.assertIsNone(b.placed[0]["trigger"], "a limit, not a stop")
         self.assertEqual(len(ev("target_exit")), 1)
 
+    def test_an_adjusted_target_is_honoured(self):
+        common.log("auto", {"event": "plan_adjusted", "parent": "P1", "target": "283.50"})
+        b = self.broker("282.60")
+        fm.tick(b, AT, {})
+        self.assertEqual(b.placed, [], "old target 282.49 passed, new one 283.50 not yet")
+        b2 = self.broker("283.55")
+        fm.tick(b2, AT, {})
+        self.assertEqual(len(common.events("target_exit")), 1)
+
     def test_if_the_stop_cannot_be_cancelled_nothing_is_sold(self):
         b = self.broker("282.50", fail_cancel={"S1"})
         fm.tick(b, AT, {})

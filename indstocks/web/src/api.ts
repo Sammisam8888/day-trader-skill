@@ -74,3 +74,31 @@ export async function act(action: string, body: Record<string, unknown> = {}):
   });
   return r.json();
 }
+
+export interface BrainAction { decision: number; outcome: string; reason: string; order_id?: string; order_status?: string | null }
+export interface BrainDecision { action: string; symbol?: string; side?: string; order?: string; entry?: number;
+  stop?: number; target?: number; size?: number; confidence?: number; reason?: string; order_id?: string }
+export interface BrainCall {
+  id: string; ts: string; source: string; phase: string; latency_s: number | null; error: string | null;
+  asked: { symbols: number; cash: string; exposure: string; positions: number; resting: number; pnl: string };
+  view: string; decisions: BrainDecision[]; reply: string; actions: BrainAction[]; prompt_chars: number;
+}
+export interface Trade {
+  error?: string; order_id: string; symbol: string; side: "B" | "S"; status: string;
+  decided_by: string; call_id: string; why: string; confidence: number | null; placed_at: string;
+  plan: Record<string, string | number | null>;
+  entry_order: Record<string, unknown> | null; stop_order: Record<string, unknown> | null;
+  stop_moves: { ts: string; from: string; to: string; reason: string }[];
+  exit: { ts: string; ltp: string; target: string; order: Record<string, unknown> | null } | null;
+  ltp: number | null; live_pnl: number | null; realised: { gross: number; charges: number; net: number } | null;
+}
+
+export async function getBrain(day: string): Promise<{ day: string; calls: BrainCall[] }> {
+  return (await fetch(`/api/brain?day=${day}`, { cache: "no-store" })).json();
+}
+export async function getBrainCall(day: string, id: string): Promise<{ prompt: string; reply: string }> {
+  return (await fetch(`/api/brain/call?day=${day}&id=${id}`, { cache: "no-store" })).json();
+}
+export async function getTrade(day: string, id: string): Promise<Trade> {
+  return (await fetch(`/api/trade?day=${day}&id=${encodeURIComponent(id)}`, { cache: "no-store" })).json();
+}

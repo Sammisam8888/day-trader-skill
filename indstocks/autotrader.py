@@ -110,6 +110,80 @@ def build_plan(d: dict, inst, q: dict):
     return plan, trigger, limit
 
 
+def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, day_pnl: Decimal) -> tuple:
+    """Move the stop and/or target of a position this system opened.
+    Returns (outcome, reason) for the transcript.
+
+    The new stop must sit on the losing side of the price, and the loss it
+    allows (from the fill price, for the open quantity) must fit both the
+    max loss per trade and the loss room left today. Targets must be on the
+    winning side of the price. The stop order at the exchange is modified
+    now; the target is recorded for the fill monitor."""
+    from fillmonitor import stop_limit
+    sym = str(d.get("symbol", "")).upper()
+    why = str(d.get("reason", ""))[:300]
+    pos = next((p for p in held if p["symbol"] == sym), None)
+    if not pos:
+        return "refused", f"adjust {sym}: no open position"
+    book = {o["id"]: o for o in orders}
+    plan = next((p for p in placements if str(p.get("token")) == str(pos["token"])
+                 and book.get(str(p.get("order_id")), {}).get("filled", 0) > 0), None)
+    if not plan:
+        return "refused", f"adjust {sym}: not opened by this system (manual positions keep their % guard)"
+    long_ = pos["qty"] > 0
+    ltp = pos["ltp"]
+    try:
+        ltp = broker.quote(pos["token"])["ltp"] or ltp
+    except ShoonyaError:
+        pass
+    tick = Decimal(str(plan.get("tick") or "0.01"))
+    qty = abs(pos["qty"])
+    parent = str(plan["order_id"])
+    stop_order = next((o for o in orders if o["pending"] and o["token"] == pos["token"]
+                       and o["side"] == ("S" if long_ else "B")), None)
+    new_stop = new_target = None
+    problems = []
+    if d.get("stop") is not None:
+        new_stop = to_tick(Decimal(str(d["stop"])), tick, mode="down" if long_ else "up")
+        if long_ and new_stop >= ltp or (not long_ and new_stop <= ltp):
+            problems.append(f"stop {new_stop} is not on the losing side of the price {ltp}")
+        loss = (pos["avg"] - new_stop) * qty if long_ else (new_stop - pos["avg"]) * qty
+        if loss > limits.max_loss_per_trade:
+            problems.append(f"stop {new_stop} risks {loss:.0f}, over max loss per trade {limits.max_loss_per_trade}")
+        room = limits.daily_loss_limit + min(day_pnl, Decimal(0))
+        if loss > 0 and loss > room:
+            problems.append(f"stop {new_stop} risks {loss:.0f}, more than the {room:.0f} of loss room left today")
+        if stop_order is None:
+            problems.append("no stop order at the exchange to move (the fill monitor is placing one)")
+    if d.get("target") is not None:
+        new_target = to_tick(Decimal(str(d["target"])), tick, mode="down" if long_ else "up")
+        if long_ and new_target <= ltp or (not long_ and new_target >= ltp):
+            problems.append(f"target {new_target} is not on the winning side of the price {ltp}")
+    if new_stop is None and new_target is None:
+        problems.append("adjust needs a stop, a target or both")
+    if problems:
+        log({"event": "refused", "symbol": sym, "reason": "adjust: " + "; ".join(problems), "decider_reason": why})
+        return "refused", "; ".join(problems)
+    changes = []
+    if new_stop is not None and common.live():
+        inst = broker.instrument_for(pos)
+        try:
+            broker.modify(stop_order, inst, qty=stop_order["qty"],
+                          price=stop_limit(new_stop, tick, "S" if long_ else "B"), trigger=new_stop)
+        except ShoonyaError as exc:
+            log({"event": "modify_failed", "order_id": stop_order["id"], "reason": str(exc)[:200]})
+            return "failed", f"stop modify rejected: {exc}"[:300]
+        changes.append(f"stop {stop_order['trigger']} -> {new_stop}")
+    elif new_stop is not None:
+        changes.append(f"(shadow) stop -> {new_stop}")
+    if new_target is not None:
+        changes.append(f"target -> {new_target}")
+    log({"event": "plan_adjusted", "parent": parent, "symbol": sym,
+         "stop": str(new_stop) if new_stop is not None else None,
+         "target": str(new_target) if new_target is not None else None, "reason": f"decider: {why}"})
+    return "adjusted", "; ".join(changes)
+
+
 def run(broker=None, now=None, *, decide=None) -> int:
     now = now or sess.now()
     session = sess.session_for(now)
@@ -158,8 +232,13 @@ def run(broker=None, now=None, *, decide=None) -> int:
 
     out = (decide or brain.decide)(broker, session, now, cash=cash, positions=positions, orders=orders,
                                    placements=placements, limits=limits)
-    log({"event": "brain_view", "source": out.get("source"), "view": str(out.get("view", ""))[:500],
-         "decisions": len(out.get("decisions", []))})
+    call_id = now.strftime("%H%M%S")
+    log({"event": "brain_view", "call_id": call_id, "source": out.get("source"),
+         "view": str(out.get("view", ""))[:500], "decisions": len(out.get("decisions", []))})
+    actions: list = []
+
+    def act(i: int, outcome: str, reason: str = "", **extra) -> None:
+        actions.append({"decision": i, "outcome": outcome, "reason": reason, **extra})
 
     day = risk_mod.DayState(trades_taken=len(rec["filled"]), risk_committed=rec["risk"],
                             open_symbols=tuple(held_syms), exposure=exposure, unrealised_pnl=unrealised)
@@ -175,7 +254,7 @@ def run(broker=None, now=None, *, decide=None) -> int:
     budget = max_resting() - len(resting)
 
     placed = 0
-    for d in out.get("decisions", []):
+    for i, d in enumerate(out.get("decisions", [])):
         action = str(d.get("action", "")).lower()
         sym = str(d.get("symbol", "")).upper()
         why = str(d.get("reason", ""))[:400]
@@ -184,35 +263,46 @@ def run(broker=None, now=None, *, decide=None) -> int:
             mine = {str(p.get("order_id")) for p in placements}
             if oid not in mine:
                 log({"event": "refused", "symbol": sym, "reason": f"cancel {oid}: not an entry this system placed"})
+                act(i, "refused", f"cancel {oid}: not an entry this system placed")
                 continue
             if common.live():
                 try:
                     broker.cancel(oid)
                 except ShoonyaError as exc:
                     log({"event": "cancel_failed", "order_id": oid, "reason": str(exc)[:200]})
+                    act(i, "failed", f"cancel failed: {exc}"[:200], order_id=oid)
                     continue
             log({"event": "entry_cancelled", "symbol": sym, "order_id": oid, "reason": f"decider: {why}"})
+            act(i, "cancelled", f"entry {oid} cancelled", order_id=oid)
             continue
         if action == "exit":
             pos = next((p for p in held if p["symbol"] == sym), None)
             if not pos:
                 log({"event": "refused", "symbol": sym, "reason": "exit: no open position"})
+                act(i, "refused", "exit: no open position")
                 continue
             if common.live():
                 import flatten
                 oid = flatten.close_position(broker, pos, remarks=f"exit/{sym}")
                 log({"event": "sold" if pos["qty"] > 0 else "covered", "symbol": sym, "qty": abs(pos["qty"]),
                      "order_id": oid, "reason": f"decider: {why}"})
+                act(i, "exited", f"closed {abs(pos['qty'])} with a marketable limit", order_id=oid)
             else:
                 log({"event": "would_exit", "symbol": sym, "reason": why})
+                act(i, "would_exit", "shadow mode: nothing sent")
+            continue
+        if action == "adjust":
+            act(i, *adjust(broker, d, held, orders, placements, limits, realised + unrealised))
             continue
         if action != "enter":
+            act(i, "ignored", f"unknown action {action!r}")
             continue
 
         side = "B" if str(d.get("side", "")).upper() in ("BUY", "B", "LONG") else "S"
         if placed >= budget:
             log({"event": "refused", "symbol": sym, "reason": "resting-order ceiling reached"})
-            break
+            act(i, "refused", "resting-order ceiling reached")
+            continue
         problems = []
         if sym not in universe:
             problems.append(f"{sym} is not in the trading list")
@@ -228,28 +318,33 @@ def run(broker=None, now=None, *, decide=None) -> int:
             problems.append("no free slot or buying power")
         if problems:
             log({"event": "refused", "symbol": sym, "side": side, "reason": "; ".join(problems), "decider_reason": why})
+            act(i, "refused", "; ".join(problems))
             continue
         try:
             inst, _, q = out["insts"][sym]
         except KeyError:
             log({"event": "refused", "symbol": sym, "reason": "no market data this scan"})
+            act(i, "refused", "no market data this scan")
             continue
         try:
             plan, trigger, limit = build_plan(d, inst, q)
         except (strat.PlanError, KeyError, ValueError, ArithmeticError) as exc:
             log({"event": "refused", "symbol": sym, "side": side, "reason": str(exc)[:300], "decider_reason": why})
+            act(i, "refused", str(exc)[:300])
             continue
         size = min(max(Decimal(str(d.get("size", 1) or 1)), Decimal("0.25")), Decimal(1))
         lev = limits.max_leverage if limits.max_leverage > 0 else Decimal(1)
         sizing = risk_mod.size_position(plan, slot_cash * size / lev, limits)
         if not sizing.ok:
             log({"event": "unsized", "symbol": sym, "side": side, "reason": sizing.limit_hit})
+            act(i, "refused", f"sizing: {sizing.limit_hit}")
             continue
         verdict = risk_mod.check_entry_order(
             symbol=sym, plan=plan, sizing=sizing, session=session, now=now, day=day, limits=limits,
             cash_for_leverage=cash, upper_limit=q["uc"] or None, lower_limit=q["lc"] or None)
         if not verdict.passed:
             log({"event": "blocked", "symbol": sym, "side": side, "reasons": verdict.reasons, "decider_reason": why})
+            act(i, "refused", "; ".join(verdict.reasons))
             continue
 
         record = {
@@ -262,10 +357,20 @@ def run(broker=None, now=None, *, decide=None) -> int:
             "position_value": str(sizing.position_value),
             "leverage": str(round(sizing.position_value / cash, 2)) if cash else "0",
             "ltp_at_placement": str(q["ltp"]), "decided_by": out.get("source"),
-            "confidence": d.get("confidence"), "why": why,
+            "confidence": d.get("confidence"), "why": why, "call_id": call_id,
         }
+        # the two extremes, after charges: target hits vs stop hits
+        import charges as charges_mod
+        q_ = sizing.qty
+        at_stop = (charges_mod.round_trip(limit * q_, plan.stop * q_) if side == "B"
+                   else charges_mod.round_trip(plan.stop * q_, limit * q_)).total
+        record["net_if_stop"] = str(-(sizing.loss_at_stop + at_stop))
+        summary = (f"{'BUY' if side == 'B' else 'SELL'} {sizing.qty} {sym} "
+                   f"{'trigger ' + str(trigger) if trigger is not None else 'limit ' + str(limit)} · "
+                   f"SL {plan.stop} · TP {plan.target} · net {record['net_if_target']} / {record['net_if_stop']}")
         if not common.live():
             log({"event": "would_place", **record})
+            act(i, "would_place", f"shadow: {summary}")
             placed += 1
             continue
         try:
@@ -273,12 +378,24 @@ def run(broker=None, now=None, *, decide=None) -> int:
                                remarks=f"auto/{sym}")
         except ShoonyaError as exc:
             log({"event": "order_failed", "symbol": sym, "reason": str(exc)[:300]})
+            act(i, "failed", f"broker rejected: {exc}"[:300])
             continue
         log({"event": "placed", "order_id": oid, **record})
+        act(i, "placed", summary, order_id=oid)
         resting.add((sym, side))
         placed += 1
 
     log({"event": "run_end", "placed": placed, "source": out.get("source")})
+    tr = out.get("transcript") or {}
+    brain.save_transcript({
+        "id": call_id, "ts": now.isoformat(timespec="seconds"), "source": out.get("source"),
+        "phase": session.phase(now), "latency_s": tr.get("latency_s"), "error": tr.get("error"),
+        "asked": {"symbols": len(out.get("ctx", {}).get("markets", [])), "cash": str(cash),
+                  "exposure": str(exposure), "positions": len(held), "resting": len(resting),
+                  "pnl": str(realised + unrealised)},
+        "prompt": tr.get("prompt", ""), "reply": tr.get("raw", ""),
+        "view": out.get("view", ""), "decisions": out.get("decisions", []), "actions": actions,
+    })
     return 0
 
 
