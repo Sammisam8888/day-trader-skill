@@ -1,7 +1,9 @@
-import { Activity as ActivityIcon, LayoutDashboard, ListOrdered, LogIn, MessageSquare, Pause, Play, Settings2 } from "lucide-react";
+import { Activity as ActivityIcon, Bot, LayoutDashboard, ListOrdered, LogIn, MessageSquare, Pause, Play, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { act, getState, type Order, type Position, type State } from "./api";
 import Activity from "./components/Activity";
+import Brain from "./components/Brain";
+import TradeDrawer from "./components/TradeDrawer";
 import Blotter, { ConfirmCancel } from "./components/Blotter";
 import Chat from "./components/Chat";
 import Journal from "./components/Journal";
@@ -12,9 +14,10 @@ import { ClosedTrades, Positions } from "./components/Positions";
 import { clsx, price } from "./fmt";
 import { Badge, Btn, Card, Dot, Flash } from "./ui";
 
-type Tab = "overview" | "orders" | "activity" | "chat";
+type Tab = "overview" | "claude" | "orders" | "activity" | "chat";
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <LayoutDashboard size={18} /> },
+  { id: "claude", label: "Claude", icon: <Bot size={18} /> },
   { id: "orders", label: "Orders", icon: <ListOrdered size={18} /> },
   { id: "activity", label: "Activity", icon: <ActivityIcon size={18} /> },
   { id: "chat", label: "Chat", icon: <MessageSquare size={18} /> },
@@ -87,6 +90,8 @@ export default function App() {
   });
   const [toasts, setToasts] = useState<{ id: number; m: string; ok: boolean }[]>([]);
   const [confirm, setConfirm] = useState<Order | null>(null);
+  const [trade, setTrade] = useState<{ day: string; id: string } | null>(null);
+  const [focusCall, setFocusCall] = useState<string | null>(null);
 
   const toast = useCallback((m: string, ok = true) => {
     const id = Date.now() + Math.random();
@@ -103,6 +108,7 @@ export default function App() {
     load();
     const t = setInterval(load, 4000);
     const q = new URLSearchParams(location.search);
+    if (q.get("trade")) setTrade({ day: q.get("day") || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }), id: q.get("trade")! });
     if (q.get("flash")) { toast(q.get("flash")!, q.get("err") !== "1"); history.replaceState(null, "", "/"); }
     return () => clearInterval(t);
   }, [load, toast]);
@@ -179,13 +185,14 @@ export default function App() {
               </div>
             </>
           )}
+          {tab === "claude" && <Brain focus={focusCall} onTrade={(day, id) => setTrade({ day, id })} />}
           {tab === "orders" && <Blotter orders={s.orders} onCancel={setConfirm} />}
           {tab === "activity" && <Activity items={s.decisions} />}
           {tab === "chat" && <Chat msgs={s.chat} mode={s.chat_mode} send={async (t) => { const r = await act("chat", { text: t }); if (!r.ok) toast(r.message, false); await load(); }} />}
         </main>
       )}
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-line bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-line bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden">
         {TABS.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} className={clsx("flex flex-col items-center gap-0.5 py-2.5 text-[11px]", tab === t.id ? "text-info" : "text-faint")}>
             {t.icon}{t.label}
@@ -199,6 +206,8 @@ export default function App() {
             t.ok ? "border-up/30 bg-up-bg/95 text-up" : "border-down/30 bg-down-bg/95 text-down")}>{t.m}</div>
         ))}
       </div>
+      {trade && <TradeDrawer day={trade.day} id={trade.id} onClose={() => setTrade(null)}
+        onCall={(cid) => { setTrade(null); setFocusCall(cid); setTab("claude"); }} />}
       {confirm && <ConfirmCancel o={confirm} onNo={() => setConfirm(null)} onYes={() => { run("cancel", { order_id: confirm.id }); setConfirm(null); }} />}
     </div>
   );

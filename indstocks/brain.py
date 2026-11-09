@@ -80,6 +80,23 @@ def symbol_view(sym: str, inst, candles: List[Candle], quote: dict, session) -> 
     return v
 
 
+def position_view(p: dict, orders: list, ours: dict, adj: dict, limits) -> dict:
+    stop = next((o["trigger"] for o in orders if o["pending"] and o["token"] == p["token"]
+                 and o["side"] == ("S" if p["qty"] > 0 else "B")), None)
+    parent = next((oid for oid, r in ours.items() if str(r.get("token")) == str(p["token"])
+                   and any(o["id"] == oid and o["filled"] > 0 for o in orders)), None)
+    plan = ours.get(parent, {}) if parent else {}
+    target = (adj.get(parent) or {}).get("target") or plan.get("target")
+    qty = abs(p["qty"])
+    risk_now = (abs(p["avg"] - stop) * qty) if stop is not None else None
+    return {"symbol": p["symbol"], "side": "LONG" if p["qty"] > 0 else "SHORT", "qty": qty,
+            "avg": str(p["avg"]), "ltp": str(p["ltp"]), "unrealised": str(p["unrealised"]),
+            "stop": str(stop) if stop is not None else None, "target": target,
+            "loss_if_stop_now": str(risk_now) if risk_now is not None else None,
+            "opened_by": "you" if not parent else "this system",
+            "plan_reason": plan.get("why")}
+
+
 def build(broker, session, now, *, cash, positions, orders, placements, limits) -> dict:
     views, insts = [], {}
     for sym in common.symbols():
@@ -97,6 +114,9 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
     realised = sum((p["realised"] for p in positions), Decimal(0))
     unrealised = sum((p["unrealised"] for p in positions), Decimal(0))
     ours = {str(p.get("order_id")): p for p in placements}
+    adj = {}
+    for r in common.events("plan_adjusted"):
+        adj[str(r.get("parent"))] = r
     fills = {}
     for o in orders:
         if o["id"] in ours and o["filled"] > 0:
@@ -115,11 +135,7 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
                     "fills_today": sum(fills.values()), "max_trades": limits.max_trades_per_day,
                     "max_entries_per_symbol": int(common.setting("TRADER_MAX_ENTRIES_PER_SYMBOL", "2")),
                     "shorts_allowed": allow_short()},
-        "positions": [{"symbol": p["symbol"], "side": "LONG" if p["qty"] > 0 else "SHORT",
-                       "qty": abs(p["qty"]), "avg": str(p["avg"]), "ltp": str(p["ltp"]),
-                       "unrealised": str(p["unrealised"]),
-                       "stop": next((str(o["trigger"]) for o in orders if o["pending"] and o["token"] == p["token"]
-                                     and o["side"] == ("S" if p["qty"] > 0 else "B")), None)} for p in held],
+        "positions": [position_view(p, orders, ours, adj, limits) for p in held],
         "resting_entries": [{"order_id": o["id"], "symbol": ours[o["id"]]["symbol"],
                              "side": "BUY" if o["side"] == "B" else "SELL", "type": o["type"],
                              "trigger": str(o["trigger"]), "limit": str(o["price"]), "qty": o["qty"],
@@ -152,6 +168,15 @@ prior-day high/low breaks, trend pullbacks) with a stop at a level that invalida
 Avoid stops inside normal noise. Respect charges: brokerage is Rs 5 or 0.03% per order;
 a target under ~0.25% of price rarely pays. Never chase a candle that already ran.
 
+Risk appetite (the owner's, enforced by code): max loss per trade, daily loss limit and the loss
+room left today are in STATE.account. Size is computed from max loss per trade and your stop, so a
+tighter stop means a bigger position and a wider stop a smaller one. Aim for a target that pays
+clearly after charges and a stop that genuinely invalidates the idea.
+
+Open positions: you can manage them every scan. Tighten a stop as structure develops, move it to
+lock profit, extend a target when momentum is strong, or exit. A position's loss_if_stop_now shows
+what the current stop risks. The code also trails stops on its own (breakeven at +1R).
+
 Rules the code enforces (anything else is refused, so don't waste a decision):
 - side BUY: stop < entry < target. side SELL (short): target < entry < stop.
 - reward:risk at least {min_rr}. No new entries after last_entry.
@@ -165,10 +190,12 @@ Reply with ONE JSON object, nothing else:
   "decisions": [
     {{"action":"enter","symbol":"NIFTYBEES","side":"BUY","order":"stop","entry":281.05,"stop":280.30,
       "target":282.60,"size":1.0,"confidence":0.6,"reason":"<why, citing levels>"}},
+    {{"action":"adjust","symbol":"NIFTYBEES","stop":281.10,"target":283.40,"reason":"..."}},
     {{"action":"cancel","order_id":"<resting entry id>","reason":"..."}},
     {{"action":"exit","symbol":"...","reason":"..."}}
   ]}}
-"decisions" may be empty. size is 0.25 to 1.0 of a normal slot."""
+"decisions" may be empty. size is 0.25 to 1.0 of a normal slot. In "adjust", give stop, target or both;
+the new stop must stay on the losing side of the price and its loss must fit max_loss_per_trade."""
 
 
 def find_claude() -> Optional[str]:
@@ -176,11 +203,17 @@ def find_claude() -> Optional[str]:
     return chat.find_claude()
 
 
-def ask_claude(ctx: dict, limits, run: Optional[Callable] = None) -> dict:
+def ask_claude(ctx: dict, limits, run: Optional[Callable] = None, transcript: Optional[dict] = None) -> dict:
+    """Ask Claude. `transcript` (if given) is filled with the exact prompt,
+    the raw reply and the latency, even when the reply cannot be parsed."""
+    import time as _t
+    transcript = transcript if transcript is not None else {}
     prompt = SYSTEM.format(min_rr=limits.min_reward_to_risk, max_conc=limits.max_concurrent_positions,
                            max_entries=ctx["account"]["max_entries_per_symbol"], lev=limits.max_leverage,
                            shorts="yes" if allow_short() else "no")
     prompt += "\n\nSTATE:\n" + json.dumps(ctx, separators=(",", ":"))
+    transcript["prompt"] = prompt
+    t0 = _t.monotonic()
     if run is None:
         exe = find_claude()
         if not exe:
@@ -199,6 +232,8 @@ def ask_claude(ctx: dict, limits, run: Optional[Callable] = None) -> dict:
             raw = r.stdout
     else:
         raw = run(prompt)
+    transcript["raw"] = raw
+    transcript["latency_s"] = round(_t.monotonic() - t0, 1)
     return parse(raw)
 
 
@@ -256,16 +291,52 @@ def decide(broker, session, now, *, cash, positions, orders, placements, limits,
     b = build(broker, session, now, cash=cash, positions=positions, orders=orders,
               placements=placements, limits=limits)
     mode = common.setting("TRADER_DECIDER", "claude").lower()
+    tr: dict = {}
     if mode == "claude":
         try:
-            out = ask_claude(b["ctx"], limits, run=run)
+            out = ask_claude(b["ctx"], limits, run=run, transcript=tr)
             out["source"] = "claude"
-            return {**out, "insts": b["insts"], "ctx": b["ctx"]}
+            return {**out, "insts": b["insts"], "ctx": b["ctx"], "transcript": tr}
         except Exception as exc:                        # noqa: BLE001
+            tr["error"] = f"{type(exc).__name__}: {exc}"[:500]
             common.log("brain", {"event": "brain_unavailable", "reason": str(exc)[:300],
                                  "action": "rule-based decisions this scan"})
             if common.setting("TRADER_BRAIN_FALLBACK", "rules").lower() != "rules":
-                return {"view": "", "decisions": [], "source": "none", "insts": b["insts"], "ctx": b["ctx"]}
+                return {"view": "", "decisions": [], "source": "none", "insts": b["insts"], "ctx": b["ctx"],
+                        "transcript": tr}
     out = rules(b["ctx"], b["insts"], session)
     out["source"] = "rules"
-    return {**out, "insts": b["insts"], "ctx": b["ctx"]}
+    tr.setdefault("prompt", "(no model call: the opening-range rule decided)\n\nSTATE:\n"
+                  + json.dumps(b["ctx"], separators=(",", ":")))
+    tr["raw"] = json.dumps({"view": out["view"], "decisions": out["decisions"]})
+    return {**out, "insts": b["insts"], "ctx": b["ctx"], "transcript": tr}
+
+
+# ------------------------------------------------------------------ transcript
+
+def transcript_path(day: Optional[str] = None) -> Path:
+    return common.STATE_DIR / "brain" / f"{day or sess.now().strftime('%Y-%m-%d')}.jsonl"
+
+
+def save_transcript(rec: dict) -> None:
+    """One line per scan: what was asked, what came back, what was done."""
+    path = transcript_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
+    except OSError:
+        pass
+
+
+def read_transcripts(day: Optional[str] = None) -> List[dict]:
+    out = []
+    try:
+        for line in transcript_path(day).read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                pass
+    except OSError:
+        pass
+    return out

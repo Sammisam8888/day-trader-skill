@@ -142,6 +142,7 @@ def tick(broker, now: datetime, state: dict) -> dict:
     placements = common.events("placed")
     stops = latest_by(common.events("stop_placed"), "parent")
     exits = latest_by(common.events("target_exit"), "parent")
+    adjusted = latest_by([r for r in common.events("plan_adjusted") if r.get("target")], "parent")
     bot_tokens = {str(p["token"]) for p in placements
                   if book.get(str(p.get("order_id")), {}).get("filled", 0) > 0}
 
@@ -206,7 +207,8 @@ def tick(broker, now: datetime, state: dict) -> dict:
         ltp = ltps.get(str(p["token"]))
         if ltp is None:
             continue
-        hit = ltp >= D(p["target"]) if side == "B" else ltp <= D(p["target"])
+        target = D(adjusted[pid]["target"]) if pid in adjusted else D(p["target"])
+        hit = ltp >= target if side == "B" else ltp <= target
         if hit:
             try:
                 broker.cancel(so["id"])
@@ -218,7 +220,7 @@ def tick(broker, now: datetime, state: dict) -> dict:
                 eid = broker.place(inst, side=opp(side), qty=want, price=broker.marketable(inst, opp(side)),
                                    remarks=f"tgt/{p['symbol']}")
                 log({"event": "target_exit", "parent": pid, "order_id": eid, "symbol": p["symbol"],
-                     "qty": want, "ltp": str(ltp), "target": p["target"]})
+                     "qty": want, "ltp": str(ltp), "target": str(target)})
                 out["sold"] += 1
             except ShoonyaError as exc:
                 log({"event": "exit_failed", "symbol": p["symbol"], "reason": str(exc)[:300]})

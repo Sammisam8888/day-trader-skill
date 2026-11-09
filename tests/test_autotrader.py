@@ -241,3 +241,63 @@ class Muhurat(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Adjust(unittest.TestCase):
+    """Claude moves the stop/target of an open trade; the code holds the line."""
+
+    def setUp(self):
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LOSS="600")
+        sess.now = lambda clock=None: AT
+        common.log("auto", {"event": "placed", "order_id": "E1", "symbol": "NIFTYBEES", "side": "B",
+                            "token": NIFTY.token, "tick": "0.01", "entry": "281.03", "stop": "280.30",
+                            "target": "282.80", "risk": "32"})
+
+    def book(self, ltp="281.60"):
+        return broker(positions=[position(NIFTY, 44, "281.02", ltp=ltp)],
+                      orders=[order("E1", NIFTY, status="COMPLETE", filled=44, avg="281.02"),
+                              order("S1", NIFTY, side="S", qty=44, trigger="280.30", price="278.90")],
+                      quotes={NIFTY.token: {"ltp": ltp}, SENSEX.token: {"ltp": "898", "uc": "990", "lc": "810"}})
+
+    def test_tightening_the_stop_modifies_the_exchange_order(self):
+        b = self.book()
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "NIFTYBEES", "stop": 281.10, "reason": "lock"}))
+        self.assertEqual(b.modified[0]["trigger"], D("281.10"))
+        self.assertEqual(ev("plan_adjusted")[0]["stop"], "281.10")
+
+    def test_a_stop_above_the_price_is_refused(self):
+        b = self.book()
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "NIFTYBEES", "stop": 281.90}))
+        self.assertEqual(b.modified, [])
+        self.assertIn("losing side", ev("refused")[0]["reason"])
+
+    def test_a_stop_that_risks_more_than_max_loss_is_refused(self):
+        b = self.book()
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "NIFTYBEES", "stop": 260.00}))
+        self.assertEqual(b.modified, [])
+        self.assertIn("over max loss per trade", ev("refused")[0]["reason"])
+
+    def test_target_extension_is_recorded_for_the_monitor(self):
+        b = self.book()
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "NIFTYBEES", "target": 284.00}))
+        self.assertEqual(ev("plan_adjusted")[0]["target"], "284.00")
+
+    def test_manual_positions_cannot_be_adjusted(self):
+        b = broker(positions=[position(SENSEX, 5, "899", ltp="900")])
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "SENSEXIETF", "stop": 895}))
+        self.assertIn("not opened by this system", ev("refused")[0]["reason"] if ev("refused") else
+                      brain.read_transcripts(DAY.isoformat())[-1]["actions"][0]["reason"])
+
+    def test_the_transcript_records_ask_reply_and_actions(self):
+        b = self.book()
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "NIFTYBEES", "stop": 281.10},
+                                                 enter("SENSEXIETF", entry=900.05, stop=897.0, target=906.0), view="up day"))
+        tr = brain.read_transcripts(DAY.isoformat())[-1]
+        self.assertEqual(tr["source"], "claude")
+        self.assertIn("STATE:", tr["prompt"])
+        self.assertIn("up day", tr["reply"])
+        self.assertEqual([a["outcome"] for a in tr["actions"]], ["adjusted", "placed"])
+        self.assertTrue(tr["actions"][1]["order_id"])
+        placed = ev("placed")[-1]
+        self.assertLess(float(placed["net_if_stop"]), 0)
+        self.assertGreater(float(placed["net_if_target"]), 0)

@@ -971,6 +971,87 @@ def api_candles(symbol: str) -> dict:
     return data
 
 
+def api_brain(day: str) -> dict:
+    """Every scan's conversation for a day: what was asked (summary), what
+    Claude replied, what was done, and the trade each placement became.
+    The full prompt is fetched per call (api_brain_call): it is large."""
+    import brain
+    calls = brain.read_transcripts(day)
+    v = _broker_view() if sh.load_token() else {"orders": [], "positions": [], "ltps": {}}
+    book = {o["id"]: o for o in v.get("orders", [])}
+    out = []
+    for c in calls:
+        acts = []
+        for a in c.get("actions", []):
+            o = book.get(str(a.get("order_id"))) if a.get("order_id") else None
+            acts.append({**a, "order_status": o and status_label(o)[1]})
+        out.append({k: c.get(k) for k in ("id", "ts", "source", "phase", "latency_s", "error", "asked",
+                                          "view", "decisions", "reply")}
+                   | {"actions": acts, "prompt_chars": len(c.get("prompt") or "")})
+    return _j({"day": day, "calls": out[::-1]})
+
+
+def api_brain_call(day: str, call_id: str) -> dict:
+    import brain
+    for c in brain.read_transcripts(day):
+        if str(c.get("id")) == call_id:
+            return {"id": call_id, "prompt": c.get("prompt", ""), "reply": c.get("reply", "")}
+    return {"id": call_id, "prompt": "", "reply": "", "error": "not found"}
+
+
+def api_trade(day: str, order_id: str) -> dict:
+    """One trade end to end: the plan (and who decided it), the entry order,
+    the stop at the exchange, any exit, the position, and the two extremes
+    after charges: net if the target hits vs net if the stop hits."""
+    import charges as charges_mod
+    log = read_log(day)
+    plan = next((r for r in log if r.get("event") in ("placed", "would_place")
+                 and str(r.get("order_id")) == order_id), None)
+    if not plan:
+        return {"error": f"no placement {order_id} on {day}"}
+    v = _broker_view() if sh.load_token() else {"orders": [], "positions": [], "ltps": {}}
+    book = {o["id"]: o for o in v.get("orders", [])}
+    entry = book.get(order_id)
+    stop_ev = [r for r in log if r.get("event") in ("stop_placed",) and str(r.get("parent")) == order_id]
+    moves = [r for r in log if r.get("event") == "stop_moved" and str(r.get("parent")) == order_id]
+    exits = [r for r in log if r.get("event") in ("target_exit",) and str(r.get("parent")) == order_id]
+    stop_o = book.get(str(stop_ev[-1]["order_id"])) if stop_ev else None
+    exit_o = book.get(str(exits[-1]["order_id"])) if exits else None
+    pos = next((p for p in v.get("positions", []) if str(p["token"]) == str(plan.get("token"))), None)
+    side = plan.get("side", "B")
+    ltp = v.get("ltps", {}).get(str(plan.get("token"))) or (pos and pos["ltp"])
+    filled = entry["filled"] if entry else 0
+    fill_px = entry["avg"] if entry and entry["avg"] else Decimal(str(plan["entry"]))
+    status = ("resting" if entry and entry["pending"] and not filled else
+              "cancelled" if entry and entry["dead"] and not filled else
+              "open" if filled and pos and pos["qty"] != 0 else
+              "closed" if filled else "unknown")
+    live_pnl = None
+    if status == "open" and ltp:
+        q = min(filled, abs(pos["qty"]))
+        live_pnl = (Decimal(str(ltp)) - fill_px) * q * (1 if side == "B" else -1)
+    realised = None
+    if status == "closed" and pos and pos["buy_qty"] and pos["sell_qty"]:
+        q = min(pos["buy_qty"], pos["sell_qty"])
+        gross = (pos["sell_avg"] - pos["buy_avg"]) * q
+        realised = {"gross": gross, "charges": charges_mod.round_trip(pos["buy_avg"] * q, pos["sell_avg"] * q).total}
+        realised["net"] = realised["gross"] - realised["charges"]
+    return _j({
+        "order_id": order_id, "symbol": plan.get("symbol"), "side": side, "status": status,
+        "decided_by": plan.get("decided_by"), "call_id": plan.get("call_id"), "why": plan.get("why"),
+        "confidence": plan.get("confidence"), "placed_at": plan.get("ts"),
+        "plan": {k: plan.get(k) for k in ("qty", "order_type", "trigger", "entry", "stop", "target", "risk",
+                                          "costs", "gross_if_target", "net_if_target", "net_if_stop",
+                                          "position_value", "leverage", "ltp_at_placement")},
+        "entry_order": entry and {k: entry[k] for k in ("status", "qty", "filled", "avg", "price", "trigger", "time")},
+        "stop_order": stop_o and {k: stop_o[k] for k in ("id", "status", "trigger", "price", "qty")},
+        "stop_moves": [{k: r.get(k) for k in ("ts", "from", "to", "reason")} for r in moves],
+        "exit": exits and {**{k: exits[-1].get(k) for k in ("ts", "ltp", "target")},
+                           "order": exit_o and {k: exit_o[k] for k in ("status", "avg", "filled")}},
+        "ltp": ltp, "live_pnl": live_pnl, "realised": realised,
+    })
+
+
 def api_action(body: dict) -> dict:
     a = str(body.get("action") or "")
     if a == "halt":
@@ -1089,6 +1170,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(api_state())
             except Exception as exc:                    # noqa: BLE001
                 return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+        if path in ("/api/brain", "/api/brain/call", "/api/trade"):
+            day = (q.get("day") or [sess.now().strftime("%Y-%m-%d")])[0]
+            try:
+                datetime.strptime(day, "%Y-%m-%d")
+                if path == "/api/brain":
+                    return self._json(api_brain(day))
+                if path == "/api/brain/call":
+                    return self._json(api_brain_call(day, (q.get("id") or [""])[0]))
+                return self._json(api_trade(day, (q.get("id") or [""])[0]))
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"error": f"{type(exc).__name__}: {exc}"[:300]}, 500)
         if path == "/api/candles":
             try:
                 return self._json(api_candles((q.get("symbol") or ["NIFTYBEES"])[0]))
