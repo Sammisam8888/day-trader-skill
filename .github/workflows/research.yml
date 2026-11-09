@@ -37,6 +37,14 @@ jobs:
                    https://www.moneycontrol.com/rss/marketreports.xml https://www.livemint.com/rss/markets; do
             printf '%-70s ' "$u"; curl -s -o /dev/null -m 12 -A "Mozilla/5.0" -w "%{http_code}\n" "$u"
           done
+          echo "== Shoonya NFO search probe"
+          cd $R/indstocks && sudo bash -c 'set -a; . /etc/indstocks.env; set +a; python3 -c "
+          from shoonya import Shoonya
+          b = Shoonya()
+          for q in (\"NIFTY\", \"NIFTY CE\", \"NIFTY 17NOV\", \"NIFTY NOV CE\"):
+              rows = b.search(q, \"NFO\")
+              print(q, len(rows), [ (r.get(\"tsym\"), r.get(\"instname\"), r.get(\"optt\"), r.get(\"exd\")) for r in rows[:12]])
+          "' 2>&1 | tail -12
           echo "== sentiment snapshot"
           cd $R/indstocks && sudo bash -c "set -a; . /etc/indstocks.env; set +a; timeout 280 python3 sentiment.py --force --news --print" 2>&1 | tail -120
           echo "== backtest: long only vs both sides vs both + direction gate ($DAYS sessions)"
