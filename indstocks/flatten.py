@@ -57,6 +57,22 @@ def price_for(broker, inst, side: str, round_no: int) -> Decimal:
     return min(px, q["uc"]) if q["uc"] > 0 else px
 
 
+def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep) -> str:
+    """Exit one position now: clear its pending closing-side orders (the
+    stop), then a marketable limit for the whole quantity. Either side."""
+    inst = broker.instrument_for(pos)
+    side = "S" if pos["qty"] > 0 else "B"
+    for o in broker.orders():
+        if o["token"] == pos["token"] and o["pending"] and o["side"] == side:
+            try:
+                broker.cancel(o["id"])
+            except ShoonyaError:
+                pass
+    sleep(0.5)
+    return broker.place(inst, side=side, qty=abs(pos["qty"]), price=broker.marketable(inst, side),
+                        remarks=remarks[:60])
+
+
 def run(broker=None, *, now=None, sleep=time.sleep) -> int:
     now = now or sess.now()
     session = sess.session_for(now)

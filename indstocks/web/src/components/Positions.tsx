@@ -6,16 +6,18 @@ import { Badge, Btn, Card, Empty, Flash } from "../ui";
 /** Where LTP sits between stop and target, as a bar with an entry tick. */
 function Ladder({ p }: { p: Position }) {
   if (p.stop == null || p.target == null) return null;
+  // left = stop, right = target, for longs and shorts alike
   const lo = n(p.stop), hi = n(p.target), span = hi - lo;
-  if (!(span > 0)) return null;
+  if (!span) return null;
   const at = (x: number) => Math.min(100, Math.max(0, ((x - lo) / span) * 100));
   const ltp = at(n(p.ltp)), entry = at(n(p.avg));
+  const winning = p.qty > 0 ? n(p.ltp) >= n(p.avg) : n(p.ltp) <= n(p.avg);
   return (
     <div className="mt-3">
       <div className="relative h-2 rounded-full bg-gradient-to-r from-down/40 via-line-2 to-up/40">
         <div className="absolute top-1/2 h-3 w-px -translate-y-1/2 bg-dim" style={{ left: `${entry}%` }} title="entry" />
         <div className={clsx("absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg shadow",
-          n(p.ltp) >= n(p.avg) ? "bg-up" : "bg-down")} style={{ left: `${ltp}%` }} title="LTP" />
+          winning ? "bg-up" : "bg-down")} style={{ left: `${ltp}%` }} title="LTP" />
       </div>
       <div className="num mt-1.5 flex justify-between text-[11px]">
         <span className="text-down">stop {price(p.stop)}{p.stop_live ? "" : " (planned)"}</span>

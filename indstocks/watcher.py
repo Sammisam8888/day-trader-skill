@@ -55,10 +55,12 @@ def alerts(broker, now) -> list:
         return [("LOGIN", "Shoonya session ended. Log in from the dashboard.")]
     except ShoonyaError as exc:
         return [("ERROR", f"broker unreadable: {exc}")]
-    pending_sell = {o["token"] for o in orders if o["pending"] and o["side"] == "S"}
+    pending = {(o["token"], o["side"]) for o in orders if o["pending"]}
     for p in positions:
-        if p["qty"] > 0 and p["token"] not in pending_sell and now < session.flat_by:
-            out.append(("UNPROTECTED", f"{p['symbol']} x{p['qty']} has no stop at the exchange"))
+        closing = "S" if p["qty"] > 0 else "B"
+        if (p["token"], closing) not in pending and now < session.flat_by:
+            out.append(("UNPROTECTED", f"{p['symbol']} {'long' if p['qty'] > 0 else 'short'} "
+                                       f"{abs(p['qty'])} has no stop at the exchange"))
         if now >= session.flat_by + timedelta(minutes=8):
             out.append(("NEAR CLOSE", f"{p['symbol']} x{p['qty']} still open after the flatten"))
     return out

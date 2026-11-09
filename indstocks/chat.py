@@ -191,26 +191,19 @@ def _match(positions: list, symbol: str):
 
 
 def act_sell(broker, symbol: str, qty: int | None = None) -> str:
-    """Exit an intraday long: cancel its pending sells (the stop), then a
+    """Exit an intraday position, long or short: clear its stop, then a
     marketable limit for the quantity."""
-    p = _match([x for x in broker.positions() if x["qty"] > 0], symbol)
+    p = _match([x for x in broker.positions() if x["qty"] != 0], symbol)
     if not p:
         return f"No open intraday position matching {symbol}."
-    n = min(qty or p["qty"], p["qty"])
-    for o in broker.orders():
-        if o["pending"] and o["side"] == "S" and o["token"] == p["token"]:
-            try:
-                broker.cancel(o["id"])
-            except ShoonyaError:
-                pass
-    _sleep(1)
-    inst = broker.instrument_for(p)
-    px = broker.marketable(inst, "S")
-    oid = broker.place(inst, side="S", qty=n, price=px, remarks=f"chat/{p['symbol']}")
-    common.log("chat", {"event": "chat_sell", "symbol": p["symbol"], "qty": n,
-                        "price": str(px), "order_id": oid})
-    left = p["qty"] - n
-    return (f"Selling {p['symbol']} x{n} at limit {px} (order {oid})."
+    n = min(qty or abs(p["qty"]), abs(p["qty"]))
+    import flatten
+    oid = flatten.close_position(broker, {**p, "qty": n if p["qty"] > 0 else -n},
+                                 remarks=f"chat/{p['symbol']}", sleep=_sleep)
+    common.log("chat", {"event": "chat_sell", "symbol": p["symbol"], "qty": n, "order_id": oid})
+    left = abs(p["qty"]) - n
+    verb = "Selling" if p["qty"] > 0 else "Buying back"
+    return (f"{verb} {p['symbol']} x{n} with a marketable limit (order {oid})."
             + (f" {left} left; the fill monitor will re-protect them." if left else ""))
 
 
@@ -319,7 +312,7 @@ def handle_command(text: str, client) -> str | None:
     if re.fullmatch(r"(cancel|cancel all|cancel all orders|cancel everything|pull all orders)\b.*", t):
         return act_cancel_all(client)
     if re.fullmatch(r"(sell|exit|close|flatten)\s*(all|everything)?", t):
-        msgs = [act_sell(client, p["symbol"]) for p in client.positions() if p["qty"] > 0]
+        msgs = [act_sell(client, p["symbol"]) for p in client.positions() if p["qty"] != 0]
         return "\n".join(msgs) or "Nothing open to sell."
     m = re.fullmatch(r"(?:sell|exit|close)\s+(?:(\d+)\s+)?([a-z&\-\. ]+?)(?:\s+(\d+))?", t)
     if m:

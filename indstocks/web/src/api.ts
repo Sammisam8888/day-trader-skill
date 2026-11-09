@@ -16,6 +16,7 @@ export interface Position {
 export interface Plan {
   why?: string; stop?: string; target?: string; risk?: string; gross_if_target?: string;
   costs?: string; net_if_target?: string; position_value?: string; leverage?: string;
+  decided_by?: string; confidence?: number;
 }
 export interface Order {
   id: string; symbol: string; token: string; side: "B" | "S"; type: string;
