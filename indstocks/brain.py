@@ -145,6 +145,7 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
                     "shorts_allowed": allow_short()},
         "direction": {"market": direction["market"],
                       "stocks": {s: {"score": x["score"], "state": x["state"]} for s, x in trends.items()}},
+        "sentiment": sentiment_view(now),
         "positions": [position_view(p, orders, ours, adj, limits) for p in held],
         "resting_entries": [{"order_id": o["id"], "symbol": ours[o["id"]]["symbol"],
                              "side": "BUY" if o["side"] == "B" else "SELL", "type": o["type"],
@@ -182,6 +183,14 @@ double, plus breadth). It is a fact, not a forecast, and the code enforces it:
   one scoring down). A trade against a stock's own clear trend is refused.
 - FORMING (before ~09:30): resting opening-range triggers either way are fine; they are re-checked.
 If you hold a position against the current direction, consider tightening its stop or exiting.
+
+SENTIMENT SECOND. STATE.sentiment (may be null) holds India VIX, the Nifty option-chain put/call
+OI ratio with the call wall (resistance) and put wall (support), FII/DII flows, today's events and
+a news read. It is context, weaker than price. Code applies it: results-day stocks and stocks
+with material news against your side are refused, no entries inside a macro event window,
+half size against a clear sentiment bias, smaller size when VIX is high. Use the walls as
+levels: targets short of the opposite wall, and be wary of shorting into the put wall or buying
+into the call wall.
 
 Your job each scan: look at every market, then decide. Most scans the right answer is no new
 entry. Prefer clean structure (opening-range breaks/breakdowns, VWAP reclaims/rejections,
@@ -224,6 +233,25 @@ def find_claude() -> Optional[str]:
     return chat.find_claude()
 
 
+def run_cli(prompt: str, timeout: int = TIMEOUT) -> str:
+    """One `claude -p` call with no tools: text in, text out."""
+    exe = find_claude()
+    if not exe:
+        raise RuntimeError("claude CLI not found on this box")
+    cmd = ["sudo", "-u", CLI_USER, "-H", exe, "-p", "--output-format", "json", "--tools", ""]
+    model = common.setting("TRADER_BRAIN_MODEL")
+    if model:
+        cmd[6:6] = ["--model", model]
+    r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout,
+                       cwd=f"/home/{CLI_USER}")
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout)[-300:])
+    try:
+        return json.loads(r.stdout).get("result") or ""
+    except ValueError:
+        return r.stdout
+
+
 def ask_claude(ctx: dict, limits, run: Optional[Callable] = None, transcript: Optional[dict] = None) -> dict:
     """Ask Claude. `transcript` (if given) is filled with the exact prompt,
     the raw reply and the latency, even when the reply cannot be parsed."""
@@ -235,27 +263,35 @@ def ask_claude(ctx: dict, limits, run: Optional[Callable] = None, transcript: Op
     prompt += "\n\nSTATE:\n" + json.dumps(ctx, separators=(",", ":"))
     transcript["prompt"] = prompt
     t0 = _t.monotonic()
-    if run is None:
-        exe = find_claude()
-        if not exe:
-            raise RuntimeError("claude CLI not found on this box")
-        cmd = ["sudo", "-u", CLI_USER, "-H", exe, "-p", "--output-format", "json", "--tools", ""]
-        model = common.setting("TRADER_BRAIN_MODEL")
-        if model:
-            cmd[6:6] = ["--model", model]
-        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=TIMEOUT,
-                           cwd=f"/home/{CLI_USER}")
-        if r.returncode != 0:
-            raise RuntimeError((r.stderr or r.stdout)[-300:])
-        try:
-            raw = json.loads(r.stdout).get("result") or ""
-        except ValueError:
-            raw = r.stdout
-    else:
-        raw = run(prompt)
+    raw = (run or run_cli)(prompt)
     transcript["raw"] = raw
     transcript["latency_s"] = round(_t.monotonic() - t0, 1)
     return parse(raw)
+
+
+def parse_obj(raw: str) -> dict:
+    """The first-to-last brace span of a reply, as a JSON object."""
+    s = raw.strip()
+    a, b = s.find("{"), s.rfind("}")
+    if a < 0 or b < 0:
+        raise ValueError(f"no JSON in reply: {raw[:160]!r}")
+    out = json.loads(s[a:b + 1])
+    if not isinstance(out, dict):
+        raise ValueError("reply is not a JSON object")
+    return out
+
+
+def sentiment_view(now) -> Optional[dict]:
+    import sentiment
+    snap = sentiment.load(now)
+    if not snap:
+        return None
+    pos = snap.get("positioning") or {}
+    return {"as_of": snap["ts"][11:16], "tilt": snap["tilt"],
+            "news": (snap.get("news") or {}).get("market"),
+            "stock_news": (snap.get("news") or {}).get("stocks"),
+            "vix": pos.get("vix"), "nifty": pos.get("nifty"), "options": pos.get("options"),
+            "flows": snap.get("flows"), "events": snap.get("events")}
 
 
 def parse(raw: str) -> dict:
@@ -293,6 +329,10 @@ def rules(ctx: dict, insts: dict, session) -> dict:
             continue
         for side in ("BUY", "SELL") if allow_short() else ("BUY",):
             if (sym, side) in resting or regime.check(side, sym, ctx.get("direction")):
+                continue
+            import sentiment
+            if sentiment.check(side, sym, sentiment.load(), sess.now(),
+                               ((ctx.get("direction") or {}).get("market") or {}).get("state"))[0]:
                 continue
             try:
                 p = strat.plan_trigger_exit(hi, lo, inst.tick) if side == "BUY" else strat.plan_breakdown(hi, lo, inst.tick)

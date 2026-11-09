@@ -86,12 +86,13 @@ jobs:
             sudo rm -f "/etc/systemd/system/$u"
           done
           for u in auto.service auto.timer flatten.service flatten.timer watch.service \
-                   watch.timer fillmonitor.service dashboard.service login.service login.timer; do
+                   watch.timer fillmonitor.service dashboard.service login.service login.timer \
+                   sentiment.service sentiment.timer; do
             sudo cp "scripts/$u" "/etc/systemd/system/$u"
           done
           sudo rm -rf /etc/systemd/system/auto.timer.d
           sudo systemctl daemon-reload
-          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer >/dev/null
+          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer >/dev/null
           for unit in dashboard fillmonitor; do
             sudo systemctl enable "$unit" >/dev/null
             sudo systemctl restart "$unit"

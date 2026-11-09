@@ -1,0 +1,10 @@
+[Unit]
+Description=Market sentiment: VIX, option chain, flows, events, news read
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/sentiment.py
+TimeoutStartSec=300
+User=root

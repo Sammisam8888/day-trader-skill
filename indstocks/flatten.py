@@ -169,9 +169,37 @@ def run(broker=None, *, now=None, sleep=time.sleep) -> int:
              "charges": str(summ["charges"]), "trades": len(trades),
              "wins": sum(1 for x in trades if x["net"] > 0),
              "detail": [{k: str(v) for k, v in x.items()} for x in trades]})
+        record_results(trades, broker.orders())
     except ShoonyaError:
         pass
     return 1 if failed else 0
+
+
+def alignment(side: str, bias) -> str:
+    """Did the trade go with the sentiment bias at the time it was placed?"""
+    try:
+        b = float(bias)
+    except (TypeError, ValueError):
+        return "unknown"
+    if abs(b) < 0.3:
+        return "neutral"
+    return "with" if (b > 0) == (side == "B") else "against"
+
+
+def record_results(trades: list, orders: list) -> None:
+    """One trade_result per closed symbol, carrying what the system believed
+    when it entered (direction, sentiment), so the signals can be scored."""
+    filled = {o["id"] for o in orders if o["filled"] > 0}
+    placed = [r for r in common.events("placed") if str(r.get("order_id")) in filled]
+    for tr in trades:
+        p = next((r for r in placed if r.get("symbol") == tr["symbol"]), None)
+        if not p:
+            continue
+        log({"event": "trade_result", "symbol": tr["symbol"], "side": p.get("side", "B"),
+             "net": str(tr["net"]), "win": tr["net"] > 0, "order_id": p.get("order_id"),
+             "decided_by": p.get("decided_by"), "direction": p.get("direction"),
+             "sentiment_bias": p.get("sentiment_bias"), "size_mult": p.get("size_mult"),
+             "sentiment": alignment(p.get("side", "B"), p.get("sentiment_bias"))})
 
 
 if __name__ == "__main__":

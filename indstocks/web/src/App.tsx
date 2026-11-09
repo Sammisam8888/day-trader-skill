@@ -1,8 +1,9 @@
-import { Activity as ActivityIcon, Bot, LayoutDashboard, ListOrdered, LogIn, MessageSquare, Pause, Play, Settings2 } from "lucide-react";
+import { Activity as ActivityIcon, Bot, Gauge, LayoutDashboard, ListOrdered, LogIn, MessageSquare, Pause, Play, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { act, getState, type Order, type Position, type State } from "./api";
 import Activity from "./components/Activity";
 import Brain from "./components/Brain";
+import Market from "./components/Market";
 import TradeDrawer from "./components/TradeDrawer";
 import Blotter, { ConfirmCancel } from "./components/Blotter";
 import Chat from "./components/Chat";
@@ -14,9 +15,10 @@ import { ClosedTrades, Positions } from "./components/Positions";
 import { clsx, price } from "./fmt";
 import { Badge, Btn, Card, Dot, Flash } from "./ui";
 
-type Tab = "overview" | "claude" | "orders" | "activity" | "chat";
+type Tab = "overview" | "market" | "claude" | "orders" | "activity" | "chat";
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <LayoutDashboard size={18} /> },
+  { id: "market", label: "Market", icon: <Gauge size={18} /> },
   { id: "claude", label: "Claude", icon: <Bot size={18} /> },
   { id: "orders", label: "Orders", icon: <ListOrdered size={18} /> },
   { id: "activity", label: "Activity", icon: <ActivityIcon size={18} /> },
@@ -185,6 +187,7 @@ export default function App() {
               </div>
             </>
           )}
+          {tab === "market" && <Market />}
           {tab === "claude" && <Brain focus={focusCall} onTrade={(day, id) => setTrade({ day, id })} />}
           {tab === "orders" && <Blotter orders={s.orders} onCancel={setConfirm} />}
           {tab === "activity" && <Activity items={s.decisions} />}
@@ -192,7 +195,7 @@ export default function App() {
         </main>
       )}
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-line bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t border-line bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden">
         {TABS.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} className={clsx("flex flex-col items-center gap-0.5 py-2.5 text-[11px]", tab === t.id ? "text-info" : "text-faint")}>
             {t.icon}{t.label}
