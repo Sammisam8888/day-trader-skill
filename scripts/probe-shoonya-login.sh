@@ -10,26 +10,21 @@ curl -sS -A "$UA" "$B/investor-entry-level/login" -o "$D/p.html"
 MAIN=$(grep -oE '/OAuthlogin/assets/index-[a-z0-9]+\.js' "$D/p.html" | head -1)
 curl -sS -A "$UA" "https://api.shoonya.com$MAIN" -o "$D/main.js"
 echo "== config files referenced"; grep -oE '"[^"]*\.json"' "$D/main.js" | sort -u | head
-for chunk in $(grep -oE '\./(Login|Auth)-[a-z0-9]+\.js' "$D/main.js" | sort -u); do
-  curl -sS -A "$UA" "$B/assets/${chunk#./}" -o "$D/c.js"
-  echo; echo "==== $chunk ($(wc -c < "$D/c.js") bytes)"
-  python3 - "$D/c.js" <<'PY'
+LOGIN=$(grep -oE '\./Login-[a-z0-9]+\.js' "$D/main.js" | head -1)
+curl -sS -A "$UA" "$B/assets/${LOGIN#./}" -o "$D/c.js"
+python3 - "$D/c.js" "$D/main.js" <<'PY2'
 import re, sys
 s = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-for kw in ("GetAuthCode", "QuickAuth", "pwd", "factor2", "sha256", "SHA256", "encrypt", "otp", "apkversion",
-           "source", "imei", "vc", "appkey", "redirect", "code", "post(", "fetch("):
-    for m in list(re.finditer(re.escape(kw), s))[:3]:
-        a, b = max(0, m.start() - 220), min(len(s), m.end() + 260)
-        print(f"--- {kw} @{m.start()}: ...{s[a:b]}...")
-PY
-done
-echo; echo "==== main.js around wcApi / GetAuthCode / post helper"
-python3 - "$D/main.js" <<'PY'
-import re, sys
-s = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-for kw in ("wcApi", "GetAuthCode", "jData", "jKey", "NorenWClient", "QuickAuth", "sha256", "createHash", "encryptotp"):
-    for m in list(re.finditer(re.escape(kw), s))[:3]:
-        a, b = max(0, m.start() - 200), min(len(s), m.end() + 240)
-        print(f"--- {kw} @{m.start()}: ...{s[a:b]}...")
-PY
+m = open(sys.argv[2], encoding="utf-8", errors="replace").read()
+print("== import header:", s[:700])
+i = s.find("let r={app_key:")
+print("== after QuickAuth Ok:", s[i:i + 1500])
+for name in ("X", "ft", "gt", "ut"):
+    for mm in list(re.finditer(r"[,;\s(]" + name + r"=", s))[:2]:
+        print(f"== def {name}:", s[mm.start():mm.start() + 400])
+k = m.find("getAuthCode")
+print("== main getAuthCode uses:", [m[x.start() - 300:x.start() + 300] for x in re.finditer("getAuthCode", m)][:3])
+j = m.find("async postOAuth")
+print("== postOAuth:", m[j:j + 700])
+PY2
 rm -rf "$D"
