@@ -262,6 +262,10 @@ def find_claude() -> Optional[str]:
     return chat.find_claude()
 
 
+LEAN_SYSTEM = ("You are the decision engine of an automated NSE intraday trading system. Follow the "
+               "instructions in the user message exactly and reply only in the format it asks for.")
+
+
 def run_cli(prompt: str, timeout: int = TIMEOUT, tools: str = "") -> str:
     """One `claude -p` call: text in, text out. No tools unless `tools` names
     read-only ones (the ops review may search the web to check a calendar)."""
@@ -274,10 +278,28 @@ def run_cli(prompt: str, timeout: int = TIMEOUT, tools: str = "") -> str:
     model = common.setting("TRADER_BRAIN_MODEL")
     if model:
         cmd[6:6] = ["--model", model]
+    full = list(cmd)
+    if common.setting("TRADER_CLI_LEAN", "true").lower() in ("1", "true", "yes"):
+        # Claude Code's own coding-agent context (~70k tokens: its system prompt,
+        # skills, MCP servers, CLAUDE.md) is useless here and burns the plan's
+        # usage on every scan. Keep the subscription login; drop the rest.
+        cmd += ["--system-prompt", LEAN_SYSTEM, "--strict-mcp-config", "--disable-slash-commands",
+                "--setting-sources", "user"]
     r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout,
                        cwd=f"/home/{CLI_USER}")
+    if r.returncode != 0 and cmd != full:
+        common.log("brain", {"event": "lean_cli_failed", "reason": (r.stderr or r.stdout)[-200:]})
+        r = subprocess.run(full, input=prompt, capture_output=True, text=True, timeout=timeout,
+                           cwd=f"/home/{CLI_USER}")
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout)[-300:])
+    try:
+        u = json.loads(r.stdout).get("usage") or {}
+        common.log("brain", {"event": "cli_usage", "input": u.get("input_tokens"),
+                             "cache_write": u.get("cache_creation_input_tokens"),
+                             "cache_read": u.get("cache_read_input_tokens"), "output": u.get("output_tokens")})
+    except (ValueError, AttributeError):
+        pass
     try:
         return json.loads(r.stdout).get("result") or ""
     except ValueError:
