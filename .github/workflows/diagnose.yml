@@ -22,8 +22,8 @@ jobs:
         run: |
           ssh -o BatchMode=yes "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'REMOTE'
           set +e
-          echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer fillmonitor dashboard
-          echo "== timers"; systemctl list-timers --no-pager --no-legend auto.timer flatten.timer watch.timer
+          echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer fillmonitor dashboard
+          echo "== timers"; systemctl list-timers --no-pager --no-legend auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer; echo "== calendar today"; cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import session as s; x=s.session_for(s.now().replace(hour=10)); print(s.now().date(), 'TRADING' if x else 'CLOSED', x and (x.open.time(), x.last_entry.time(), x.flat_by.time()))"
           echo "== halt"; cat /etc/indstocks.halt 2>/dev/null || echo "(not halted)"
           echo "== env (TRADER_*)"; sudo grep '^TRADER_' /etc/indstocks.env
           echo "== claude cli"; sudo -u ubuntu -H bash -lc 'command -v claude; claude --version' 2>&1
