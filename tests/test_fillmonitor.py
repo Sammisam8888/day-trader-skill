@@ -317,3 +317,25 @@ class NoAutoTrail(unittest.TestCase):
                                SENSEX.token: {"ltp": "280.90", "uc": "300", "lc": "260"}})
         fm.tick(b, AT, {})
         self.assertEqual(b.cancelled, ["R1"])
+
+
+class OrphanStop(unittest.TestCase):
+    def test_a_stop_left_after_a_manual_close_is_cancelled(self):
+        reset()
+        common.log("fill", {"event": "stop_placed", "parent": "P1", "order_id": "S1", "symbol": "NIFTYBEES",
+                            "side": "B", "qty": 5, "trigger": "290"})
+        b = FakeBroker(orders=[order("S1", NIFTY, "B", trigger="290", price="290.5")],
+                       quotes={NIFTY.token: {"ltp": "285", "uc": "300", "lc": "260"}})
+        fm.tick(b, AT, {})
+        self.assertIn("S1", b.cancelled)
+        self.assertTrue(common.events("orphan_stop_cancelled", DAY.isoformat()))
+
+    def test_a_stop_still_protecting_a_position_stays(self):
+        reset()
+        common.log("fill", {"event": "stop_placed", "parent": "P1", "order_id": "S1", "symbol": "NIFTYBEES",
+                            "side": "B", "qty": 5, "trigger": "290"})
+        b = FakeBroker(positions=[position(NIFTY, -5, "286")],
+                       orders=[order("S1", NIFTY, "B", trigger="290", price="290.5")],
+                       quotes={NIFTY.token: {"ltp": "285", "uc": "300", "lc": "260"}})
+        fm.tick(b, AT, {})
+        self.assertNotIn("S1", b.cancelled)
