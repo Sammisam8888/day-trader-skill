@@ -113,17 +113,41 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
         views.append(symbol_view(sym, inst, candles, q, session))
     trends = {s: regime.stock_trend(c, session.day, _bars([x for x in c if x.opens_at.date() == session.day], 15))
               for s, (_, c, _) in insts.items()}
+    import daymode
     import setups as playbook
     import strategy_book
-    book = strategy_book.load()
+    from backtest import invert
+    book = strategy_book.load() if daymode.use_book() else None
+    playbook.R_MULT = daymode.target_r()
+    allowed = daymode.allowed_setups()
+    held_now = [p for p in positions if p["qty"] != 0]
+    day_pnl = sum((p["realised"] for p in positions), Decimal(0)) + sum((p["unrealised"] for p in positions), Decimal(0))
+    try:
+        mode = daymode.status(orders, placements, insts, now, day_pnl)
+    except Exception as exc:                            # noqa: BLE001
+        mode = {"flipped": False, "halted": None, "error": str(exc)[:200]}
     for v in views:
         if v.get("symbol") in trends:
             v["trend"] = trends[v["symbol"]]
             inst_, c_, _ = insts[v["symbol"]]
             try:
-                v["setups"] = strategy_book.apply(
-                    playbook.detect(c_, session.day, inst_.tick, trends[v["symbol"]].get("score", 0.0), now=now),
-                    inst_.tick, book)
+                found = playbook.detect(c_, session.day, inst_.tick, trends[v["symbol"]].get("score", 0.0), now=now)
+                if allowed:
+                    found = [f for f in found if f["setup"] in allowed]
+                shown = strategy_book.apply(found, inst_.tick, book) if book else [{**f, "edge": "untested"} for f in found]
+                if mode.get("flipped"):
+                    tr = playbook.R_MULT
+                    flips = []
+                    for f in shown:
+                        inv = invert(f, inst_.tick)
+                        e, s_ = Decimal(inv["entry"]), Decimal(inv["stop"])
+                        r = abs(e - s_)
+                        tgt = e + r * tr if inv["side"] == "BUY" else e - r * tr
+                        flips.append({**inv, "setup": f["setup"] + daymode.FLIP_SUFFIX,
+                                      "target": str(to_tick(tgt, inst_.tick, mode="down" if inv["side"] == "BUY" else "up")),
+                                      "why": f"FLIP of {f['setup']} {f['side']}: {f['why']}"})
+                    shown = flips
+                v["setups"] = shown
             except Exception:                           # noqa: BLE001
                 v["setups"] = []
     direction = {"market": regime.market(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
@@ -156,6 +180,8 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
                     "extra_trades": _extra_view(positions, orders, placements, limits),
                     "max_entries_per_symbol": int(common.setting("TRADER_MAX_ENTRIES_PER_SYMBOL", "2")),
                     "shorts_allowed": allow_short()},
+        "day_mode": mode,
+        "no_entry_window": daymode.no_entry_window(now),
         "leaders": playbook.rank(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
         "direction": {"market": direction["market"],
                       "stocks": {s: {"score": x["score"], "state": x["state"]} for s, x in trends.items()}},
@@ -221,6 +247,12 @@ trigger entry, a stop where the idea is wrong and a 2R target:
 Only setups that have made money after charges over the last weeks are listed (the strategy book,
 rebuilt every evening; "edge" shows its record). A name ending in _fade is the exact opposite of
 a setup that has been losing: same price, other side. Prefer setups with the stronger edge.
+DAY MODE (STATE.day_mode, enforced by code). After the day's losing trades reach stop_after, no
+new entries. If flip is enabled and, by then, the opposite of today's trades (a paper mirror of
+every fill) is winning, the day FLIPS instead: the listed setups become their exact opposites
+(named *_flip) and only those may be entered: today the market is moving against your reads.
+After flip_halt_after losing flips the day stops. STATE.no_entry_window, when set, means no new
+entries right now (manage open positions as usual).
 STATE.leaders names the strongest stocks (long candidates) and the weakest (short candidates).
 Longs: buy the strongest names in an UP or MIXED tape. Shorts: sell the weakest names in a DOWN or
 MIXED tape. Prefer a listed setup and name it in "setup"; you may tighten its stop to structure or

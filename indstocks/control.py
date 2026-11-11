@@ -483,7 +483,12 @@ def state_view() -> dict:
                    "special": f"{sp[0]:%H:%M}-{sp[3]:%H:%M}" if sp else None,
                    "events": [e["what"] for e in calendar_events(d)]})
     cal = read_json(sess.CALENDAR_FILE)
-    return {"halt": t.get("halt"), "risk": t.get("risk") or {}, "raised": t.get("raised") or {},
+    modes = common.events("day_mode")
+    flips = common.events("flip_on")
+    dm = dict(modes[-1]) if modes else None
+    if dm is not None:
+        dm["flipped_at"] = flips[0]["ts"][11:16] if flips else None
+    return {"day_mode": dm, "halt": t.get("halt"), "risk": t.get("risk") or {}, "raised": t.get("raised") or {},
             "history": t.get("history") or [], "upcoming": up, "nse_synced": cal.get("nse_synced"),
             "ceilings": {f: (str(ceiling(f)) if ceiling(f) is not None else None) for f in RISK},
             "base": {f: str(base(f)) for f in RISK}}

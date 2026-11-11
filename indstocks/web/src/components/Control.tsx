@@ -24,6 +24,15 @@ export default function Control() {
     <div className="grid gap-4 lg:grid-cols-5">
       <Card className="lg:col-span-3" title={<span className="inline-flex items-center gap-2"><Wrench size={14} />Claude's control for today</span>}
         right={c.halt ? <Badge tone="down">HALTED by {c.halt.by}</Badge> : <Badge tone="up">trading allowed</Badge>}>
+        {c.day_mode && (
+          <div className={clsx("mb-3 flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm",
+            c.day_mode.halted ? "border-down/30 bg-down-bg" : c.day_mode.flipped ? "border-warn/30 bg-warn-bg" : "border-line bg-panel-2/60")}>
+            <Badge tone={c.day_mode.halted ? "down" : c.day_mode.flipped ? "warn" : "up"}>
+              {c.day_mode.halted ? "DAY STOPPED" : c.day_mode.flipped ? `FLIPPED ${c.day_mode.flipped_at ?? ""}` : "NORMAL"}</Badge>
+            <span className="text-dim">losing trades {c.day_mode.losers.normal}{c.day_mode.flipped ? ` · losing flips ${c.day_mode.losers.flip}/${c.day_mode.flip_halt_after}` : ` / ${c.day_mode.stop_after}`}</span>
+            <span className="text-dim">· opposite side (paper mirror) <span className={Number(c.day_mode.mirror_pnl) >= 0 ? "text-up" : "text-down"}>{Number(c.day_mode.mirror_pnl) >= 0 ? "+" : ""}{Number(c.day_mode.mirror_pnl).toFixed(0)}</span></span>
+            {c.day_mode.halted && <span className="w-full text-xs text-down">{c.day_mode.halted}</span>}
+          </div>)}
         {c.halt && (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-down/30 bg-down-bg p-3 text-sm">
             <span>{c.halt.reason}</span><Btn variant="ghost" onClick={() => run("control_resume")}>Resume</Btn>
