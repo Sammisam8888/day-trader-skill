@@ -243,6 +243,24 @@ def tick(broker, now: datetime, state: dict) -> dict:
             except ShoonyaError as exc:
                 log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})
 
+    # 3b. a stop whose position is gone (closed by hand, or by Claude's exit)
+    #     must not sit at the exchange: if it triggered it would open a new
+    #     position the other way.
+    for st in common.events("stop_placed"):
+        so = book.get(str(st.get("order_id")))
+        if not so or not so["pending"]:
+            continue
+        pos = held.get(str(so["token"]))
+        protects = pos is not None and ((pos["qty"] > 0 and so["side"] == "S") or (pos["qty"] < 0 and so["side"] == "B"))
+        if protects:
+            continue
+        try:
+            broker.cancel(so["id"])
+            log({"event": "orphan_stop_cancelled", "symbol": st.get("symbol"), "order_id": so["id"],
+                 "reason": "its position is closed"})
+        except ShoonyaError as exc:
+            log({"event": "cancel_failed", "order_id": so["id"], "reason": str(exc)[:200]})
+
     # 4. prune resting entries
     limits = common.limits()
     cancel_all = None
