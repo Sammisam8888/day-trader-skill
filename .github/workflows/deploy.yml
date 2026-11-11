@@ -87,12 +87,16 @@ jobs:
             done
             sudo touch /var/lib/indstocks/.profile-ceilings-v1
           fi
-          # Fewer, bigger trades (owner, 11 Nov 13:44): charges were half of gross.
-          if [ ! -f /var/lib/indstocks/.profile-bigger-trades-v1 ]; then
-            for kv in TRADER_MAX_CONCURRENT=2 TRADER_MIN_REWARD_TO_COST=4; do
+          # Aggressive v3 (owner, 11 Nov 13:46): more trades, profit-funded extra trades.
+          # Undoes the brief 2-slot / 4x-cost change.
+          if [ ! -f /var/lib/indstocks/.profile-aggressive-v3 ]; then
+            for kv in TRADER_STYLE=aggressive TRADER_MAX_CONCURRENT=4 TRADER_MIN_REWARD_TO_COST=2 \
+                      TRADER_MAX_TRADES=10 TRADER_MAX_TRADES_HARD=20 TRADER_PROFIT_GIVEBACK_PCT=50 \
+                      TRADER_MAX_ENTRIES_PER_SYMBOL=3 TRADER_MAX_RESTING=8 TRADER_LAST_ENTRY=14:45 \
+                      TRADER_CEIL_MAX_TRADES=20 TRADER_CEIL_MAX_CONCURRENT=5; do
               k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
             done
-            sudo touch /var/lib/indstocks/.profile-bigger-trades-v1
+            sudo touch /var/lib/indstocks/.profile-aggressive-v3 /var/lib/indstocks/.profile-last-entry-v1
           fi
           # Aggressive afternoon: entries until 14:30 (one time; edit the env file to change).
           if [ ! -f /var/lib/indstocks/.profile-last-entry-v1 ]; then
