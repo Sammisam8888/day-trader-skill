@@ -337,3 +337,31 @@ class AdjustedTargetView(unittest.TestCase):
         self.assertEqual(adj["P"]["target"], "1082.00")
         import inspect
         self.assertIn('if r.get("target"):', inspect.getsource(brain.build))
+
+
+class Floors(unittest.TestCase):
+    def setUp(self):
+        sess.now = lambda clock=None: AT
+        brain.find_claude = lambda: "/x/claude"
+
+    def test_a_trade_whose_net_at_target_is_too_small_is_refused(self):
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0", TRADER_MIN_NET_TARGET="5000")
+        b = broker()
+        autotrader.run(b, now=AT, decide=claude(enter()))
+        self.assertEqual(b.placed, [])
+        self.assertIn("net at target", ev("refused")[0]["reason"])
+
+    def test_the_setup_name_is_recorded_and_the_playbook_is_shown(self):
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0")
+        seen = {}
+        reply = json.dumps({"view": "", "decisions": [enter(setup="orb")]})
+        def run(p):
+            seen["p"] = p
+            return reply
+        b = broker()
+        autotrader.run(b, now=AT, decide=lambda *a, **k: brain.decide(*a, **k, run=run))
+        self.assertEqual(ev("placed")[0]["setup"], "orb")
+        state = json.loads(seen["p"].split("STATE:\n", 1)[1])
+        self.assertIn("setups", state["markets"][0])
+        self.assertIn("leaders", state)
+        self.assertIn("THE PLAYBOOK", seen["p"])

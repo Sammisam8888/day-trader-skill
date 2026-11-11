@@ -42,6 +42,8 @@ jobs:
           echo "== ops review (NSE calendar sync + Claude's verdict, with web search)"
           cd $R/indstocks && sudo bash -c "set -a; . /etc/indstocks.env; set +a; timeout 400 python3 ops.py" 2>&1 | tail -40
           echo "== calendar file"; sudo python3 -c "import json; d=json.load(open('/var/lib/indstocks/auto/control/calendar.json')); print(json.dumps({k: d[k] for k in d if k != 'nse_holidays'}, indent=1)); print({y: v for y, v in d.get('nse_holidays', {}).items()})"
+          echo "== playbook backtest: every setup, long and short ($DAYS sessions, Rs 26k per trade)"
+          sudo timeout 1500 bash $R/scripts/backtest-setups.sh "$DAYS" 2>&1 | tail -25
           echo "== backtest: long only vs both sides vs both + direction gate ($DAYS sessions)"
           sudo timeout 900 bash $R/scripts/backtest-sides.sh "$DAYS" 2>&1 | tail -20
           REMOTE

@@ -320,3 +320,120 @@ def report_sides(out: dict) -> str:
                      f"win {len(wins) / len(rs) * 100:3.0f}%  net {net:+8.0f}  per trade {net / len(rs):+6.1f}  "
                      f"profit factor {pf:.2f}  stop/target/flat {hows['stop']}/{hows['target']}/{hows['flatten']}")
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ the playbook, setup by setup
+
+def simulate_setups(day_candles: List[Candle], hist: List[Candle], session, tick: Decimal, *,
+                    last_entry: time, notional: Decimal, valid_bars: int = 6) -> List[dict]:
+    """Replay setups.detect() bar by bar (closed bars only). The first time each
+    (setup, side) appears for the symbol today it becomes a resting trigger,
+    valid for `valid_bars` bars; it is dropped if price crosses its stop first.
+    Filled trades exit at the stop, the 2R target, or the flatten. Stop first
+    when one bar touches both (conservative)."""
+    import regime
+    import setups as playbook
+    cutoff = datetime.combine(session.day, last_entry, tzinfo=sess.IST)
+    flat = datetime.combine(session.day, FLAT_AT, tzinfo=sess.IST)
+    seen, out = set(), []
+    for k in range(3, len(day_candles)):
+        bar_close = day_candles[k - 1].closes_at
+        if bar_close >= cutoff:
+            break
+        upto = day_candles[:k]
+        trend = regime.stock_trend(hist + upto, session.day, _bars15(upto)).get("score", 0.0)
+        for s in playbook.detect(upto, session.day, tick, trend):
+            key = (s["setup"], s["side"])
+            if key in seen:
+                continue
+            entry, stop, target = Decimal(s["entry"]), Decimal(s["stop"]), Decimal(s["target"])
+            long_ = s["side"] == "BUY"
+            fill_i = fill_px = None
+            for j in range(k, min(k + valid_bars, len(day_candles))):
+                c = day_candles[j]
+                if (long_ and c.low <= stop) or (not long_ and c.high >= stop):
+                    if not ((long_ and c.high >= entry) or (not long_ and c.low <= entry)):
+                        break                           # idea dead before it filled
+                if (long_ and c.high >= entry) or (not long_ and c.low <= entry):
+                    fill_i, fill_px = j, (max(entry, c.open) if long_ else min(entry, c.open))
+                    break
+            if fill_i is None:
+                continue
+            seen.add(key)                               # one filled trade per setup and side per day
+            qty = int(notional / fill_px)
+            if qty < 1:
+                continue
+            exit_px = how = None
+            for c in day_candles[fill_i:]:
+                if c.opens_at >= flat:
+                    exit_px, how = c.open, "flatten"
+                    break
+                if (long_ and c.low <= stop) or (not long_ and c.high >= stop):
+                    exit_px, how = stop, "stop"
+                    break
+                if (long_ and c.high >= target) or (not long_ and c.low <= target):
+                    exit_px, how = target, "target"
+                    break
+            if exit_px is None:
+                exit_px, how = day_candles[-1].close, "close"
+            gross = (exit_px - fill_px) * qty * (1 if long_ else -1)
+            buy, sell = (fill_px, exit_px) if long_ else (exit_px, fill_px)
+            cost = charges.round_trip(buy * qty, sell * qty).total
+            out.append({"setup": s["setup"], "side": s["side"], "how": how, "gross": gross,
+                        "net": gross - cost, "charges": cost, "value": fill_px * qty})
+    return out
+
+
+def run_setups(broker, symbols: List[str], days: int, last_entry: time,
+               notional: Decimal = Decimal("26000")) -> dict:
+    end = sess.now()
+    start = end - timedelta(days=int(days * 1.5) + 10)
+    results: List[dict] = []
+    n_days = set()
+    for sym in symbols:
+        try:
+            inst = broker.instrument(sym)
+        except KeyError:
+            continue
+        cs: List[Candle] = []
+        t0 = start
+        while t0 < end:
+            t1 = min(t0 + timedelta(days=7), end)
+            cs += broker.candles(inst.token, t0, t1, interval=5)
+            t0 = t1
+        byd = by_day(cs)
+        ds = sorted(byd)
+        for i, d in enumerate(ds[-days:]):
+            session = sess.session_for(datetime.combine(d, time(10, 0), tzinfo=sess.IST))
+            if session is None or session.special:
+                continue
+            n_days.add(d)
+            prev = [x for x in ds if x < d][-2:]
+            hist = [c for x in prev for c in byd[x]]
+            for r in simulate_setups(byd[d], hist, session, inst.tick, last_entry=last_entry, notional=notional):
+                results.append({**r, "symbol": sym, "day": d})
+    return {"results": results, "days": len(n_days), "notional": notional}
+
+
+def report_setups(out: dict) -> str:
+    rs = out["results"]
+    lines = [f"{out['days']} sessions, Rs {out['notional']} per trade, real charges, stop-first when a bar hits both", ""]
+    groups: Dict[tuple, list] = collections.defaultdict(list)
+    for r in rs:
+        groups[(r["setup"], r["side"])].append(r)
+    def row(name, g):
+        net = sum(x["net"] for x in g)
+        wins = [x for x in g if x["net"] > 0]
+        loss = -sum(x["net"] for x in g if x["net"] < 0)
+        pf = (sum(x["net"] for x in wins) / loss) if loss else Decimal("99")
+        fees = sum(x["charges"] for x in g)
+        return (f"{name:24s} trades {len(g):4d}  win {len(wins) / len(g) * 100:3.0f}%  net {net:+9.0f}  "
+                f"per trade {net / len(g):+7.1f}  PF {pf:5.2f}  charges {fees:7.0f}")
+    for key in sorted(groups):
+        lines.append(row(f"{key[0]} {'long' if key[1] == 'BUY' else 'short'}", groups[key]))
+    if rs:
+        lines.append("")
+        lines.append(row("ALL", rs))
+        best = [k for k, g in groups.items() if sum(x["net"] for x in g) > 0 and len(g) >= 10]
+        lines.append("positive with 10+ trades: " + (", ".join(f"{a} {'long' if b == 'BUY' else 'short'}" for a, b in sorted(best)) or "none"))
+    return "\n".join(lines)

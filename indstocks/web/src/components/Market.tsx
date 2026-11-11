@@ -133,13 +133,14 @@ export default function Market() {
         </>
       )}
       <Card title="Does it work? Closed trades, last 60 days">
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-6 md:grid-cols-3">
+          <ScoreTable title="by setup and side" rows={d.scorecard.setup ?? {}} labels={{}} />
           <ScoreTable title="vs sentiment at entry" rows={d.scorecard.sentiment}
             labels={{ with: "went with sentiment", against: "went against it", neutral: "sentiment neutral", unknown: "no sentiment" }} />
           <ScoreTable title="vs price direction at entry" rows={d.scorecard.direction}
             labels={{ UP: "market UP", DOWN: "market DOWN", MIXED: "market MIXED", FORMING: "before 09:30", unknown: "not recorded" }} />
         </div>
-        <p className="mt-3 text-xs text-faint">If trades that went with the sentiment do no better than the rest after a few weeks, the sentiment tilt is not earning its place and should be switched off.</p>
+        <p className="mt-3 text-xs text-faint">After a few weeks this shows which setups and sides actually make money after charges. Favour those and drop the rest.</p>
       </Card>
     </div>
   );

@@ -50,3 +50,15 @@ class Sides(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Playbook(unittest.TestCase):
+    def test_a_breakdown_short_is_replayed_to_its_target(self):
+        s = sess.session_for(datetime(2026, 11, 11, 10, 0, tzinfo=sess.IST))
+        path = [100.2, 99.8, 99.2, 98.5, 97.5, 97.0, 96.5, 96.0]
+        out = backtest.simulate_setups(day(path), [], s, D("0.01"), last_entry=time(12, 30), notional=D("26000"))
+        orb_short = [r for r in out if r["setup"] == "orb" and r["side"] == "SELL"]
+        self.assertEqual(len(orb_short), 1)
+        self.assertEqual(orb_short[0]["how"], "target")
+        self.assertGreater(orb_short[0]["net"], 0)
+        self.assertGreater(orb_short[0]["charges"], 0)
