@@ -1,0 +1,37 @@
+name: export-candles
+
+# Read-only: export the trading list's 5-minute candles from the box as an
+# artifact, for offline simulation. Market data only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "calendar days back"
+        default: "100"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write deploy key and pinned host key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Export
+        env:
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          case "$DAYS" in ''|*[!0-9]*) DAYS=100;; esac
+          ssh -o BatchMode=yes "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "sudo bash /opt/indstocks/day-trader-skill/scripts/export-candles.sh $DAYS" > candles.json.gz
+          ls -la candles.json.gz
+          gzip -t candles.json.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candles
+          path: candles.json.gz
+          retention-days: 3
