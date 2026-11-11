@@ -100,7 +100,7 @@ jobs:
           fi
           # Aggressive v4 (owner, 11 Nov 14:59): hands-off, more leverage, bigger targets, more trades.
           if [ ! -f /var/lib/indstocks/.profile-aggressive-v4 ]; then
-            for kv in TRADER_MAX_LEVERAGE=3.0 TRADER_CEIL_MAX_LEVERAGE=4.0 TRADER_MIN_RR=2.0 \
+            for kv in TRADER_MAX_LEVERAGE=4.0 TRADER_CEIL_MAX_LEVERAGE=5.0 TRADER_MIN_RR=2.0 \
                       TRADER_MAX_TRADES=15 TRADER_MAX_TRADES_HARD=25 TRADER_CEIL_MAX_TRADES=25; do
               k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
             done

@@ -87,14 +87,15 @@ def position_view(p: dict, orders: list, ours: dict, adj: dict, limits) -> dict:
     parent = next((oid for oid, r in ours.items() if str(r.get("token")) == str(p["token"])
                    and any(o["id"] == oid and o["filled"] > 0 for o in orders)), None)
     plan = ours.get(parent, {}) if parent else {}
-    target = (adj.get(parent) or {}).get("target") or plan.get("target")
+    key = parent or f"manual:{p['token']}"
+    target = (adj.get(key) or {}).get("target") or plan.get("target")
     qty = abs(p["qty"])
     risk_now = (abs(p["avg"] - stop) * qty) if stop is not None else None
     return {"symbol": p["symbol"], "side": "LONG" if p["qty"] > 0 else "SHORT", "qty": qty,
             "avg": str(p["avg"]), "ltp": str(p["ltp"]), "unrealised": str(p["unrealised"]),
             "stop": str(stop) if stop is not None else None, "target": target,
             "loss_if_stop_now": str(risk_now) if risk_now is not None else None,
-            "opened_by": "you" if not parent else "this system",
+            "opened_by": "the owner (manual)" if not parent else "this system",
             "plan_reason": plan.get("why")}
 
 
@@ -212,7 +213,11 @@ tighter stop means a bigger position and a wider stop a smaller one. size (0.25-
 Open positions are yours to manage every scan, with "adjust" (new stop and/or target) or "exit".
 Nothing trails for you: move the stop to breakeven once a trade has earned it, trail it behind
 structure as it runs, extend or pull in the target as momentum changes, and exit when the idea is
-broken. loss_if_stop_now shows what each current stop risks. To keep a plan as it is, send no
+broken. loss_if_stop_now shows what each current stop risks.
+Positions opened_by the owner (manual) are yours to manage too: the owner cannot watch every
+move. If one has no stop, give it one now with adjust (stop and target): the code places the stop
+at the exchange and exits at your target. Then trail it like your own trades. Until you adopt
+it, a manual position is only guarded by a fixed +1%/-0.5% rule. To keep a plan as it is, send no
 decision for it: an adjust that changes nothing is refused.
 
 Hard limits the code enforces (anything else is refused, so don't waste a decision):
