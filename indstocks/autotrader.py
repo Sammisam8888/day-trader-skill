@@ -132,17 +132,26 @@ def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, 
     book = {o["id"]: o for o in orders}
     plan = next((p for p in placements if str(p.get("token")) == str(pos["token"])
                  and book.get(str(p.get("order_id")), {}).get("filled", 0) > 0), None)
-    if not plan:
-        return "refused", f"adjust {sym}: not opened by this system (manual positions keep their % guard)"
+    manual = plan is None
     long_ = pos["qty"] > 0
     ltp = pos["ltp"]
     try:
         ltp = broker.quote(pos["token"])["ltp"] or ltp
     except ShoonyaError:
         pass
-    tick = Decimal(str(plan.get("tick") or "0.01"))
+    if manual:
+        # The owner's own position: Claude adopts it. Its first stop is placed
+        # at the exchange here; the owner's loss limits do not cap a stop on a
+        # trade the owner chose to take, but the stop must be on the losing side.
+        try:
+            tick = broker.instrument_for(pos).tick
+        except Exception:                               # noqa: BLE001
+            tick = Decimal("0.05")
+        parent = f"manual:{pos['token']}"
+    else:
+        tick = Decimal(str(plan.get("tick") or "0.01"))
+        parent = str(plan["order_id"])
     qty = abs(pos["qty"])
-    parent = str(plan["order_id"])
     stop_order = next((o for o in orders if o["pending"] and o["token"] == pos["token"]
                        and o["side"] == ("S" if long_ else "B")), None)
     new_stop = new_target = None
@@ -152,13 +161,16 @@ def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, 
         if long_ and new_stop >= ltp or (not long_ and new_stop <= ltp):
             problems.append(f"stop {new_stop} is not on the losing side of the price {ltp}")
         loss = (pos["avg"] - new_stop) * qty if long_ else (new_stop - pos["avg"]) * qty
-        if loss > limits.max_loss_per_trade:
-            problems.append(f"stop {new_stop} risks {loss:.0f}, over max loss per trade {limits.max_loss_per_trade}")
-        room = limits.daily_loss_limit + min(day_pnl, Decimal(0))
-        if loss > 0 and loss > room:
-            problems.append(f"stop {new_stop} risks {loss:.0f}, more than the {room:.0f} of loss room left today")
-        if stop_order is None:
-            problems.append("no stop order at the exchange to move (the fill monitor is placing one)")
+        if not manual:
+            if loss > limits.max_loss_per_trade:
+                problems.append(f"stop {new_stop} risks {loss:.0f}, over max loss per trade {limits.max_loss_per_trade}")
+            room = limits.daily_loss_limit + min(day_pnl, Decimal(0))
+            if loss > 0 and loss > room:
+                problems.append(f"stop {new_stop} risks {loss:.0f}, more than the {room:.0f} of loss room left today")
+            if stop_order is None:
+                problems.append("no stop order at the exchange to move (the fill monitor is placing one)")
+    elif manual and stop_order is None and d.get("target") is not None:
+        problems.append("a manual position needs a stop when Claude takes it over")
     if d.get("target") is not None:
         new_target = to_tick(Decimal(str(d["target"])), tick, mode="down" if long_ else "up")
         if long_ and new_target <= ltp or (not long_ and new_target >= ltp):
@@ -169,7 +181,19 @@ def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, 
         log({"event": "refused", "symbol": sym, "reason": "adjust: " + "; ".join(problems), "decider_reason": why})
         return "refused", "; ".join(problems)
     changes = []
-    if new_stop is not None and common.live():
+    if new_stop is not None and stop_order is None and common.live():
+        inst = broker.instrument_for(pos)
+        try:
+            oid = broker.place(inst, side="S" if long_ else "B", qty=qty,
+                               price=stop_limit(new_stop, tick, "S" if long_ else "B"), trigger=new_stop,
+                               remarks=f"stop/{sym}")
+        except ShoonyaError as exc:
+            log({"event": "stop_failed", "symbol": sym, "reason": str(exc)[:200]})
+            return "failed", f"stop order rejected: {exc}"[:300]
+        log({"event": "stop_placed", "parent": parent, "order_id": oid, "symbol": sym,
+             "side": "S" if long_ else "B", "qty": qty, "trigger": str(new_stop), "adopted": True})
+        changes.append(f"took over your {sym}: stop {new_stop} placed at the exchange")
+    elif new_stop is not None and common.live():
         inst = broker.instrument_for(pos)
         try:
             broker.modify(stop_order, inst, qty=stop_order["qty"],

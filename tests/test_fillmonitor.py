@@ -339,3 +339,35 @@ class OrphanStop(unittest.TestCase):
                        quotes={NIFTY.token: {"ltp": "285", "uc": "300", "lc": "260"}})
         fm.tick(b, AT, {})
         self.assertNotIn("S1", b.cancelled)
+
+
+class AdoptedManual(unittest.TestCase):
+    def setUp(self):
+        reset()
+        common.log("fill", {"event": "stop_placed", "parent": f"manual:{NIFTY.token}", "order_id": "MS",
+                            "symbol": "NIFTYBEES", "side": "S", "qty": 10, "trigger": "279", "adopted": True})
+        common.log("auto", {"event": "plan_adjusted", "parent": f"manual:{NIFTY.token}", "symbol": "NIFTYBEES",
+                            "stop": "279", "target": "284"})
+
+    def book(self, ltp):
+        return FakeBroker(positions=[position(NIFTY, 10, "281", ltp=ltp)],
+                          orders=[order("MS", NIFTY, "S", qty=10, trigger="279", price="278")],
+                          quotes={NIFTY.token: {"ltp": ltp, "uc": "300", "lc": "260"}})
+
+    def test_claudes_target_closes_the_owners_trade(self):
+        b = self.book("284.10")
+        fm.tick(b, AT, {})
+        self.assertIn("MS", b.cancelled)
+        self.assertEqual((b.placed[0]["side"], b.placed[0]["qty"]), ("S", 10))
+
+    def test_the_fixed_percent_rule_no_longer_applies(self):
+        b = self.book("283.90")                       # +1.04%: would trip the +1% manual rule
+        fm.tick(b, AT, {})
+        self.assertEqual(b.placed, [])
+
+    def test_unadopted_manual_still_has_the_percent_guard(self):
+        reset()
+        b = FakeBroker(positions=[position(NIFTY, 10, "281", ltp="283.90")],
+                       quotes={NIFTY.token: {"ltp": "283.90", "uc": "300", "lc": "260"}})
+        fm.tick(b, AT, {})
+        self.assertEqual(b.placed[0]["side"], "S")

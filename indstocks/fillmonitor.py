@@ -307,12 +307,36 @@ def tick(broker, now: datetime, state: dict) -> dict:
         except ShoonyaError as exc:
             log({"event": "cancel_failed", "order_id": o["id"], "reason": str(exc)[:200]})
 
-    # 5. positions this system did not open, with no closing order of their
-    #    own: guarded by the manual +/- thresholds, long or short
+    # 5. positions this system did not open. Adopted by Claude (it set a stop
+    #    and target): exit at Claude's target. Otherwise, with no closing
+    #    order of their own: guarded by the manual +/- thresholds.
     pending = {(o["token"], o["side"]) for o in orders if o["pending"]}
     for tok, pos in held.items():
         side = "B" if pos["qty"] > 0 else "S"
-        if tok in bot_tokens or (tok, opp(side)) in pending:
+        if tok in bot_tokens:
+            continue
+        adopt = adjusted.get(f"manual:{tok}")
+        so = next((o for o in orders if o["pending"] and str(o["token"]) == tok and o["side"] == opp(side)), None)
+        if adopt and so is not None:
+            ltp = ltps.get(tok) or pos["ltp"]
+            tgt = D(adopt["target"])
+            if (side == "B" and ltp >= tgt) or (side == "S" and ltp <= tgt):
+                inst = broker.instrument_for(pos)
+                try:
+                    broker.cancel(so["id"])
+                except ShoonyaError:
+                    continue                            # the stop probably executed: do not double-exit
+                try:
+                    eid = broker.place(inst, side=opp(side), qty=abs(pos["qty"]),
+                                       price=broker.marketable(inst, opp(side)), remarks=f"tgt/{pos['symbol']}")
+                    log({"event": "target_exit", "parent": f"manual:{tok}", "order_id": eid, "symbol": pos["symbol"],
+                         "qty": abs(pos["qty"]), "ltp": str(ltp), "target": str(tgt)})
+                    out["sold"] += 1
+                except ShoonyaError as exc:
+                    log({"event": "exit_failed", "symbol": pos["symbol"], "reason": str(exc)[:300]})
+                    common.notify(f"UNPROTECTED {pos['symbol']}", f"Target exit failed: {exc}", priority="urgent")
+            continue
+        if (tok, opp(side)) in pending:
             continue
         ltp = ltps.get(tok) or pos["ltp"]
         why = manual_decision(pos["avg"], ltp, side)

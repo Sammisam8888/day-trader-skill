@@ -288,11 +288,27 @@ class Adjust(unittest.TestCase):
         autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "NIFTYBEES", "target": 284.00}))
         self.assertEqual(ev("plan_adjusted")[0]["target"], "284.00")
 
-    def test_manual_positions_cannot_be_adjusted(self):
+    def test_claude_adopts_a_manual_position_with_a_stop_at_the_exchange(self):
         b = broker(positions=[position(SENSEX, 5, "899", ltp="900")])
-        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "SENSEXIETF", "stop": 895}))
-        self.assertIn("not opened by this system", ev("refused")[0]["reason"] if ev("refused") else
-                      brain.read_transcripts(DAY.isoformat())[-1]["actions"][0]["reason"])
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "SENSEXIETF", "stop": 895,
+                                                 "target": 910, "reason": "owner's trade"}))
+        p = b.placed[0]
+        self.assertEqual((p["side"], p["qty"], p["trigger"]), ("S", 5, D("895.00")))
+        st = ev("stop_placed")[0]
+        self.assertEqual((st["parent"], st["adopted"]), (f"manual:{SENSEX.token}", True))
+        self.assertEqual(ev("plan_adjusted")[0]["target"], "910.00")
+
+    def test_an_adopted_manual_stop_is_then_moved(self):
+        b = broker(positions=[position(SENSEX, 5, "899", ltp="903")],
+                   orders=[order("MS", SENSEX, side="S", qty=5, trigger="895", price="890")])
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "SENSEXIETF", "stop": 897}))
+        self.assertEqual(b.modified[0]["trigger"], D("897.00"))
+
+    def test_a_manual_target_without_a_stop_is_refused(self):
+        b = broker(positions=[position(SENSEX, 5, "899", ltp="900")])
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "SENSEXIETF", "target": 910}))
+        self.assertEqual(b.placed, [])
+        self.assertIn("needs a stop", ev("refused")[0]["reason"])
 
     def test_the_transcript_records_ask_reply_and_actions(self):
         b = self.book()
