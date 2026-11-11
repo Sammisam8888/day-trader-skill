@@ -124,7 +124,8 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
     ours = {str(p.get("order_id")): p for p in placements}
     adj = {}
     for r in common.events("plan_adjusted"):
-        adj[str(r.get("parent"))] = r
+        if r.get("target"):                             # a stop-only adjust keeps the last target
+            adj[str(r.get("parent"))] = r
     fills = {}
     for o in orders:
         if o["id"] in ours and o["filled"] > 0:
@@ -210,7 +211,8 @@ tighter stop means a bigger position and a wider stop a smaller one. size (0.25-
 Open positions are yours to manage every scan, with "adjust" (new stop and/or target) or "exit".
 Nothing trails for you: move the stop to breakeven once a trade has earned it, trail it behind
 structure as it runs, extend or pull in the target as momentum changes, and exit when the idea is
-broken. loss_if_stop_now shows what each current stop risks.
+broken. loss_if_stop_now shows what each current stop risks. To keep a plan as it is, send no
+decision for it: an adjust that changes nothing is refused.
 
 Hard limits the code enforces (anything else is refused, so don't waste a decision):
 - side BUY: stop < entry < target. side SELL (short): target < entry < stop.
