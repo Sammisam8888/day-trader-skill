@@ -25,7 +25,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal as D
 from typing import Dict, List, Optional
 
-REPO = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "indstocks")
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SANDBOX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
 os.environ["TRADER_STATE_DIR"] = SANDBOX
 os.environ["TRADER_ENV_FILE"] = os.path.join(SANDBOX, "env")
