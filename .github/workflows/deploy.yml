@@ -87,6 +87,13 @@ jobs:
             done
             sudo touch /var/lib/indstocks/.profile-ceilings-v1
           fi
+          # Fewer, bigger trades (owner, 11 Nov 13:44): charges were half of gross.
+          if [ ! -f /var/lib/indstocks/.profile-bigger-trades-v1 ]; then
+            for kv in TRADER_MAX_CONCURRENT=2 TRADER_MIN_REWARD_TO_COST=4; do
+              k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
+            done
+            sudo touch /var/lib/indstocks/.profile-bigger-trades-v1
+          fi
           # Aggressive afternoon: entries until 14:30 (one time; edit the env file to change).
           if [ ! -f /var/lib/indstocks/.profile-last-entry-v1 ]; then
             sudo sed -i "/^TRADER_LAST_ENTRY=/d" /etc/indstocks.env
