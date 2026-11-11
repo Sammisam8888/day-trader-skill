@@ -1,0 +1,10 @@
+[Unit]
+Description=Strategy book after the close, trading days
+
+[Timer]
+# The Shoonya session is still valid until the nightly settlement.
+OnCalendar=*-*-* 15:40:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target

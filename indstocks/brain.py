@@ -114,12 +114,16 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
     trends = {s: regime.stock_trend(c, session.day, _bars([x for x in c if x.opens_at.date() == session.day], 15))
               for s, (_, c, _) in insts.items()}
     import setups as playbook
+    import strategy_book
+    book = strategy_book.load()
     for v in views:
         if v.get("symbol") in trends:
             v["trend"] = trends[v["symbol"]]
             inst_, c_, _ = insts[v["symbol"]]
             try:
-                v["setups"] = playbook.detect(c_, session.day, inst_.tick, trends[v["symbol"]].get("score", 0.0), now=now)
+                v["setups"] = strategy_book.apply(
+                    playbook.detect(c_, session.day, inst_.tick, trends[v["symbol"]].get("score", 0.0), now=now),
+                    inst_.tick, book)
             except Exception:                           # noqa: BLE001
                 v["setups"] = []
     direction = {"market": regime.market(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
@@ -214,6 +218,9 @@ trigger entry, a stop where the idea is wrong and a 2R target:
 - failed_break: a break of the range that closes back inside traps the breakout traders; trade
   the other way (break above fails -> short; break below fails -> long).
 - day_break: after 10:30, a trending stock pressing its day high (long) or day low (short).
+Only setups that have made money after charges over the last weeks are listed (the strategy book,
+rebuilt every evening; "edge" shows its record). A name ending in _fade is the exact opposite of
+a setup that has been losing: same price, other side. Prefer setups with the stronger edge.
 STATE.leaders names the strongest stocks (long candidates) and the weakest (short candidates).
 Longs: buy the strongest names in an UP or MIXED tape. Shorts: sell the weakest names in a DOWN or
 MIXED tape. Prefer a listed setup and name it in "setup"; you may tighten its stop to structure or

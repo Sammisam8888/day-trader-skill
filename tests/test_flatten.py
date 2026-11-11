@@ -4,6 +4,7 @@ re-price, sweep."""
 import os
 import sys
 import unittest
+from decimal import Decimal as D
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -49,12 +50,21 @@ class TestFlatten(unittest.TestCase):
         self.assertEqual(b.placed[0]["symbol"], "SENSEXIETF")
 
     def test_an_unfilled_exit_is_repriced_further_through(self):
-        b = FakeBroker(positions=[position(NIFTY, 40, "281")], quotes={NIFTY.token: {"ltp": "281", "bid": "280.99"}})
+        b = FakeBroker(positions=[position(NIFTY, 40, "281")],
+                       quotes={NIFTY.token: {"ltp": "281", "bid": "280.99", "lc": "252.90", "uc": "309.10"}})
         self.assertEqual(flatten.run(b, now=AT, sleep=lambda s: None), 1)
         prices = [p["price"] for p in b.placed]
-        self.assertEqual(len(prices), 3)
-        self.assertTrue(prices[0] > prices[1] > prices[2], prices)
+        self.assertEqual(len(prices), 4)
+        self.assertTrue(prices[0] > prices[1] > prices[2] > prices[3], prices)
+        self.assertEqual(prices[3], D("252.90"), "the must-close round sells at the lower band: fills like a market order")
         self.assertEqual(len(common.events("flatten_incomplete")), 1)
+
+    def test_a_late_pass_goes_straight_to_must_close(self):
+        from datetime import timedelta
+        b = FakeBroker(positions=[position(NIFTY, -10, "281")],
+                       quotes={NIFTY.token: {"ltp": "281", "lc": "252.90", "uc": "309.10"}})
+        flatten.run(b, now=AT + timedelta(minutes=5), sleep=lambda s: None)
+        self.assertEqual((b.placed[0]["side"], b.placed[0]["price"]), ("B", D("309.10")))
 
     def test_a_short_is_bought_back(self):
         b = FakeBroker(positions=[position(NIFTY, -10, "281")], quotes={NIFTY.token: {"ltp": "281"}})

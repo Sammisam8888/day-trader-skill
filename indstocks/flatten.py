@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import timedelta
 from decimal import Decimal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -43,8 +44,16 @@ def log(rec: dict) -> dict:
 
 
 def price_for(broker, inst, side: str, round_no: int) -> Decimal:
-    """Each round reaches further through the touch: 1x, 2x, 4x the base."""
+    """Each round reaches further through the touch: 1x, 2x, 4x the base.
+    The final round (round_no >= ROUNDS) is the must-close price: the circuit
+    band's edge (lower band to sell, upper to buy). The exchange fills it at
+    the best price available right now, exactly like a market order, which
+    Shoonya's API does not accept here."""
     q = broker.quote(inst.token, inst.exch)
+    if round_no >= ROUNDS:
+        edge = q["lc"] if side == "S" else q["uc"]
+        if edge and edge > 0:
+            return edge
     base = broker.marketable(inst, side, q)
     if round_no == 0:
         return base
@@ -94,7 +103,9 @@ def run(broker=None, *, now=None, sleep=time.sleep) -> int:
         return 1
 
     failed = 0
-    for rnd in range(ROUNDS):
+    # A late pass (15:10 onward) has no time to work the price: straight to must-close.
+    late = now >= session.flat_by + timedelta(minutes=4)
+    for rnd in ([ROUNDS] if late else list(range(ROUNDS)) + [ROUNDS]):
         if not positions:
             break
         for pos in positions:
@@ -115,7 +126,8 @@ def run(broker=None, *, now=None, sleep=time.sleep) -> int:
                 oid = broker.place(inst, side=side, qty=abs(pos["qty"]), price=px,
                                    remarks=f"flat/{pos['symbol']}")
                 log({"event": "sold" if side == "S" else "covered", "symbol": pos["symbol"],
-                     "qty": abs(pos["qty"]), "price": str(px), "order_id": oid, "round": rnd + 1})
+                     "qty": abs(pos["qty"]), "price": str(px), "order_id": oid, "round": rnd + 1,
+                     "must_close": rnd >= ROUNDS})
             except ShoonyaError as exc:
                 log({"event": "sell_failed", "symbol": pos["symbol"], "qty": pos["qty"],
                      "reason": str(exc)[:300], "round": rnd + 1})

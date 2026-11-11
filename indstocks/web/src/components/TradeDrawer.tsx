@@ -73,6 +73,19 @@ export default function TradeDrawer({ day, id, onClose, onCall }:
               </section>
             )}
 
+            {t.context && (
+              <section>
+                <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-dim">Why this trade</h4>
+                <Row k="Strategy" v={t.context.setup ? t.context.setup.replace("_", " ") : "Claude's own read (unlisted)"} />
+                <Row k="Market direction at entry" v={<Badge tone={t.context.direction === "UP" ? "up" : t.context.direction === "DOWN" ? "down" : "dim"}>{t.context.direction ?? "—"}</Badge>} />
+                <Row k="Sentiment bias at entry" v={t.context.sentiment_bias != null ? String(t.context.sentiment_bias) : "—"} />
+                {t.context.valid_minutes != null && <Row k="Entry valid for" v={`${t.context.valid_minutes} min`} />}
+                {(t.context.advisory ?? []).length > 0 && (
+                  <div className="mt-2 rounded-lg border border-warn/30 bg-warn-bg p-2 text-xs text-warn">
+                    Signals that disagreed (Claude decided anyway): {(t.context.advisory ?? []).join("; ")}
+                  </div>)}
+              </section>)}
+
             <section>
               <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-dim">Plan</h4>
               <Row k="Quantity" v={String(p.qty ?? "—")} />
