@@ -87,6 +87,12 @@ jobs:
             done
             sudo touch /var/lib/indstocks/.profile-ceilings-v1
           fi
+          # Aggressive afternoon: entries until 14:30 (one time; edit the env file to change).
+          if [ ! -f /var/lib/indstocks/.profile-last-entry-v1 ]; then
+            sudo sed -i "/^TRADER_LAST_ENTRY=/d" /etc/indstocks.env
+            echo "TRADER_LAST_ENTRY=14:30" | sudo tee -a /etc/indstocks.env >/dev/null
+            sudo touch /var/lib/indstocks/.profile-last-entry-v1
+          fi
           # Units come from the repo on every deploy, so a schedule change in
           # git is a schedule change on the box. INDstocks-only units are
           # removed: that broker is no longer used.

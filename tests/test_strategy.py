@@ -335,3 +335,17 @@ class TestSizingAndRisk(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LastEntryOverride(unittest.TestCase):
+    def test_env_moves_the_last_entry_within_bounds(self):
+        import session as sess
+        from datetime import date, time as T
+        from _fake import reset
+        s = sess.Session(date(2026, 11, 11))
+        reset(TRADER_LAST_ENTRY="14:30")
+        self.assertEqual(s.last_entry.time(), T(14, 30))
+        reset(TRADER_LAST_ENTRY="15:20")
+        self.assertEqual(s.last_entry.time(), T(14, 50))
+        reset()
+        self.assertEqual(s.last_entry.time(), T(12, 30))

@@ -31,6 +31,26 @@ OPENING_RANGE_MINUTES = 15
 # one at 10:30 has five hours. Afternoon breakouts are the ones that get
 # sold into the close at whatever price is there.
 LAST_ENTRY = time(12, 30)
+
+
+def _last_entry() -> time:
+    """TRADER_LAST_ENTRY (HH:MM) from /etc/indstocks.env, read fresh each call;
+    12:30 if unset. Kept between 10:00 and 14:50 so a trade always has time
+    to work before the 15:05 flatten."""
+    raw = os.environ.get("TRADER_LAST_ENTRY", "")
+    env_file = Path(os.environ.get("TRADER_ENV_FILE", "/etc/indstocks.env"))
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("TRADER_LAST_ENTRY="):
+                raw = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    try:
+        hh, mm = (int(x) for x in raw.split(":"))
+        t = time(hh, mm)
+    except ValueError:
+        return LAST_ENTRY
+    return min(max(t, time(10, 0)), time(14, 50))
 # Our own square-off, ahead of the broker's (Shoonya MIS ~15:15-15:20). The
 # fill monitor runs the flatten at this moment; the flatten timers are a
 # backup for when the monitor is down.
@@ -138,7 +158,7 @@ class Session:
 
     @property
     def last_entry(self) -> datetime:
-        return at(self.day, self.special[1] if self.special else LAST_ENTRY)
+        return at(self.day, self.special[1] if self.special else _last_entry())
 
     @property
     def flat_by(self) -> datetime:
