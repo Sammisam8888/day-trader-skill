@@ -307,3 +307,17 @@ class Adjust(unittest.TestCase):
         placed = ev("placed")[-1]
         self.assertLess(float(placed["net_if_stop"]), 0)
         self.assertGreater(float(placed["net_if_target"]), 0)
+
+
+class AdjustedTargetView(unittest.TestCase):
+    def test_a_stop_only_adjust_keeps_the_extended_target_in_claudes_view(self):
+        reset(TRADER_DECIDER="claude")
+        common.log("auto", {"event": "plan_adjusted", "parent": "P", "symbol": "X", "stop": "1", "target": "1082.00"})
+        common.log("auto", {"event": "plan_adjusted", "parent": "P", "symbol": "X", "stop": "2", "target": None})
+        adj = {}
+        for r in common.events("plan_adjusted"):
+            if r.get("target"):
+                adj[str(r.get("parent"))] = r
+        self.assertEqual(adj["P"]["target"], "1082.00")
+        import inspect
+        self.assertIn('if r.get("target"):', inspect.getsource(brain.build))
