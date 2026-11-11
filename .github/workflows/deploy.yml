@@ -106,6 +106,13 @@ jobs:
             done
             sudo touch /var/lib/indstocks/.profile-aggressive-v4
           fi
+          # Bigger bets (owner, 11 Nov 15:09): no trade smaller than Rs 15k or netting under Rs 100 at target.
+          if [ ! -f /var/lib/indstocks/.profile-bigger-bets-v1 ]; then
+            for kv in TRADER_MIN_POSITION_VALUE=15000 TRADER_MIN_NET_TARGET=100; do
+              k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
+            done
+            sudo touch /var/lib/indstocks/.profile-bigger-bets-v1
+          fi
           # Aggressive afternoon: entries until 14:30 (one time; edit the env file to change).
           if [ ! -f /var/lib/indstocks/.profile-last-entry-v1 ]; then
             sudo sed -i "/^TRADER_LAST_ENTRY=/d" /etc/indstocks.env

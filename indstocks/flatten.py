@@ -199,7 +199,8 @@ def record_results(trades: list, orders: list) -> None:
              "net": str(tr["net"]), "win": tr["net"] > 0, "order_id": p.get("order_id"),
              "decided_by": p.get("decided_by"), "direction": p.get("direction"),
              "sentiment_bias": p.get("sentiment_bias"), "size_mult": p.get("size_mult"),
-             "sentiment": alignment(p.get("side", "B"), p.get("sentiment_bias"))})
+             "sentiment": alignment(p.get("side", "B"), p.get("sentiment_bias")),
+             "setup": p.get("setup") or "unlisted"})
 
 
 if __name__ == "__main__":

@@ -113,9 +113,15 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
         views.append(symbol_view(sym, inst, candles, q, session))
     trends = {s: regime.stock_trend(c, session.day, _bars([x for x in c if x.opens_at.date() == session.day], 15))
               for s, (_, c, _) in insts.items()}
+    import setups as playbook
     for v in views:
         if v.get("symbol") in trends:
             v["trend"] = trends[v["symbol"]]
+            inst_, c_, _ = insts[v["symbol"]]
+            try:
+                v["setups"] = playbook.detect(c_, session.day, inst_.tick, trends[v["symbol"]].get("score", 0.0), now=now)
+            except Exception:                           # noqa: BLE001
+                v["setups"] = []
     direction = {"market": regime.market(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
                  "stocks": trends}
     held = [p for p in positions if p["qty"] != 0]
@@ -146,6 +152,7 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
                     "extra_trades": _extra_view(positions, orders, placements, limits),
                     "max_entries_per_symbol": int(common.setting("TRADER_MAX_ENTRIES_PER_SYMBOL", "2")),
                     "shorts_allowed": allow_short()},
+        "leaders": playbook.rank(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
         "direction": {"market": direction["market"],
                       "stocks": {s: {"score": x["score"], "state": x["state"]} for s, x in trends.items()}},
         "sentiment": sentiment_view(now),
@@ -198,6 +205,22 @@ INPUTS (measured by code, for you to weigh):
   the put wall or buying into the call wall.
 Each placed trade records what these inputs said, and a scorecard measures whether following
 them paid. Your reasoning for every decision is shown to the owner.
+
+THE PLAYBOOK. Each market lists "setups" detected by code from closed bars, each with an exact
+trigger entry, a stop where the idea is wrong and a 2R target:
+- orb: opening-range break (long above the high / short below the low), 09:30-11:00.
+- vwap_pullback: in a trending stock, a pullback to VWAP that holds (long) or a rally into VWAP
+  that is rejected (short). The best continuation entry on trend days.
+- failed_break: a break of the range that closes back inside traps the breakout traders; trade
+  the other way (break above fails -> short; break below fails -> long).
+- day_break: after 10:30, a trending stock pressing its day high (long) or day low (short).
+STATE.leaders names the strongest stocks (long candidates) and the weakest (short candidates).
+Longs: buy the strongest names in an UP or MIXED tape. Shorts: sell the weakest names in a DOWN or
+MIXED tape. Prefer a listed setup and name it in "setup"; you may tighten its stop to structure or
+extend its target to the next real level (prior-day high/low, the option walls, the day extreme).
+You may also take an unlisted trade if you can state its pattern, stop and target.
+Size matters: charges are a fixed share of every trade, so a trade is only worth it if its net at
+target is meaningful (the code refuses entries below the owner's minimums).
 
 Your job each scan: look at every market and every open position, then decide. {style}
 Prefer clean structure (opening-range breaks/breakdowns, VWAP
@@ -256,7 +279,7 @@ Reply with ONE JSON object, nothing else:
 {{"view": "<one or two sentences on the market>",
   "decisions": [
     {{"action":"enter","symbol":"NIFTYBEES","side":"BUY","order":"stop","entry":281.05,"stop":280.30,
-      "target":282.60,"size":1.0,"valid_minutes":45,"confidence":0.6,"reason":"<why, citing levels>"}},
+      "target":282.60,"size":1.0,"valid_minutes":45,"setup":"orb","confidence":0.6,"reason":"<why, citing levels>"}},
     {{"action":"adjust","symbol":"NIFTYBEES","stop":281.10,"target":283.40,"reason":"..."}},
     {{"action":"cancel","order_id":"<resting entry id>","reason":"..."}},
     {{"action":"exit","symbol":"...","reason":"..."}}

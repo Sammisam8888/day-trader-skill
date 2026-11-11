@@ -122,7 +122,7 @@ export interface SentimentResp {
   snapshot: SentimentSnap | null; fresh: boolean;
   history: { ts: string; bias: number; vix: number | null; pcr: number | null }[];
   direction: { ts: string; state: string; score: number }[];
-  scorecard: { sentiment: Record<string, Score>; direction: Record<string, Score> };
+  scorecard: { sentiment: Record<string, Score>; direction: Record<string, Score>; setup?: Record<string, Score> };
 }
 export async function getSentiment(): Promise<SentimentResp> {
   return (await fetch("/api/sentiment", { cache: "no-store" })).json();

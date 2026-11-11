@@ -447,6 +447,18 @@ def run(broker=None, now=None, *, decide=None) -> int:
             log({"event": "unsized", "symbol": sym, "side": side, "reason": sizing.limit_hit})
             act(i, "refused", f"sizing: {sizing.limit_hit}")
             continue
+        floor_value = Decimal(common.setting("TRADER_MIN_POSITION_VALUE", "0") or 0)
+        floor_net = Decimal(common.setting("TRADER_MIN_NET_TARGET", "0") or 0)
+        small = []
+        if floor_value and sizing.position_value < floor_value:
+            small.append(f"position {sizing.position_value:.0f} is under the minimum {floor_value:.0f}")
+        if floor_net and sizing.net_if_target_hits < floor_net:
+            small.append(f"net at target {sizing.net_if_target_hits:.0f} is under the minimum {floor_net:.0f}: "
+                         f"aim for a bigger move or a tighter stop")
+        if small:
+            log({"event": "refused", "symbol": sym, "side": side, "reason": "; ".join(small), "decider_reason": why})
+            act(i, "refused", "; ".join(small))
+            continue
         if extra is not None and len(rec["filled"]) + len(rec["resting"]) + placed >= base_trades:
             cost_of_one = sizing.loss_at_stop + sizing.round_trip_cost
             if cost_of_one > extra["room"]:
@@ -477,7 +489,7 @@ def run(broker=None, now=None, *, decide=None) -> int:
             "ltp_at_placement": str(q["ltp"]), "decided_by": out.get("source"),
             "confidence": d.get("confidence"), "why": why, "call_id": call_id,
             "size_mult": str(size), "sentiment_note": mood_note, "advisory": advisory,
-            "valid_minutes": valid_minutes(d),
+            "valid_minutes": valid_minutes(d), "setup": str(d.get("setup") or "")[:30] or None,
             "sentiment_bias": (mood or {}).get("tilt", {}).get("bias"),
             "direction": ((direction or {}).get("market") or {}).get("state"),
         }

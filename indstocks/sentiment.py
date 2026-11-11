@@ -596,7 +596,7 @@ def scorecard(days: int = 60) -> dict:
     """Closed trades grouped by whether they went with the sentiment and with
     the measured direction: count, wins, net. The test of whether the
     signals earn their place."""
-    groups: Dict[str, Dict[str, dict]] = {"sentiment": {}, "direction": {}}
+    groups: Dict[str, Dict[str, dict]] = {"sentiment": {}, "direction": {}, "setup": {}}
     files = sorted(common.STATE_DIR.glob("*.jsonl"))[-days:]
     for f in files:
         for ln in f.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -606,8 +606,10 @@ def scorecard(days: int = 60) -> dict:
                 r = json.loads(ln)
             except ValueError:
                 continue
+            side = "long" if r.get("side", "B") == "B" else "short"
             for dim, key in (("sentiment", r.get("sentiment") or "unknown"),
-                             ("direction", r.get("direction") or "unknown")):
+                             ("direction", r.get("direction") or "unknown"),
+                             ("setup", f"{r.get('setup') or 'unlisted'} {side}")):
                 g = groups[dim].setdefault(key, {"trades": 0, "wins": 0, "net": 0.0})
                 g["trades"] += 1
                 g["wins"] += 1 if r.get("win") else 0
