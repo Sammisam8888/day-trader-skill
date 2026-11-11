@@ -8,7 +8,7 @@ Data: run the `export-candles` workflow; it publishes `candles.json.gz` to the
 `sim-data` branch. Then:
 
     git fetch origin +refs/heads/sim-data:refs/remotes/origin/sim-data
-    git show origin/sim-data:candles.json.gz > research/candles.json.gz
+    git show origin/sim-data:candles.json.gz > indstocks/research/candles.json.gz
     cd research && python3 run_versions.py
 
 Claude's live judgement and historical sentiment are not replayed.

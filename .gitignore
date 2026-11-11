@@ -9,6 +9,6 @@ venv/
 # Runtime state the skills write (plans, orders, verdicts, broker log).
 # Never commit this: it holds order history and portfolio positions.
 trader/
-research/candles.json.gz
-research/state/
-research/*.json
+indstocks/research/candles.json.gz
+indstocks/research/state/
+indstocks/research/*.json
