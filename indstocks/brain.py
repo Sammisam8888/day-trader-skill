@@ -142,6 +142,7 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
                     "max_loss_per_trade": str(limits.max_loss_per_trade),
                     "max_concurrent": limits.max_concurrent_positions,
                     "fills_today": sum(fills.values()), "max_trades": limits.max_trades_per_day,
+                    "extra_trades": _extra_view(positions, orders, placements, limits),
                     "max_entries_per_symbol": int(common.setting("TRADER_MAX_ENTRIES_PER_SYMBOL", "2")),
                     "shorts_allowed": allow_short()},
         "direction": {"market": direction["market"],
@@ -197,8 +198,8 @@ INPUTS (measured by code, for you to weigh):
 Each placed trade records what these inputs said, and a scorecard measures whether following
 them paid. Your reasoning for every decision is shown to the owner.
 
-Your job each scan: look at every market and every open position, then decide. Most scans the right
-answer is no new entry. Prefer clean structure (opening-range breaks/breakdowns, VWAP
+Your job each scan: look at every market and every open position, then decide. {style}
+Prefer clean structure (opening-range breaks/breakdowns, VWAP
 reclaims/rejections, prior-day high/low breaks, trend pullbacks) with a stop at a level that
 invalidates the idea. Avoid stops inside normal noise. Respect charges: brokerage is Rs 5 or 0.03%
 per order; a target under ~0.25% of price rarely pays. Never chase a candle that already ran.
@@ -313,7 +314,15 @@ def ask_claude(ctx: dict, limits, run: Optional[Callable] = None, transcript: Op
     the raw reply and the latency, even when the reply cannot be parsed."""
     import time as _t
     transcript = transcript if transcript is not None else {}
-    prompt = SYSTEM.format(min_rr=limits.min_reward_to_risk, max_conc=limits.max_concurrent_positions,
+    style = ("STYLE: AGGRESSIVE (the owner's choice). Keep capital working: while slots are free and it is "
+             "before last_entry, place every valid setup you can justify (resting stop triggers on good "
+             "levels are fine), re-enter a stock after a stop when its structure resets, and rotate out of "
+             "stalled positions into better ones. Idle slots cost money on trend days. On a profitable day "
+             "the trade limit grows (account.extra_trades): use it on a strong trend. Never take a trade "
+             "without a real stop and a target that pays after charges."
+             if common.setting("TRADER_STYLE", "normal").lower() == "aggressive"
+             else "Most scans the right answer is no new entry.")
+    prompt = SYSTEM.format(style=style, min_rr=limits.min_reward_to_risk, max_conc=limits.max_concurrent_positions,
                            max_entries=ctx["account"]["max_entries_per_symbol"], lev=limits.max_leverage,
                            shorts="yes" if allow_short() else "no")
     prompt += "\n\nSTATE:\n" + json.dumps(ctx, separators=(",", ":"))
@@ -335,6 +344,15 @@ def parse_obj(raw: str) -> dict:
     if not isinstance(out, dict):
         raise ValueError("reply is not a JSON object")
     return out
+
+
+def _extra_view(positions, orders, placements, limits) -> dict:
+    import profit_budget
+    r = profit_budget.room(positions, orders, placements, limits.max_loss_per_trade)
+    return {"rule": f"past max_trades, an entry is allowed if its worst case fits profit_room "
+                    f"(keeps {100 - r['giveback_pct']}% of today's realised net profit)",
+            "profit_room": str(r["room"]), "realised_net": str(r["realised_net"]),
+            "hard_cap": profit_budget.hard_cap(limits.max_trades_per_day)}
 
 
 def control_view() -> dict:

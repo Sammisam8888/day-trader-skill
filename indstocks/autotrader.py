@@ -27,6 +27,7 @@ from decimal import Decimal
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import brain                                             # noqa: E402
+import profit_budget                                     # noqa: E402
 import common                                            # noqa: E402
 import control                                           # noqa: E402
 import regime                                            # noqa: E402
@@ -268,9 +269,18 @@ def run(broker=None, now=None, *, decide=None) -> int:
 
     placements = common.events("placed")
     rec = reconcile(orders, placements)
-    if len(rec["filled"]) >= limits.max_trades_per_day:
-        log({"event": "halted", "reason": "trade limit reached", "fills": len(rec["filled"])})
-        return 0
+    base_trades = limits.max_trades_per_day
+    extra = None
+    if len(rec["filled"]) + len(rec["resting"]) >= base_trades:
+        extra = profit_budget.room(positions, orders, placements, limits.max_loss_per_trade)
+        if len(rec["filled"]) >= profit_budget.hard_cap(base_trades) or (
+                len(rec["filled"]) >= base_trades and extra["room"] <= 0):
+            log({"event": "halted", "reason": "trade limit reached", "fills": len(rec["filled"]),
+                 "limit": base_trades, "hard_cap": profit_budget.hard_cap(base_trades), **{k: str(v) for k, v in extra.items()}})
+            return 0
+        import dataclasses
+        limits = dataclasses.replace(limits, max_trades_per_day=profit_budget.hard_cap(base_trades))
+        log({"event": "profit_funded", **{k: str(v) for k, v in extra.items()}, "fills": len(rec["filled"])})
 
     out = (decide or brain.decide)(broker, session, now, cash=cash, positions=positions, orders=orders,
                                    placements=placements, limits=limits)
@@ -413,6 +423,16 @@ def run(broker=None, now=None, *, decide=None) -> int:
             log({"event": "unsized", "symbol": sym, "side": side, "reason": sizing.limit_hit})
             act(i, "refused", f"sizing: {sizing.limit_hit}")
             continue
+        if extra is not None and len(rec["filled"]) + len(rec["resting"]) + placed >= base_trades:
+            cost_of_one = sizing.loss_at_stop + sizing.round_trip_cost
+            if cost_of_one > extra["room"]:
+                log({"event": "refused", "symbol": sym, "reason": f"past {base_trades} trades: worst case "
+                     f"{cost_of_one:.0f} > profit room {extra['room']}", "decider_reason": why})
+                act(i, "refused", f"past the {base_trades}-trade limit, extra trades are paid from today's profit: "
+                    f"worst case {cost_of_one:.0f} exceeds the room {extra['room']} "
+                    f"(keeping {100 - extra['giveback_pct']}% of {extra['realised_net']})")
+                continue
+            extra["room"] -= cost_of_one
         verdict = risk_mod.check_entry_order(
             symbol=sym, plan=plan, sizing=sizing, session=session, now=now, day=day, limits=limits,
             cash_for_leverage=cash, upper_limit=q["uc"] or None, lower_limit=q["lc"] or None)
