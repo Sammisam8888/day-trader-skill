@@ -136,8 +136,16 @@ def main() -> int:
     common.log("book", {"event": "strategy_book", "sessions": out["days"], "active": active})
     common.notify("trader: strategy book for tomorrow", ("active: " + ", ".join(active)) if active else
                   "no setup is profitable over the window: Claude trades only its own reads", priority="default")
-    print(json.dumps(book, indent=1))
+    print(summary(book))
     return 0
+
+
+def summary(book: dict) -> str:
+    lines = [f"{book['sessions']} sessions | {book['rule']}"]
+    for k, s in book["variants"].items():
+        lines.append(f"{k:28s} {s['status']:7s} trades {s['trades']:4d}  win {s['win_pct']:3d}%  "
+                     f"net {Decimal(s['net']):+9.0f}  per trade {Decimal(s['per_trade']):+7.1f}  PF {s['pf']}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
