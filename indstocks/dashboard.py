@@ -1043,6 +1043,8 @@ def api_trade(day: str, order_id: str) -> dict:
         "plan": {k: plan.get(k) for k in ("qty", "order_type", "trigger", "entry", "stop", "target", "risk",
                                           "costs", "gross_if_target", "net_if_target", "net_if_stop",
                                           "position_value", "leverage", "ltp_at_placement")},
+        "context": {k: plan.get(k) for k in ("setup", "direction", "sentiment_bias", "sentiment_note",
+                                             "advisory", "valid_minutes", "size_mult")},
         "entry_order": entry and {k: entry[k] for k in ("status", "qty", "filled", "avg", "price", "trigger", "time")},
         "stop_order": stop_o and {k: stop_o[k] for k in ("id", "status", "trigger", "price", "qty")},
         "stop_moves": [{k: r.get(k) for k in ("ts", "from", "to", "reason")} for r in moves],

@@ -11,7 +11,7 @@ const OUTCOME: Record<string, string> = {
 
 function decisionLine(d: BrainDecision) {
   if (d.action === "enter")
-    return <><b className={d.side === "BUY" ? "text-up" : "text-down"}>{d.side}</b> {d.symbol} · {d.order} {price(d.entry)} · SL {price(d.stop)} · TP {price(d.target)}{d.size != null && d.size !== 1 ? ` · size ${d.size}` : ""}{d.confidence != null ? ` · conf ${d.confidence}` : ""}</>;
+    return <>{d.setup && <Badge tone="info">{d.setup.replace("_", " ")}</Badge>} <b className={d.side === "BUY" ? "text-up" : "text-down"}>{d.side}</b> {d.symbol} · {d.order} {price(d.entry)} · SL {price(d.stop)} · TP {price(d.target)}{d.size != null && d.size !== 1 ? ` · size ${d.size}` : ""}{d.confidence != null ? ` · conf ${d.confidence}` : ""}</>;
   if (d.action === "adjust") return <><b className="text-info">ADJUST</b> {d.symbol}{d.stop != null ? ` · SL → ${price(d.stop)}` : ""}{d.target != null ? ` · TP → ${price(d.target)}` : ""}</>;
   if (d.action === "exit") return <><b className="text-warn">EXIT</b> {d.symbol}</>;
   if (d.action === "control") {

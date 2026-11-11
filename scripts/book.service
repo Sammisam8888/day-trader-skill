@@ -1,0 +1,10 @@
+[Unit]
+Description=Strategy book: re-test every setup and its fade, choose tomorrow's active ones
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/strategy_book.py
+TimeoutStartSec=1800
+User=root

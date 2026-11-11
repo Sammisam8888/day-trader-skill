@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import charges                                          # noqa: E402
 import session as sess                                  # noqa: E402
 import strategy as strat                                # noqa: E402
-from market import Candle, opening_range  # noqa: E402
+from market import Candle, opening_range, to_tick  # noqa: E402
 
 NOTIONAL = Decimal(os.environ.get("BT_NOTIONAL", "12500"))
 FLAT_AT = time(15, 5)
@@ -324,63 +324,91 @@ def report_sides(out: dict) -> str:
 
 # ------------------------------------------------------------------ the playbook, setup by setup
 
+def invert(s: dict, tick: Decimal) -> dict:
+    """The fade of a setup: at the same price, the opposite side, same R and a
+    2R target. A long trigger at E (stop E-R) becomes a short limit at E with
+    its stop at E+R and target E-2R; it fills exactly when the original would."""
+    entry, stop = Decimal(s["entry"]), Decimal(s["stop"])
+    r = abs(entry - stop)
+    long_ = s["side"] == "BUY"
+    side = "SELL" if long_ else "BUY"
+    st = entry + r if side == "SELL" else entry - r
+    tg = entry - 2 * r if side == "SELL" else entry + 2 * r
+    return {**s, "setup": s["setup"] + "_fade", "side": side, "order": "limit",
+            "stop": str(to_tick(st, tick, mode="up" if side == "SELL" else "down")),
+            "target": str(to_tick(tg, tick, mode="down" if side == "SELL" else "up")),
+            "why": f"fade of {s['setup']}: {s['why']}"}
+
+
+def _replay(s: dict, trigger_side: str, day_candles: List[Candle], k: int, flat, valid_bars: int,
+            notional: Decimal) -> Optional[dict]:
+    """Fill when price reaches the entry from the trigger's direction (trigger_side BUY:
+    trades up through it); then stop / target / flatten, stop first on a tie."""
+    entry, stop, target = Decimal(s["entry"]), Decimal(s["stop"]), Decimal(s["target"])
+    long_ = s["side"] == "BUY"
+    up = trigger_side == "BUY"
+    fill_i = fill_px = None
+    for j in range(k, min(k + valid_bars, len(day_candles))):
+        c = day_candles[j]
+        hit = c.high >= entry if up else c.low <= entry
+        if hit:
+            fill_i = j
+            fill_px = (max(entry, c.open) if up else min(entry, c.open)) if s.get("order") != "limit" else entry
+            break
+        dead = (c.low <= stop) if long_ else (c.high >= stop)
+        if dead and s.get("order") != "limit":
+            return None
+    if fill_i is None:
+        return None
+    qty = int(notional / fill_px)
+    if qty < 1:
+        return None
+    exit_px = how = None
+    for c in day_candles[fill_i:]:
+        if c.opens_at >= flat:
+            exit_px, how = c.open, "flatten"
+            break
+        if (long_ and c.low <= stop) or (not long_ and c.high >= stop):
+            exit_px, how = stop, "stop"
+            break
+        if (long_ and c.high >= target) or (not long_ and c.low <= target):
+            exit_px, how = target, "target"
+            break
+    if exit_px is None:
+        exit_px, how = day_candles[-1].close, "close"
+    gross = (exit_px - fill_px) * qty * (1 if long_ else -1)
+    buy, sell = (fill_px, exit_px) if long_ else (exit_px, fill_px)
+    cost = charges.round_trip(buy * qty, sell * qty).total
+    return {"setup": s["setup"], "side": s["side"], "how": how, "gross": gross,
+            "net": gross - cost, "charges": cost, "value": fill_px * qty}
+
+
 def simulate_setups(day_candles: List[Candle], hist: List[Candle], session, tick: Decimal, *,
-                    last_entry: time, notional: Decimal, valid_bars: int = 6) -> List[dict]:
-    """Replay setups.detect() bar by bar (closed bars only). The first time each
-    (setup, side) appears for the symbol today it becomes a resting trigger,
-    valid for `valid_bars` bars; it is dropped if price crosses its stop first.
-    Filled trades exit at the stop, the 2R target, or the flatten. Stop first
-    when one bar touches both (conservative)."""
+                    last_entry: time, notional: Decimal, valid_bars: int = 6,
+                    fades: bool = True) -> List[dict]:
+    """Replay setups.detect() bar by bar (closed bars only), each setup and,
+    with `fades`, its exact opposite. A setup is re-armed every bar until it
+    fills; one filled trade per setup, side and variant per day."""
     import regime
     import setups as playbook
     cutoff = datetime.combine(session.day, last_entry, tzinfo=sess.IST)
     flat = datetime.combine(session.day, FLAT_AT, tzinfo=sess.IST)
     seen, out = set(), []
     for k in range(3, len(day_candles)):
-        bar_close = day_candles[k - 1].closes_at
-        if bar_close >= cutoff:
+        if day_candles[k - 1].closes_at >= cutoff:
             break
         upto = day_candles[:k]
         trend = regime.stock_trend(hist + upto, session.day, _bars15(upto)).get("score", 0.0)
         for s in playbook.detect(upto, session.day, tick, trend):
-            key = (s["setup"], s["side"])
-            if key in seen:
-                continue
-            entry, stop, target = Decimal(s["entry"]), Decimal(s["stop"]), Decimal(s["target"])
-            long_ = s["side"] == "BUY"
-            fill_i = fill_px = None
-            for j in range(k, min(k + valid_bars, len(day_candles))):
-                c = day_candles[j]
-                if (long_ and c.low <= stop) or (not long_ and c.high >= stop):
-                    if not ((long_ and c.high >= entry) or (not long_ and c.low <= entry)):
-                        break                           # idea dead before it filled
-                if (long_ and c.high >= entry) or (not long_ and c.low <= entry):
-                    fill_i, fill_px = j, (max(entry, c.open) if long_ else min(entry, c.open))
-                    break
-            if fill_i is None:
-                continue
-            seen.add(key)                               # one filled trade per setup and side per day
-            qty = int(notional / fill_px)
-            if qty < 1:
-                continue
-            exit_px = how = None
-            for c in day_candles[fill_i:]:
-                if c.opens_at >= flat:
-                    exit_px, how = c.open, "flatten"
-                    break
-                if (long_ and c.low <= stop) or (not long_ and c.high >= stop):
-                    exit_px, how = stop, "stop"
-                    break
-                if (long_ and c.high >= target) or (not long_ and c.low <= target):
-                    exit_px, how = target, "target"
-                    break
-            if exit_px is None:
-                exit_px, how = day_candles[-1].close, "close"
-            gross = (exit_px - fill_px) * qty * (1 if long_ else -1)
-            buy, sell = (fill_px, exit_px) if long_ else (exit_px, fill_px)
-            cost = charges.round_trip(buy * qty, sell * qty).total
-            out.append({"setup": s["setup"], "side": s["side"], "how": how, "gross": gross,
-                        "net": gross - cost, "charges": cost, "value": fill_px * qty})
+            variants = [s] + ([invert(s, tick)] if fades else [])
+            for v in variants:
+                key = (v["setup"], v["side"])
+                if key in seen:
+                    continue
+                r = _replay(v, s["side"], day_candles, k, flat, valid_bars, notional)
+                if r:
+                    seen.add(key)
+                    out.append(r)
     return out
 
 

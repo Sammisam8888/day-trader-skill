@@ -77,7 +77,8 @@ export async function act(action: string, body: Record<string, unknown> = {}):
 
 export interface BrainAction { decision: number; outcome: string; reason: string; order_id?: string; order_status?: string | null }
 export interface BrainDecision { action: string; symbol?: string; side?: string; order?: string; entry?: number;
-  stop?: number; target?: number; size?: number; confidence?: number; reason?: string; order_id?: string }
+  stop?: number; target?: number; size?: number; confidence?: number; reason?: string; order_id?: string;
+  setup?: string; valid_minutes?: number }
 export interface BrainCall {
   id: string; ts: string; source: string; phase: string; latency_s: number | null; error: string | null;
   asked: { symbols: number; cash: string; exposure: string; positions: number; resting: number; pnl: string;
@@ -88,6 +89,8 @@ export interface Trade {
   error?: string; order_id: string; symbol: string; side: "B" | "S"; status: string;
   decided_by: string; call_id: string; why: string; confidence: number | null; placed_at: string;
   plan: Record<string, string | number | null>;
+  context?: { setup?: string | null; direction?: string | null; sentiment_bias?: number | null;
+    sentiment_note?: string | null; advisory?: string[] | null; valid_minutes?: number | null; size_mult?: string | null };
   entry_order: Record<string, unknown> | null; stop_order: Record<string, unknown> | null;
   stop_moves: { ts: string; from: string; to: string; reason: string }[];
   exit: { ts: string; ltp: string; target: string; order: Record<string, unknown> | null } | null;
