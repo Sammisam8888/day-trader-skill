@@ -79,6 +79,10 @@ class Config:
     book_min_pf: D = D("1.15")
     slippage_ticks: int = 0             # extra ticks against us on stop fills and entries
     lunch_block: Optional[tuple] = None  # (time, time): no new entries inside
+    # --- the flip layer: a paper mirror of every trade; switch sides only if the mirror is winning
+    flip: bool = False
+    flip_after_losses: int = 3          # real losing trades before a flip is considered
+    flip_halt_losses: int = 2           # losing trades while flipped before the day stops
 
 
 def load(path: str) -> Dict[str, dict]:
@@ -176,17 +180,33 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
     halted = None
     cooldown: Dict[str, int] = {}
     losses_today = 0
+    mirror: Dict[str, Pos] = {}
+    mirror_net = D(0)
+    mirror_closed = 0
+    flipped = False
+    flip_losses = 0
+    flip_at = None
     flat_at = datetime.combine(d, cfg.flat_by, tzinfo=IST)
 
+    def mclose(p: Pos, px: D):
+        nonlocal mirror_net, mirror_closed
+        gross = (px - p.entry) * p.qty * (1 if p.side == "B" else -1)
+        buy, sell = (p.entry, px) if p.side == "B" else (px, p.entry)
+        mirror_net += gross - charges.round_trip(buy * p.qty, sell * p.qty).total
+        mirror_closed += 1
+
     def close(p: Pos, px: D, how: str, t: datetime):
-        nonlocal realised_gross, realised_net, losses_today
+        nonlocal realised_gross, realised_net, losses_today, flip_losses
         gross = (px - p.entry) * p.qty * (1 if p.side == "B" else -1)
         buy, sell = (p.entry, px) if p.side == "B" else (px, p.entry)
         cost = charges.round_trip(buy * p.qty, sell * p.qty).total
         realised_gross += gross
         realised_net += gross - cost
         if gross - cost < 0:
-            losses_today += 1
+            if p.setup.endswith("_flip"):
+                flip_losses += 1
+            else:
+                losses_today += 1
         trades.append({"day": d.isoformat(), "sym": p.sym, "side": p.side, "setup": p.setup, "qty": p.qty,
                        "entry": float(p.entry), "exit": float(px), "how": how, "gross": float(gross),
                        "charges": float(cost), "net": float(gross - cost), "value": float(p.entry * p.qty),
@@ -202,8 +222,24 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
             for s, p in list(open_pos.items()):
                 close(p, bars[s][k].open, "flatten", t)
                 del open_pos[s]
+            for s, p in list(mirror.items()):
+                mclose(p, bars[s][k].open)
+                del mirror[s]
             resting.clear()
             break
+        # ---- the paper mirror's exits (same rules, stop first)
+        for s, p in list(mirror.items()):
+            c = bars[s][k]
+            if p.side == "B":
+                if c.low <= p.stop:
+                    mclose(p, min(p.stop, c.open)); del mirror[s]; continue
+                if c.high >= p.target:
+                    mclose(p, p.target); del mirror[s]; continue
+            else:
+                if c.high >= p.stop:
+                    mclose(p, max(p.stop, c.open)); del mirror[s]; continue
+                if c.low <= p.target:
+                    mclose(p, p.target); del mirror[s]; continue
         # ---- exits on this bar (exchange stop first: conservative)
         for s, p in list(open_pos.items()):
             c = bars[s][k]
@@ -266,6 +302,11 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
                     continue                            # cap reached: the fill monitor had cancelled it
                 open_pos[s] = Pos(s, o["side"], o["qty"], px, o["stop"], o["target"], o["r"], o["setup"], t, o["tick"])
                 fills += 1
+                if cfg.flip and not o["setup"].endswith("_flip") and s not in mirror:
+                    tr = cfg.target_r or D(2)
+                    ms = "S" if o["side"] == "B" else "B"
+                    mirror[s] = Pos(s, ms, o["qty"], px, px + o["r"] if ms == "S" else px - o["r"],
+                                    px - o["r"] * tr if ms == "S" else px + o["r"] * tr, o["r"], "mirror", t, o["tick"])
                 entries[s] += 1
                 # same-bar stop check (stop first)
                 p = open_pos[s]
@@ -294,7 +335,15 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
         if realised_gross + unreal <= -cfg.daily_loss:
             halted = halted or "daily loss limit"
             continue
-        if cfg.stop_day_after_losses and losses_today >= cfg.stop_day_after_losses:
+        mirror_mtm = mirror_net + sum(((bars[s][k].close - p.entry) * p.qty * (1 if p.side == "B" else -1)
+                                       for s, p in mirror.items()), D(0))
+        if cfg.flip and not flipped and losses_today >= cfg.flip_after_losses \
+                and mirror_mtm > 0 and mirror_mtm > realised_net + unreal:
+            flipped, flip_at = True, close_t.strftime("%H:%M")
+        if flipped and flip_losses >= cfg.flip_halt_losses:
+            halted = halted or f"flipped at {flip_at}, then {flip_losses} losers"
+            continue
+        if not flipped and cfg.stop_day_after_losses and losses_today >= cfg.stop_day_after_losses:
             halted = halted or f"{losses_today} losing trades"
             continue
         base = cfg.max_trades
@@ -313,11 +362,17 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
             found = playbook.detect(bars[s][:k + 1], d, data[s]["tick"], trends[s].get("score", 0.0))
             shown = strategy_book.apply(found, data[s]["tick"], book) if cfg.use_book else \
                 [{**f, "edge": "untested"} for f in found]
+            if flipped:
+                flips = []
+                for f in shown:
+                    inv = backtest.invert(f, data[s]["tick"])
+                    flips.append({**inv, "setup": f["setup"] + "_flip", "_orig": strategy_book.key(f["setup"], f["side"])})
+                shown = flips
             for f in shown:
-                kk = strategy_book.key(f["setup"], f["side"])
+                kk = f.get("_orig") or strategy_book.key(f["setup"], f["side"])
                 if cfg.allowed_setups is not None and kk not in cfg.allowed_setups:
                     continue
-                if cfg.direction_gate and regime.check(f["side"], s, {"market": market, "stocks": trends}):
+                if not flipped and cfg.direction_gate and regime.check(f["side"], s, {"market": market, "stocks": trends}):
                     continue
                 per = 0.0
                 if book and kk in book.get("variants", {}):
@@ -383,7 +438,8 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
     for s, p in list(open_pos.items()):
         close(p, bars[s][-1].close, "close", bars[s][-1].opens_at)
     log.extend(trades)
-    return {"day": d.isoformat(), "start": float(cash), "gross": float(realised_gross),
+    return {"day": d.isoformat(), "start": float(cash), "gross": float(realised_gross), "flipped_at": flip_at,
+            "mirror_net": float(mirror_net),
             "net": float(realised_net), "end": float(cash + realised_net), "trades": len(trades),
             "wins": sum(1 for x in trades if x["net"] > 0), "halted": halted,
             "charges": float(sum(x["charges"] for x in trades))}

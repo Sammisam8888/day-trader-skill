@@ -133,6 +133,8 @@ export async function getSentiment(): Promise<SentimentResp> {
 
 export interface ControlHist { ts: string; by: string; command: string; args: Record<string, unknown>; reason: string; outcome: string; message: string }
 export interface ControlState {
+  day_mode?: { flipped: boolean; halted: string | null; losers: { normal: number; flip: number }; mirror_pnl: string;
+    flip_enabled: boolean; flip_after: number; flip_halt_after: number; stop_after: number; flipped_at?: string | null } | null;
   halt: { by: string; reason: string; ts: string } | null;
   risk: Record<string, string>; raised: Record<string, string>; history: ControlHist[];
   upcoming: { date: string; dow: string; trading: boolean; special: string | null; events: string[] }[];

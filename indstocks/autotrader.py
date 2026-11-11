@@ -30,6 +30,7 @@ import brain                                             # noqa: E402
 import profit_budget                                     # noqa: E402
 import common                                            # noqa: E402
 import control                                           # noqa: E402
+import daymode                                           # noqa: E402
 import regime                                            # noqa: E402
 import risk as risk_mod                                  # noqa: E402
 import sentiment                                         # noqa: E402
@@ -313,10 +314,12 @@ def run(broker=None, now=None, *, decide=None) -> int:
          "view": str(out.get("view", ""))[:500], "decisions": len(out.get("decisions", []))})
     actions: list = []
     direction = (out.get("ctx") or {}).get("direction")
+    if (out.get("ctx") or {}).get("day_mode"):
+        log({"event": "day_mode", "call_id": call_id, **{k: v for k, v in out["ctx"]["day_mode"].items()}})
     mood = sentiment.load(now)
     if direction:
         log({"event": "direction", "call_id": call_id, **direction["market"]})
-        if gates_enforced():
+        if daymode.direction_enforced() and not ((out.get("ctx") or {}).get("day_mode") or {}).get("flipped"):
             retire_against(broker, orders, placements, direction, rec)
 
     def act(i: int, outcome: str, reason: str = "", **extra) -> None:
@@ -415,10 +418,21 @@ def run(broker=None, now=None, *, decide=None) -> int:
         mood_refusal, mood_mult, mood_note = sentiment.check(
             "BUY" if side == "B" else "SELL", sym, mood, now, ((direction or {}).get("market") or {}).get("state"))
         advisory = [x for x in (against, mood_refusal, mood_note) if x]
+        mode = (out.get("ctx") or {}).get("day_mode") or {}
+        is_flip = str(d.get("setup") or "").endswith(daymode.FLIP_SUFFIX)
         if gates_enforced():
             problems += [x for x in (against, mood_refusal) if x]
         else:
             mood_mult = 1.0
+            if against and daymode.direction_enforced() and not is_flip:
+                problems.append(against)
+        if mode.get("halted"):
+            problems.append(mode["halted"])
+        if mode.get("flipped") and not is_flip:
+            problems.append("flip mode: today only the listed *_flip setups may be entered")
+        window = daymode.no_entry_window(now)
+        if window:
+            problems.append(window)
         if ("BUY" if side == "B" else "SELL") not in control.sides_allowed():
             problems.append(f"only {'/'.join(control.sides_allowed())} today (control)")
         if slots <= 0:

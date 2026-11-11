@@ -113,6 +113,16 @@ jobs:
             done
             sudo touch /var/lib/indstocks/.profile-bigger-bets-v1
           fi
+          # V3 live + the flip layer (owner, 12 Nov 02:53): the back-tested V3 settings.
+          if [ ! -f /var/lib/indstocks/.profile-v3-live ]; then
+            for kv in TRADER_DIRECTION_GATE=enforce TRADER_USE_BOOK=false TRADER_SETUPS=orb,failed_break,day_break \
+                      TRADER_TARGET_R=4 TRADER_NO_ENTRY_WINDOWS=12:00-13:00 TRADER_MAX_CONCURRENT=3 \
+                      TRADER_MAX_LEVERAGE=5.0 TRADER_CEIL_MAX_LEVERAGE=5.0 TRADER_STOP_AFTER_LOSSES=3 \
+                      TRADER_FLIP=true TRADER_FLIP_AFTER=3 TRADER_FLIP_HALT=2; do
+              k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
+            done
+            sudo touch /var/lib/indstocks/.profile-v3-live
+          fi
           # Aggressive afternoon: entries until 14:30 (one time; edit the env file to change).
           if [ ! -f /var/lib/indstocks/.profile-last-entry-v1 ]; then
             sudo sed -i "/^TRADER_LAST_ENTRY=/d" /etc/indstocks.env
