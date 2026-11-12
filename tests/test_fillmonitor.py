@@ -371,3 +371,18 @@ class AdoptedManual(unittest.TestCase):
                        quotes={NIFTY.token: {"ltp": "283.90", "uc": "300", "lc": "260"}})
         fm.tick(b, AT, {})
         self.assertEqual(b.placed[0]["side"], "S")
+
+
+
+class Rejections(unittest.TestCase):
+    def test_a_rejected_order_is_logged_once_with_the_reason(self):
+        reset()
+        plan("P9")
+        o = order("P9", NIFTY, "B", status="REJECTED")
+        o["reason"] = "RED:Margin Shortfall:INR 769.59 Available:INR 25974.29"
+        b = FakeBroker(orders=[o], quotes={NIFTY.token: {"ltp": "281", "uc": "300", "lc": "260"}})
+        fm.tick(b, AT, {})
+        fm.tick(b, AT, {})
+        r = common.events("order_rejected", DAY.isoformat())
+        self.assertEqual(len(r), 1)
+        self.assertIn("Margin Shortfall", r[0]["reason"])

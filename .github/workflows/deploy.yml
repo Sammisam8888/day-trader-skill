@@ -143,13 +143,13 @@ jobs:
           done
           for u in auto.service auto.timer flatten.service flatten.timer watch.service \
                    watch.timer fillmonitor.service dashboard.service login.service login.timer \
-                   sentiment.service sentiment.timer ops.service ops.timer book.service book.timer; do
+                   sentiment.service sentiment.timer ops.service ops.timer book.service book.timer newswatch.service; do
             sudo cp "scripts/$u" "/etc/systemd/system/$u"
           done
           sudo rm -rf /etc/systemd/system/auto.timer.d
           sudo systemctl daemon-reload
           sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer >/dev/null
-          for unit in dashboard fillmonitor; do
+          for unit in dashboard fillmonitor newswatch; do
             sudo systemctl enable "$unit" >/dev/null
             sudo systemctl restart "$unit"
             sleep 2

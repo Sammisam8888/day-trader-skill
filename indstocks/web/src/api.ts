@@ -121,7 +121,9 @@ export interface SentimentSnap {
   tilt: { bias: number; size: number; blocked: Record<string, Record<string, string>>; why: string };
 }
 export interface Score { trades: number; wins: number; net: number }
+export interface LiveItem { ts: string; event: string; symbol: string; score?: number; headline?: string; source?: string; why?: string; move_pct?: string }
 export interface SentimentResp {
+  live?: LiveItem[]; headlines?: { ts: string; source: string; title: string; matched: string[] }[];
   snapshot: SentimentSnap | null; fresh: boolean;
   history: { ts: string; bias: number; vix: number | null; pcr: number | null }[];
   direction: { ts: string; state: string; score: number }[];

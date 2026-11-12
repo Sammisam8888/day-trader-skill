@@ -350,6 +350,27 @@ class Shoonya:
         lim = self.limits()
         return D(lim.get("cash")) + D(lim.get("payin")) - D(lim.get("payout"))
 
+    def free_margin(self) -> Decimal:
+        """Margin Shoonya will still let us use now: cash plus pay-in, less pay-out
+        and everything already blocked (open positions AND pending orders)."""
+        lim = self.limits()
+        return D(lim.get("cash")) + D(lim.get("payin")) - D(lim.get("payout")) - D(lim.get("marginused"))
+
+    def order_margin(self, inst: "Instrument", *, side: str, qty: int, price: Decimal,
+                     trigger: Optional[Decimal] = None) -> Optional[Decimal]:
+        """The margin Shoonya would block for this order (GetOrderMargin), or None."""
+        payload = {"actid": self.actid, "exch": inst.exch, "tsym": inst.tsym, "qty": str(qty),
+                   "prc": str(to_tick(price, inst.tick)), "prd": "I", "trantype": side,
+                   "prctyp": "SL-LMT" if trigger is not None else "LMT"}
+        if trigger is not None:
+            payload["trgprc"] = str(to_tick(trigger, inst.tick))
+        try:
+            resp = self.call("GetOrderMargin", payload)
+        except ShoonyaError:
+            return None
+        m = D(resp.get("ordermargin")) if isinstance(resp, dict) else Decimal(0)
+        return m if m > 0 else None
+
     def positions(self, *, intraday_only: bool = True) -> List[dict]:
         rows = self.call("PositionBook", {"actid": self.actid}, empty_ok=True)
         out = [norm_position(r) for r in rows if isinstance(r, dict)]
