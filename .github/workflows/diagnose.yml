@@ -1,0 +1,37 @@
+name: diagnose
+
+# Read-only look at the box: today's decision log, service and timer state.
+# Run by hand from the Actions tab. Prints nothing secret: the log holds
+# symbols, prices and reasons, never credentials.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write deploy key and pinned host key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Dump state
+        run: |
+          ssh -o BatchMode=yes "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'REMOTE'
+          set +e
+          echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer fillmonitor dashboard
+          echo "== timers"; systemctl list-timers --no-pager --no-legend auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer; echo "== calendar today"; cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import session as s; x=s.session_for(s.now().replace(hour=10)); print(s.now().date(), 'TRADING' if x else 'CLOSED', x and (x.open.time(), x.last_entry.time(), x.flat_by.time()))"
+          echo "== halt"; cat /etc/indstocks.halt 2>/dev/null || echo "(not halted)"
+          echo "== env (TRADER_*)"; sudo grep '^TRADER_' /etc/indstocks.env
+          echo "== claude cli"; sudo -u ubuntu -H bash -lc 'command -v claude; claude --version' 2>&1
+          echo "== claude answers (as the trader calls it)"; sudo bash /opt/indstocks/day-trader-skill/scripts/cli-probe.sh 2>&1 | grep -v '^{"ts' | tail -4
+          D=$(TZ=Asia/Kolkata date +%F)
+          echo "== log $D (last 120)"; sudo tail -n 120 /var/lib/indstocks/auto/$D.jsonl | cut -c1-400
+          echo "== web"; curl -s -o /dev/null -w "/ %{http_code} %{content_type}\n" http://127.0.0.1:8080/; curl -s http://127.0.0.1:8080/api/state | python3 -c "import json,sys; d=json.load(sys.stdin); print('api/state', d.get('error') or 'ok', d.get('status'), (d.get('session') or {}).get('phase'))"
+          echo "== shoonya"; sudo bash /opt/indstocks/day-trader-skill/scripts/shoonya-check.sh 2>&1 | tail -20
+          echo "== auto.service last run"; sudo journalctl -u auto.service -n 40 --no-pager | cut -c1-300
+          echo "== fillmonitor"; sudo journalctl -u fillmonitor -n 15 --no-pager | cut -c1-300
+          REMOTE
