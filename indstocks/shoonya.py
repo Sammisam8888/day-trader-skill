@@ -75,6 +75,10 @@ class ShoonyaError(RuntimeError):
     pass
 
 
+class NetworkError(ShoonyaError):
+    """The request may or may not have reached Shoonya."""
+
+
 class LoginRequired(ShoonyaError):
     """No valid session. Someone has to log in (dashboard -> Log in)."""
 
@@ -196,6 +200,8 @@ def _http(endpoint: str, body: str, token: Optional[str] = None) -> object:
             return json.loads(raw)
         except ValueError:
             raise ShoonyaError(f"{endpoint}: HTTP {exc.code}: {raw[:200]}") from exc
+    except (urllib.error.URLError, OSError) as exc:     # timeout, reset, DNS: the call's fate is unknown
+        raise NetworkError(f"{endpoint}: network: {exc}") from exc
     try:
         return json.loads(raw)
     except ValueError as exc:
@@ -263,7 +269,7 @@ def norm_position(r: dict) -> dict:
         "realised": D(r.get("rpnl")), "unrealised": D(r.get("urmtom")),
         "buy_qty": I(r.get("daybuyqty")), "buy_avg": D(r.get("daybuyavgprc")),
         "sell_qty": I(r.get("daysellqty")), "sell_avg": D(r.get("daysellavgprc")),
-        "tick": D(r.get("ti"), "0.01"),
+        "tick": D(r.get("ti"), "0"),           # 0 = unknown: instrument_for asks the instrument cache
     }
 
 
@@ -449,11 +455,37 @@ class Shoonya:
         algo = env("SHOONYA_ALGO_ID")
         if algo:
             payload["algo_id"] = algo
-        resp = self.call("PlaceOrder", payload, kind="order")
+        try:
+            resp = self.call("PlaceOrder", payload, kind="order")
+        except NetworkError:
+            # It may have been placed. Look before anyone retries: a blind retry
+            # doubles the order, a blind give-up leaves an untracked one.
+            self._sleep(1.5)
+            found = self._find_just_placed(inst, side, qty, remarks[:60])
+            if found:
+                return found
+            raise
         oid = str(resp.get("norenordno") or "")
         if not oid:
             raise ShoonyaError(f"PlaceOrder returned no order number: {resp}")
         return oid
+
+    def _find_just_placed(self, inst: Instrument, side: str, qty: int, remarks: str) -> Optional[str]:
+        try:
+            rows = self.orders()
+        except ShoonyaError:
+            return None
+        now = sess.now()
+        for o in reversed(rows):
+            if o["tsym"] != inst.tsym or o["side"] != side or o["qty"] != qty or o["remarks"] != remarks:
+                continue
+            try:
+                t = datetime.strptime(o["time"], "%H:%M:%S %d-%m-%Y").replace(tzinfo=sess.IST)
+            except ValueError:
+                continue
+            if abs((now - t).total_seconds()) <= 30:
+                return o["id"]
+        return None
 
     def modify(self, order: dict, inst: Instrument, *, qty: int, price: Decimal,
                trigger: Optional[Decimal] = None) -> str:
@@ -486,8 +518,14 @@ class Shoonya:
 
     def instrument_for(self, row: dict) -> Instrument:
         """An Instrument for a position or order row (both carry tsym/token)."""
+        tick = D(row.get("tick"), "0") or _tick_from_cache(row)
+        if not tick:
+            try:                                        # a wrong tick gets every exit rejected (L&T is 0.10)
+                tick = self.quote(row["token"], row.get("exch") or "NSE")["tick"]
+            except ShoonyaError:
+                tick = None
         return Instrument(row["symbol"], row["tsym"], row["token"], row.get("exch") or "NSE",
-                          D(row.get("tick"), "0") or _tick_from_cache(row) or Decimal("0.01"), 1)
+                          tick or Decimal("0.01"), 1)
 
 
 def _load_cache() -> dict:
