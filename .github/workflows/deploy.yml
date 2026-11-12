@@ -3,6 +3,11 @@ name: test and deploy
 on:
   push:
     branches: [main]
+    # A change that touches only workflows or offline research must not
+    # redeploy (and restart the fill monitor) in the middle of a session.
+    paths-ignore:
+      - ".github/workflows/**"
+      - "indstocks/research/**"
   pull_request:
   workflow_dispatch:
 
