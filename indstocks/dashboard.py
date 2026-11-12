@@ -1068,7 +1068,14 @@ def api_sentiment(day: str) -> dict:
              "pcr": ((h.get("positioning") or {}).get("options") or {}).get("pcr")} for h in sentiment.history(day)]
     dirs = [{"ts": r.get("ts"), "state": r.get("state"), "score": r.get("score")}
             for r in read_log(day) if r.get("event") == "direction"]
+    try:
+        recent = json.loads((common.STATE_DIR / "news" / f"recent-{day}.json").read_text())[:40]
+    except (OSError, ValueError):
+        recent = []
+    live = [{k: r.get(k) for k in ("ts", "event", "symbol", "score", "headline", "source", "why", "move_pct")}
+            for r in read_log(day) if r.get("event") in ("news_alert", "price_shock")][-40:][::-1]
     return _j({"snapshot": snap, "fresh": fresh, "history": hist, "direction": dirs[-80:],
+               "live": live, "headlines": recent,
                "scorecard": sentiment.scorecard()})
 
 

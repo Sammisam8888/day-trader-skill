@@ -22,14 +22,26 @@ jobs:
         run: |
           ssh -o BatchMode=yes "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'REMOTE'
           set +e
-          echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer fillmonitor dashboard
+          echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer fillmonitor dashboard newswatch
           echo "== timers"; systemctl list-timers --no-pager --no-legend auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer; echo "== calendar today"; cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import session as s; x=s.session_for(s.now().replace(hour=10)); print(s.now().date(), 'TRADING' if x else 'CLOSED', x and (x.open.time(), x.last_entry.time(), x.flat_by.time()))"
           echo "== halt"; cat /etc/indstocks.halt 2>/dev/null || echo "(not halted)"
           echo "== env (TRADER_*)"; sudo grep '^TRADER_' /etc/indstocks.env
           echo "== claude cli"; sudo -u ubuntu -H bash -lc 'command -v claude; claude --version' 2>&1
           echo "== claude answers (as the trader calls it)"; sudo bash /opt/indstocks/day-trader-skill/scripts/cli-probe.sh 2>&1 | grep -v '^{"ts' | tail -4
           D=$(TZ=Asia/Kolkata date +%F)
-          echo "== trades today"; sudo grep -hE '"event": "(placed|sold|covered|target_exit|stop_placed|entry_cancelled|flip_on|day_summary|order_failed|news_alert)"' /var/lib/indstocks/auto/$D.jsonl | cut -c1-260 | tail -60
+          echo "== newswatch"; sudo journalctl -u newswatch -n 8 --no-pager | cut -c1-260
+          echo "== feeds"; for u in https://www.moneycontrol.com/rss/latestnews.xml https://www.business-standard.com/rss/markets-106.rss https://www.livemint.com/rss/markets; do printf '%-60s ' "$u"; curl -s -o /dev/null -m 10 -A "Mozilla/5.0" -w "%{http_code}\n" "$u"; done
+          echo "== news sources (read-only fetch)"; cd /opt/indstocks/day-trader-skill/indstocks && sudo bash -c 'set -a; . /etc/indstocks.env; set +a; timeout 120 python3 -c "
+          from datetime import timedelta
+          import common, newswatch, sentiment, session as s
+          now = s.now(); since = now - timedelta(hours=24)
+          r = newswatch.from_rss(lambda u: sentiment.fetch(u, timeout=10), since)
+          n = newswatch.from_nse(sentiment.nse_json, common.symbols())
+          print(\"rss items\", len(r), \"| NSE filings for our symbols\", len(n))
+          for x in r[:3]: print(\"  \", x[\"source\"], \"|\", x[\"title\"][:110])
+          print(\"keys:\", [k for k in (\"TRADER_MARKETAUX_KEY\", \"TRADER_FINNHUB_KEY\", \"TRADER_ALPHAVANTAGE_KEY\") if common.setting(k)])
+          "' 2>&1 | tail -8; cd - >/dev/null
+          echo "== trades today"; sudo grep -hE '"event": "(placed|sold|covered|target_exit|stop_placed|entry_cancelled|flip_on|day_summary|order_failed|order_rejected|news_alert|price_shock|scan_kicked)"' /var/lib/indstocks/auto/$D.jsonl | cut -c1-260 | tail -60
           echo "== log $D (last 120)"; sudo tail -n 120 /var/lib/indstocks/auto/$D.jsonl | cut -c1-400
           echo "== web"; curl -s -o /dev/null -w "/ %{http_code} %{content_type}\n" http://127.0.0.1:8080/; curl -s http://127.0.0.1:8080/api/state | python3 -c "import json,sys; d=json.load(sys.stdin); print('api/state', d.get('error') or 'ok', d.get('status'), (d.get('session') or {}).get('phase'))"
           echo "== shoonya"; sudo bash /opt/indstocks/day-trader-skill/scripts/shoonya-check.sh 2>&1 | tail -20

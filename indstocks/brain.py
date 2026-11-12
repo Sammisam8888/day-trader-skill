@@ -181,6 +181,8 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
                     "max_entries_per_symbol": int(common.setting("TRADER_MAX_ENTRIES_PER_SYMBOL", "2")),
                     "shorts_allowed": allow_short()},
         "day_mode": mode,
+        "breaking": _breaking(now),
+        "internals": _internals(),
         "no_entry_window": daymode.no_entry_window(now),
         "leaders": playbook.rank(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
         "direction": {"market": direction["market"],
@@ -247,6 +249,14 @@ trigger entry, a stop where the idea is wrong and a 2R target:
 Only setups that have made money after charges over the last weeks are listed (the strategy book,
 rebuilt every evening; "edge" shows its record). A name ending in _fade is the exact opposite of
 a setup that has been losing: same price, other side. Prefer setups with the stronger edge.
+BREAKING (STATE.breaking): price shocks (a symbol moving 1%+ in 5 minutes) and material news
+alerts from the last 30 minutes, newest first. A scan is started the moment one happens, so this
+may be why you are being asked now. React to them: material bad news plus price breaking down
+(below VWAP / the day low) is a short; good news plus a break up is a long. Don't fade a fresh
+news shock without a clear reversal. A shock with no headline still counts: price moves first.
+STATE.internals: NSE's Nifty 50 advances/declines and every sector index's move. A green index
+with most stocks falling is a weak rally; read sectors to see where money is going.
+
 DAY MODE (STATE.day_mode, enforced by code). After the day's losing trades reach stop_after, no
 new entries. If flip is enabled and, by then, the opposite of today's trades (a paper mirror of
 every fill) is winning, the day FLIPS instead: the listed setups become their exact opposites
@@ -422,6 +432,23 @@ def _extra_view(positions, orders, placements, limits) -> dict:
                     f"(keeps {100 - r['giveback_pct']}% of today's realised net profit)",
             "profit_room": str(r["room"]), "realised_net": str(r["realised_net"]),
             "hard_cap": profit_budget.hard_cap(limits.max_trades_per_day)}
+
+
+def _breaking(now) -> list:
+    try:
+        import realtime
+        return realtime.breaking(now)
+    except Exception:                                   # noqa: BLE001
+        return []
+
+
+def _internals():
+    try:
+        import realtime
+        v = realtime.internals()
+        return {k: v[k] for k in ("breadth", "advances", "declines", "sectors") if k in v} if v else None
+    except Exception:                                   # noqa: BLE001
+        return None
 
 
 def control_view() -> dict:

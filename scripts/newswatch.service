@@ -1,0 +1,14 @@
+[Unit]
+Description=Real-time news watcher: NSE filings and news feeds every 60s, Claude-scored alerts
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/newswatch.py
+Restart=always
+RestartSec=20
+User=root
+
+[Install]
+WantedBy=multi-user.target

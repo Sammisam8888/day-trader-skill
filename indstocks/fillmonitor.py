@@ -157,6 +157,17 @@ def tick(broker, now: datetime, state: dict) -> dict:
         except (KeyError, ShoonyaError):
             pass
     ltps = broker.ltps(list(dict.fromkeys(tokens))) if tokens else {}
+    try:
+        import realtime
+        names = {}
+        for sym in common.symbols():
+            try:
+                names[broker.instrument(sym).token] = sym
+            except (KeyError, ShoonyaError):
+                pass
+        realtime.watch_prices({t_: v for t_, v in ltps.items() if t_ in names}, names, now, state)
+    except Exception as exc:                            # noqa: BLE001
+        log({"event": "error", "reason": f"shock watch: {exc}"[:200]})
 
     # 1-3. every filled auto entry: protect, take target, trail
     for p in placements:
@@ -242,6 +253,15 @@ def tick(broker, now: datetime, state: dict) -> dict:
                 out["moved"] += 1
             except ShoonyaError as exc:
                 log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})
+
+    # 3a. our orders the broker rejected: log the reason once (margin, price band...)
+    ours_all = common.our_order_ids()
+    told = {str(r.get("order_id")) for r in common.events("order_rejected")}
+    for o in orders:
+        if o["id"] in ours_all and o["status"] in ("REJECTED", "REJECT") and o["id"] not in told:
+            log({"event": "order_rejected", "order_id": o["id"], "symbol": o["symbol"], "side": o["side"],
+                 "qty": o["qty"], "reason": str(o.get("reason") or "")[:300]})
+            common.notify(f"Order rejected: {o['symbol']}", str(o.get("reason") or "")[:200], priority="default")
 
     # 3b. a stop whose position is gone (closed by hand, or by Claude's exit)
     #     must not sit at the exchange: if it triggered it would open a new

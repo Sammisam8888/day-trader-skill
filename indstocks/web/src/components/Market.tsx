@@ -59,6 +59,22 @@ export default function Market() {
   const blocked = s ? Object.entries(s.tilt.blocked) : [];
   return (
     <div className="space-y-4">
+      <Card title={<span className="inline-flex items-center gap-2"><Newspaper size={14} />Live: breaking news and price shocks today</span>}
+        right={<span className="text-[11px] text-faint">news every 60s · prices every 4s</span>}>
+        {(d.live ?? []).length === 0 ? <div className="text-sm text-faint">Nothing material yet today. A material headline or a 1%+ move in 5 minutes appears here, alerts your phone and starts a Claude scan at once.</div> : (
+          <ul className="space-y-1.5 text-sm">{(d.live ?? []).map((x, i) => (
+            <li key={i} className="flex items-start gap-2 border-t border-line pt-1.5 first:border-0 first:pt-0">
+              <span className="num w-11 shrink-0 text-faint">{x.ts.slice(11, 16)}</span>
+              {x.event === "price_shock"
+                ? <><Badge tone={Number(x.move_pct) >= 0 ? "up" : "down"}>{x.symbol} {Number(x.move_pct) > 0 ? "+" : ""}{x.move_pct}% / 5m</Badge><span className="text-dim">price shock</span></>
+                : <><Badge tone={toneOf(x.score)}>{x.symbol} {sgn(x.score ?? 0, 1)}</Badge><span className="text-dim">{x.headline} <span className="text-faint">· {x.source}{x.why ? ` · ${x.why}` : ""}</span></span></>}
+            </li>))}</ul>)}
+        {(d.headlines ?? []).length > 0 && (
+          <details className="mt-3"><summary className="cursor-pointer text-xs text-info">{d.headlines!.length} relevant headlines today</summary>
+            <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto text-xs text-dim">{d.headlines!.map((h, i) => (
+              <li key={i}><span className="num text-faint">{h.ts.slice(11, 16)}</span> <span className="text-faint">{h.source}</span>{h.matched.length ? <b className="text-fg"> {h.matched.join(", ")}</b> : null} · {h.title}</li>))}</ul>
+          </details>)}
+      </Card>
       <Control />
       {!s ? <Card title="Market sentiment"><Empty>No sentiment collected yet. It runs at 08:45 and every 15 minutes in the session.</Empty></Card> : (
         <>

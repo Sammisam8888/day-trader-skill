@@ -143,6 +143,7 @@ def reset(**env):
         except FileNotFoundError:
             pass
     lines = [f"{k}={v}" for k, v in {"TRADER_LIVE": "true", "TRADER_SYMBOLS": "NIFTYBEES,SENSEXIETF",
+                                      "TRADER_INTERNALS": "false", "TRADER_KICK_SCAN": "false",
                                       **env}.items()]
     common.ENV_FILE.write_text("\n".join(lines) + "\n")
 

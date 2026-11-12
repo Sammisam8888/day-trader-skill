@@ -96,7 +96,17 @@ def build_plan(d: dict, inst, q: dict):
             raise strat.PlanError(f"buy trigger {trigger} is not above the price {ltp}; that would chase")
         if side == "S" and trigger >= ltp:
             raise strat.PlanError(f"sell trigger {trigger} is not below the price {ltp}; that would chase")
-        limit = trigger + tick * SLIP_TICKS if side == "B" else trigger - tick * SLIP_TICKS
+        # The limit beyond the trigger must survive a fast break: 2 ticks missed the L&T
+        # breakdown on 12 Nov. Use the larger of 2 ticks and TRADER_ENTRY_BAND_PCT (0.1%).
+        # Capped at a quarter of the trade's risk so it never eats the reward:risk.
+        # ...and so the plan still clears the minimum reward:risk measured from the limit.
+        pct_band = trigger * Decimal(common.setting("TRADER_ENTRY_BAND_PCT", "0.1")) / 100
+        stop_, tgt_ = Decimal(str(d["stop"])), Decimal(str(d["target"]))
+        r_, rew_ = abs(trigger - stop_), abs(tgt_ - trigger)
+        m_ = common.limits().min_reward_to_risk
+        rr_room = (rew_ - m_ * r_) / (1 + m_) if rew_ > m_ * r_ else Decimal(0)
+        band = max(tick * SLIP_TICKS, to_tick(min(pct_band, r_ / 4, rr_room), tick, mode="down"))
+        limit = trigger + band if side == "B" else trigger - band
     elif order == "limit":
         limit = to_tick(entry, tick)
         if side == "B" and limit >= ltp:
@@ -211,6 +221,16 @@ def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, 
          "stop": str(new_stop) if new_stop is not None else None,
          "target": str(new_target) if new_target is not None else None, "reason": f"decider: {why}"})
     return "adjusted", "; ".join(changes)
+
+
+def margin_needed(broker, inst, side, qty, limit, trigger, lev) -> Decimal:
+    """Shoonya's margin for this order; if it cannot say, value / leverage plus 10%."""
+    m = None
+    try:
+        m = broker.order_margin(inst, side=side, qty=qty, price=limit, trigger=trigger)
+    except Exception:                                   # noqa: BLE001
+        m = None
+    return m if m is not None else (limit * qty / lev) * Decimal("1.10")
 
 
 def gates_enforced() -> bool:
@@ -328,7 +348,15 @@ def run(broker=None, now=None, *, decide=None) -> int:
     day = risk_mod.DayState(trades_taken=len(rec["filled"]), risk_committed=rec["risk"],
                             open_symbols=tuple(held_syms), exposure=exposure, unrealised_pnl=unrealised)
     buying_power = cash * limits.max_leverage
-    free_cash = max(buying_power - exposure, Decimal(0))
+    # Pending entries block margin at Shoonya just like positions: count them.
+    our_ids = {str(p.get("order_id")) for p in placements}
+    resting_value = sum((o["price"] * o["qty"] for o in orders
+                         if o["id"] in our_ids and o["pending"] and o["filled"] == 0), Decimal(0))
+    free_cash = max(buying_power - exposure - resting_value, Decimal(0))
+    try:
+        margin_free = broker.free_margin()
+    except Exception:                                   # noqa: BLE001
+        margin_free = None
     free_slots = max(limits.max_concurrent_positions - len(held_syms), 0)
     viable = int(free_cash / min_order_value()) if free_cash > 0 else 0
     enterable = len([s for s in common.symbols() if s not in held_syms])
@@ -457,6 +485,21 @@ def run(broker=None, now=None, *, decide=None) -> int:
         size = max(size * Decimal(str(mood_mult)) * control.size_mult(), Decimal("0.25"))
         lev = limits.max_leverage if limits.max_leverage > 0 else Decimal(1)
         sizing = risk_mod.size_position(plan, slot_cash * size / lev, limits)
+        # Fit the order inside the margin Shoonya has free right now (with a 3% cushion),
+        # so it is not rejected for a few hundred rupees.
+        need = None
+        if sizing.ok and margin_free is not None:
+            need = margin_needed(broker, inst, side, sizing.qty, limit, trigger, lev)
+            room = margin_free * Decimal("0.97")
+            if need > room:
+                ratio = room / need if need > 0 else Decimal(0)
+                sizing = risk_mod.size_position(plan, slot_cash * size / lev * ratio, limits)
+                need = margin_needed(broker, inst, side, sizing.qty, limit, trigger, lev) if sizing.ok else need
+                if not sizing.ok or need > room:
+                    log({"event": "refused", "symbol": sym, "side": side,
+                         "reason": f"margin: needs {need:.0f}, Shoonya has {margin_free:.0f} free", "decider_reason": why})
+                    act(i, "refused", f"margin: needs {need:.0f}, Shoonya has {margin_free:.0f} free")
+                    continue
         if not sizing.ok:
             log({"event": "unsized", "symbol": sym, "side": side, "reason": sizing.limit_hit})
             act(i, "refused", f"sizing: {sizing.limit_hit}")
@@ -528,7 +571,9 @@ def run(broker=None, now=None, *, decide=None) -> int:
             log({"event": "order_failed", "symbol": sym, "reason": str(exc)[:300]})
             act(i, "failed", f"broker rejected: {exc}"[:300])
             continue
-        log({"event": "placed", "order_id": oid, **record})
+        if margin_free is not None and need is not None:
+            margin_free -= need
+        log({"event": "placed", "order_id": oid, "margin": str(need) if need is not None else None, **record})
         act(i, "placed", summary + (f" · noted: {'; '.join(advisory)}" if advisory else ""), order_id=oid)
         resting.add((sym, side))
         placed += 1

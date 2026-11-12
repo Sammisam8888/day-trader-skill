@@ -54,7 +54,8 @@ class ClaudeDecides(unittest.TestCase):
         b = broker()
         autotrader.run(b, now=AT, decide=claude(enter()))
         p = b.placed[0]
-        self.assertEqual((p["side"], p["trigger"], p["price"]), ("B", D("281.05"), D("281.07")))
+        # the limit sits past the trigger by min(0.1% of price, risk/4, room left above min R:R): 0.18
+        self.assertEqual((p["side"], p["trigger"], p["price"]), ("B", D("281.05"), D("281.23")))
         rec = ev("placed")[0]
         self.assertEqual((rec["side"], rec["decided_by"], rec["stop"]), ("B", "claude", "280.30"))
 
@@ -62,14 +63,14 @@ class ClaudeDecides(unittest.TestCase):
         b = broker()
         autotrader.run(b, now=AT, decide=claude(enter(side="SELL", entry=279.55, stop=280.30, target=278.00)))
         p = b.placed[0]
-        self.assertEqual((p["side"], p["trigger"], p["price"]), ("S", D("279.55"), D("279.53")))
+        self.assertEqual((p["side"], p["trigger"], p["price"]), ("S", D("279.55"), D("279.38")))
 
     def test_claude_does_not_choose_the_quantity(self):
         reset(TRADER_DECIDER="claude", TRADER_MAX_LOSS="30", TRADER_MAX_LEVERAGE="2.0")
         b = broker()
         autotrader.run(b, now=AT, decide=claude(enter(qty=100000)))
-        # max loss 30 / risk 0.77 per unit -> 38 units, whatever Claude asked
-        self.assertEqual(b.placed[0]["qty"], 38)
+        # max loss 30 / risk 0.93 per unit (from the 281.23 limit) -> 32 units, whatever Claude asked
+        self.assertEqual(b.placed[0]["qty"], 32)
 
     def test_size_scales_the_slot_down_only(self):
         b = broker()
@@ -365,3 +366,40 @@ class Floors(unittest.TestCase):
         self.assertIn("setups", state["markets"][0])
         self.assertIn("leaders", state)
         self.assertIn("THE PLAYBOOK", seen["p"])
+
+
+
+class MarginFit(unittest.TestCase):
+    """Orders are sized into the margin Shoonya has free, so none is rejected for a shortfall."""
+    def setUp(self):
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="5.0", TRADER_MAX_LOSS="5000")
+        sess.now = lambda clock=None: AT
+        brain.find_claude = lambda: "/x/claude"
+
+    def margin_broker(self, free):
+        b = broker(cash="25000")
+        b.free_margin = lambda: D(free)
+        b.order_margin = lambda inst, side, qty, price, trigger=None: price * qty / 5
+        return b
+
+    def test_an_order_is_shrunk_to_fit_the_free_margin(self):
+        b = self.margin_broker("2000")                  # most margin already blocked
+        autotrader.run(b, now=AT, decide=claude(enter(stop=279.0, target=286.0)))
+        p = b.placed[0]
+        self.assertLessEqual(p["price"] * p["qty"] / 5, D("1940"))
+        self.assertEqual(ev("placed")[0]["margin"] is not None, True)
+
+    def test_too_little_margin_is_refused_not_sent(self):
+        b = self.margin_broker("50")
+        autotrader.run(b, now=AT, decide=claude(enter(stop=279.0, target=286.0)))
+        self.assertEqual(b.placed, [])
+        self.assertIn("margin", ev("refused")[0]["reason"])
+
+    def test_resting_entries_count_against_buying_power(self):
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="5.0", TRADER_MAX_LOSS="5000", TRADER_MAX_CONCURRENT="2")
+        common.log("auto", {"event": "placed", "order_id": "R1", "symbol": "SENSEXIETF", "side": "B",
+                            "token": SENSEX.token, "risk": "10"})
+        b = broker(cash="10000", orders=[order("R1", SENSEX, "B", qty=40, price="900", trigger="899")])
+        autotrader.run(b, now=AT, decide=claude(enter(stop=279.0, target=286.0)))
+        p = b.placed[0]
+        self.assertLessEqual(p["price"] * p["qty"], D("50000") - D("36000"))
