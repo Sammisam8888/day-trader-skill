@@ -105,6 +105,27 @@ def run(broker=None, *, now=None, sleep=time.sleep) -> int:
         # Only at flatten time. A timer firing on deploy or a clock edge
         # must not close positions early or cry "close manually".
         return 0
+    # One flatten at a time: the fill monitor's pass and a backup timer running
+    # together would both sell the same 40 shares and leave a short.
+    import fcntl
+    lock_path = common.STATE_DIR / ".flatten.lock"
+    try:
+        common.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        lock = open(lock_path, "w")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log({"event": "flatten_skipped", "reason": "another flatten is running"})
+        return 0
+    except OSError:
+        lock = None
+    try:
+        return _run(broker, now, session, sleep)
+    finally:
+        if lock:
+            lock.close()
+
+
+def _run(broker, now, session, sleep) -> int:
     broker = broker or Shoonya()
     try:
         positions = [p for p in broker.positions() if p["qty"] != 0]

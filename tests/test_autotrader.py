@@ -69,8 +69,8 @@ class ClaudeDecides(unittest.TestCase):
         reset(TRADER_DECIDER="claude", TRADER_MAX_LOSS="30", TRADER_MAX_LEVERAGE="2.0")
         b = broker()
         autotrader.run(b, now=AT, decide=claude(enter(qty=100000)))
-        # max loss 30 / risk 0.93 per unit (from the 281.23 limit) -> 32 units, whatever Claude asked
-        self.assertEqual(b.placed[0]["qty"], 32)
+        # (30 - Rs 10 brokerage) / (0.93 risk + 0.14 stop slip + 0.17 charges per unit) -> 16, whatever Claude asked
+        self.assertEqual(b.placed[0]["qty"], 16)
 
     def test_size_scales_the_slot_down_only(self):
         b = broker()

@@ -153,9 +153,10 @@ class TestSizingAndRisk(unittest.TestCase):
 
     def test_max_loss_decides_the_size(self):
         s = _r.size_position(self.plan(), D("100000"), _r.Limits())
-        self.assertEqual(s.qty, 100)                  # 500 / 5
+        # (500 - 2 x Rs 5 brokerage) / (5 risk + 0.05% stop slip + ~0.06% charges per share) -> 95
+        self.assertEqual(s.qty, 95)
         self.assertEqual(s.limit_hit, "max loss per trade")
-        self.assertEqual(s.loss_at_stop, D("500"))
+        self.assertEqual(s.loss_at_stop, D("475"))
 
     def test_cash_buffer_is_respected(self):
         s = _r.size_position(self.plan(), D("5000"), _r.Limits())

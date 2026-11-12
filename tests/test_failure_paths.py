@@ -209,3 +209,108 @@ class ClaudeDownAlert(unittest.TestCase):
             self.assertEqual(len(sent), 1)
         finally:
             common.notify = orig
+
+
+class ClaudeOutputIsReadStrictly(unittest.TestCase):
+    def test_only_buy_or_sell_is_a_side(self):
+        import autotrader
+        self.assertEqual(autotrader.parse_side("buy"), "B")
+        self.assertEqual(autotrader.parse_side("SHORT"), "S")
+        for bad in ("", None, "hold", "BUUY", "flat"):
+            self.assertIsNone(autotrader.parse_side(bad), f"{bad!r} must never become a short")
+
+
+class CancelThenReEnter(unittest.TestCase):
+    def test_cancelling_a_stale_entry_frees_its_slot_in_the_same_response(self):
+        import json
+        import autotrader
+        import brain
+        from _fake import SENSEX, opening
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0", TRADER_MAX_CONCURRENT="3",
+              TRADER_MAX_ENTRIES_PER_SYMBOL="3")
+        day = AT.date()
+        at = datetime(2026, 11, 11, 10, 0, tzinfo=sess.IST)
+        sess.now = lambda clock=None: at
+        brain.find_claude = lambda: "/x/claude"
+        common.log("auto", {"event": "placed", "order_id": "OLD", "symbol": "NIFTYBEES", "side": "B",
+                            "token": NIFTY.token, "risk": "30"})
+        b = FakeBroker(orders=[order("OLD", NIFTY, typ="SL-LMT", remarks="auto/NIFTYBEES")],
+                       candles={NIFTY.token: opening(day), SENSEX.token: opening(day, "900.00", "896.00")},
+                       quotes={NIFTY.token: {"ltp": "280.50", "uc": "308", "lc": "252"},
+                               SENSEX.token: {"ltp": "898.00", "uc": "990", "lc": "810"}})
+        reply = json.dumps({"view": "t", "decisions": [
+            {"action": "cancel", "order_id": "OLD", "reason": "stale"},
+            {"action": "enter", "symbol": "NIFTYBEES", "side": "BUY", "order": "stop", "entry": 281.05,
+             "stop": 280.30, "target": 282.80, "size": 1.0, "reason": "re-price"}]})
+        try:
+            autotrader.run(b, now=at, decide=lambda *a, **k: brain.decide(*a, **k, run=lambda p: reply))
+        finally:
+            sess.now = lambda clock=None: AT
+        self.assertEqual(b.cancelled, ["OLD"])
+        self.assertEqual(len(b.placed), 1, "the re-priced entry goes in")
+
+
+class AmbiguousPlaceOrder(unittest.TestCase):
+    def test_a_timeout_after_the_order_reached_shoonya_returns_its_id(self):
+        import shoonya
+        tok = {"token": "t", "uid": "U", "actid": "U"}
+        sent = {"n": 0}
+        def http(endpoint, body, token):
+            if endpoint == "PlaceOrder":
+                sent["n"] += 1
+                raise shoonya.NetworkError("PlaceOrder: network: timed out")
+            if endpoint == "OrderBook":
+                return [{"norenordno": "777", "tsym": "NIFTYBEES-EQ", "token": NIFTY.token, "trantype": "B",
+                         "qty": "40", "remarks": "auto/NIFTYBEES", "status": "OPEN", "prctyp": "SL-LMT",
+                         "norentm": AT.strftime("%H:%M:%S %d-%m-%Y")}]
+            return {"stat": "Ok"}
+        b = shoonya.Shoonya(token=tok, http=http, sleep=lambda s: None)
+        oid = b.place(NIFTY, side="B", qty=40, price=D("281.2"), trigger=D("281.05"), remarks="auto/NIFTYBEES")
+        self.assertEqual(oid, "777")
+        self.assertEqual(sent["n"], 1, "never sent twice")
+
+    def test_a_timeout_that_never_arrived_is_an_error_not_a_crash(self):
+        import shoonya
+        def http(endpoint, body, token):
+            if endpoint == "PlaceOrder":
+                raise shoonya.NetworkError("x")
+            return {"stat": "Not_Ok", "emsg": "no data"}
+        b = shoonya.Shoonya(token={"token": "t", "uid": "U"}, http=http, sleep=lambda s: None)
+        with self.assertRaises(shoonya.ShoonyaError):
+            b.place(NIFTY, side="B", qty=40, price=D("281.2"), remarks="auto/NIFTYBEES")
+
+
+class OneFlattenAtATime(unittest.TestCase):
+    def test_a_second_flatten_while_one_runs_does_nothing(self):
+        import fcntl
+        reset()
+        common.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        held = open(common.STATE_DIR / ".flatten.lock", "w")
+        fcntl.flock(held, fcntl.LOCK_EX)
+        try:
+            late = datetime(2026, 11, 11, 15, 6, tzinfo=sess.IST)
+            b = FakeBroker(positions=[position(NIFTY, 40, "281")])
+            flatten.run(b, now=late, sleep=lambda s: None)
+            self.assertEqual(b.placed, [], "both would sell the same 40 and leave a short")
+        finally:
+            held.close()
+
+
+class Notifications(unittest.TestCase):
+    def test_the_same_alert_is_not_repeated_every_tick(self):
+        reset(TRADER_NTFY_TOPIC="t-test")
+        import urllib.request
+        sent = []
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = lambda req, timeout=8: sent.append(req) or type("R", (), {"read": lambda s: b""})()
+        common._notified.clear()
+        try:
+            for _ in range(5):
+                common.notify("Stop chased: LT", "x")
+            import threading
+            for t in threading.enumerate():
+                if t is not threading.current_thread() and not t.daemon:
+                    t.join(2)
+        finally:
+            urllib.request.urlopen = orig
+        self.assertEqual(len(sent), 1)

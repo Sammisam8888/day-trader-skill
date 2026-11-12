@@ -140,18 +140,32 @@ def events(name: str, day: Optional[str] = None) -> List[dict]:
     return [r for r in read_log(day) if r.get("event") == name]
 
 
+_notified: dict = {}
+
+
 def notify(title: str, body: str, *, priority: str = "default") -> None:
-    """Push to the phone via ntfy.sh when TRADER_NTFY_TOPIC is set."""
+    """Push to the phone via ntfy.sh when TRADER_NTFY_TOPIC is set. Runs in a
+    background thread (a slow ntfy must never stall the fill monitor), and
+    the same title is sent at most once every two minutes."""
     topic = setting("TRADER_NTFY_TOPIC")
     if not topic:
         return
-    try:
-        req = urllib.request.Request(
-            f"https://ntfy.sh/{topic}", data=body.encode("utf-8"),
-            headers={"Title": title, "Priority": priority})
-        urllib.request.urlopen(req, timeout=8).read()
-    except Exception:                                   # noqa: BLE001
-        pass
+    import threading
+    import time as _t
+    now_ = _t.monotonic()
+    if now_ - _notified.get(title, -1e9) < 120:
+        return
+    _notified[title] = now_
+
+    def send():
+        try:
+            req = urllib.request.Request(
+                f"https://ntfy.sh/{topic}", data=body.encode("utf-8"),
+                headers={"Title": title.encode("ascii", "replace").decode(), "Priority": priority})
+            urllib.request.urlopen(req, timeout=8).read()
+        except Exception:                               # noqa: BLE001
+            pass
+    threading.Thread(target=send, daemon=False).start()   # a one-shot scan waits for it at exit
 
 
 def our_order_ids(day: Optional[str] = None) -> set:

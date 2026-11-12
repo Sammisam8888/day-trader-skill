@@ -508,6 +508,26 @@ def tick(broker, now: datetime, state: dict) -> dict:
     return out
 
 
+def relogin(now: datetime, state: dict, why: str) -> None:
+    """No Shoonya session during market hours: nothing new can be managed
+    (exchange stops still rest). Alert, and start the auto-login at most every
+    10 minutes; it refuses by itself to retry a rejected password."""
+    s = sess.session_for(now)
+    if s is None or not (s.open - timedelta(minutes=5) <= now < s.close):
+        return
+    if time.monotonic() - state.get("relogin_at", -1e9) < 600:
+        return
+    state["relogin_at"] = time.monotonic()
+    common.notify("Shoonya logged out", f"{why}. Trying auto-login; stops already at the exchange still work.",
+                  priority="urgent")
+    try:
+        import subprocess
+        subprocess.run(["systemctl", "start", "--no-block", "login.service"], timeout=10, capture_output=True)
+        log({"event": "relogin_started", "reason": why[:200]})
+    except Exception as exc:                            # noqa: BLE001
+        log({"event": "error", "reason": f"relogin: {exc}"[:200]})
+
+
 def run() -> int:
     broker = Shoonya()
     state: dict = {}
@@ -526,6 +546,7 @@ def run() -> int:
             if warned_login != now.date():
                 log({"event": "login_required", "reason": str(exc)})
                 warned_login = now.date()
+            relogin(now, state, str(exc))
             time.sleep(30)
             continue
         except ShoonyaError as exc:

@@ -93,6 +93,14 @@ class Sizing:
         return self.gain_at_target - self.round_trip_cost
 
 
+def _setting(key: str, default: str) -> str:
+    try:
+        import common
+        return common.setting(key, default)
+    except Exception:                                   # noqa: BLE001
+        return default
+
+
 def size_position(plan, cash: Decimal, limits: Limits) -> Sizing:
     """Whole shares that fit inside every limit. qty 0 means refused."""
     risk = plan.risk_per_share
@@ -107,8 +115,19 @@ def size_position(plan, cash: Decimal, limits: Limits) -> Sizing:
                     if limits.max_position_value is not None
                     else buying_power)
 
+    # The loss at the stop is not just entry-to-stop: the stop order fills
+    # past its trigger in a fast move, and the losing round trip still pays
+    # charges. Both come out of the max loss per trade.
+    import os as _os
+    try:
+        slip_pct = Decimal(_os.environ.get("TRADER_STOP_SLIP_PCT") or _setting("TRADER_STOP_SLIP_PCT", "0.05"))
+    except Exception:                                   # noqa: BLE001
+        slip_pct = Decimal("0.05")
+    slip = plan.entry * slip_pct / 100
+    per_share_cost = plan.entry * Decimal("0.0006")      # STT+exchange+stamp+GST, both legs, about 0.06%
+    room = limits.max_loss_per_trade - 2 * charges_mod.BROKERAGE_PER_ORDER
     caps = {
-        "max loss per trade": int(limits.max_loss_per_trade / risk),
+        "max loss per trade": int(max(room, Decimal(0)) / (risk + slip + per_share_cost)),
         "position cap": int(position_cap / plan.entry),
         "cash after buffer": int(spendable / plan.entry),
     }

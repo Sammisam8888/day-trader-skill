@@ -78,12 +78,25 @@ def reconcile(broker_orders: list, placements: list) -> dict:
     return {"filled": filled, "resting": resting, "by_symbol": fills_by_symbol, "risk": risk}
 
 
+def parse_side(v):
+    """BUY / SELL only. Anything else (blank, "hold", a typo) is not a trade:
+    it must never default to a short."""
+    s = str(v or "").strip().upper()
+    if s in ("BUY", "B", "LONG"):
+        return "B"
+    if s in ("SELL", "S", "SHORT"):
+        return "S"
+    return None
+
+
 def build_plan(d: dict, inst, q: dict):
     """(plan, trigger_or_None, limit_price) from a decision, or raise PlanError.
 
     For a stop entry the plan is measured from the worst fill the order can
     get (trigger plus slippage), not the trigger itself."""
-    side = "B" if str(d.get("side", "")).upper() in ("BUY", "B", "LONG") else "S"
+    side = parse_side(d.get("side"))
+    if side is None:
+        raise strat.PlanError(f"side {d.get('side')!r} is not BUY or SELL")
     order = str(d.get("order", "stop")).lower()
     tick = inst.tick
     entry = Decimal(str(d["entry"]))
@@ -395,6 +408,18 @@ def run(broker=None, now=None, *, decide=None) -> int:
                     continue
             log({"event": "entry_cancelled", "symbol": sym, "order_id": oid, "reason": f"decider: {why}"})
             act(i, "cancelled", f"entry {oid} cancelled", order_id=oid)
+            # Free its slot and its margin for an entry later in this same response
+            # (cancel the stale LT short, re-enter it at today's price).
+            pc = next((p for p in placements if str(p.get("order_id")) == oid), None)
+            if pc:
+                resting.discard((pc["symbol"], pc.get("side", "B")))
+                if (pc["symbol"], pc.get("side", "B")) in rec["resting"]:
+                    rec["resting"].remove((pc["symbol"], pc.get("side", "B")))
+                if margin_free is not None and pc.get("margin"):
+                    try:
+                        margin_free += Decimal(str(pc["margin"]))
+                    except ArithmeticError:
+                        pass
             continue
         if action == "exit":
             pos = next((p for p in held if p["symbol"] == sym), None)
@@ -430,7 +455,11 @@ def run(broker=None, now=None, *, decide=None) -> int:
             act(i, "ignored", f"unknown action {action!r}")
             continue
 
-        side = "B" if str(d.get("side", "")).upper() in ("BUY", "B", "LONG") else "S"
+        side = parse_side(d.get("side"))
+        if side is None:
+            log({"event": "refused", "symbol": sym, "reason": f"side {d.get('side')!r} is not BUY or SELL"})
+            act(i, "refused", f"side {d.get('side')!r} is not BUY or SELL")
+            continue
         if stop_entries:
             act(i, "refused", f"halted: {common.halted()}")
             continue
@@ -488,6 +517,10 @@ def run(broker=None, now=None, *, decide=None) -> int:
             log({"event": "refused", "symbol": sym, "reason": "no market data this scan"})
             act(i, "refused", "no market data this scan")
             continue
+        try:                                            # Claude took a minute or two: price may have moved
+            q = {**q, **{k: v for k, v in broker.quote(inst.token, inst.exch).items() if v}}
+        except (ShoonyaError, Exception):               # noqa: BLE001
+            pass
         try:
             plan, trigger, limit = build_plan(d, inst, q)
         except (strat.PlanError, KeyError, ValueError, ArithmeticError) as exc:

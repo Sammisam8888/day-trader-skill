@@ -4,6 +4,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# A hung scan must not block every later scan (the timer cannot start a running unit).
+TimeoutStartSec=360
 EnvironmentFile=/etc/indstocks.env
 ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/autotrader.py
 User=root
