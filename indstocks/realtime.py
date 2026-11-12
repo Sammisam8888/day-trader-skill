@@ -107,6 +107,27 @@ def breaking(now: datetime, minutes: int = 30) -> list:
     return sorted(out, key=lambda r: r["ts"], reverse=True)[:12]
 
 
+def catalyst(symbol: str, side: str, now: datetime, minutes: int = 30) -> Optional[str]:
+    """A fresh stock-specific reason to trade against the market's direction:
+    a material news alert or a price shock on THIS symbol pointing the same
+    way as the trade (L&T on 12 Nov: market up, L&T falling on news)."""
+    want_down = side in ("S", "SELL")
+    for r in reversed(common.events("news_alert") + common.events("price_shock")):
+        if str(r.get("symbol", "")).upper() != symbol.upper():
+            continue
+        try:
+            if now - datetime.fromisoformat(r["ts"]) > timedelta(minutes=minutes):
+                continue
+            v = float(r.get("score") if r.get("event") == "news_alert" else r.get("move_pct"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if v != 0 and (v < 0) == want_down:
+            what = f"news {v:+.1f}: {str(r.get('headline'))[:80]}" if r.get("event") == "news_alert" \
+                else f"price shock {v:+.2f}% in 5 min"
+            return f"{symbol} {what}"
+    return None
+
+
 SECTORS = ("NIFTY 50", "NIFTY BANK", "NIFTY IT", "NIFTY AUTO", "NIFTY METAL", "NIFTY FMCG", "NIFTY PHARMA",
            "NIFTY REALTY", "NIFTY ENERGY", "NIFTY INFRASTRUCTURE", "NIFTY FINANCIAL SERVICES", "NIFTY PSU BANK",
            "NIFTY PRIVATE BANK", "INDIA VIX")

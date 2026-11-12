@@ -60,10 +60,10 @@ ALIASES = {
     "BANKBEES": [r"bank nifty", r"banking stocks", r"bank stocks", r"\bPSU banks?\b", r"private banks?"],
     "NIFTYBEES": [],
 }
-MACRO = [r"\bRBI\b", r"repo rate", r"inflation", r"\bCPI\b", r"\bGDP\b", r"\bFed\b", r"crude", r"\bFIIs?\b",
-         r"\bFPIs?\b", r"tariff", r"\bwar\b", r"ceasefire", r"\bSEBI\b", r"budget", r"rupee", r"sensex",
-         r"\bnifty\b", r"market crash", r"sell-?off", r"rally", r"blacklist", r"\bban\b", r"\braid\b",
-         r"downgrade", r"upgrade", r"penalty", r"probe"]
+MACRO = [r"\bRBI\b", r"repo rate", r"\bFed\b", r"rate (cut|hike)", r"tariff", r"\bwar\b", r"ceasefire",
+         r"market crash", r"circuit breaker", r"\bSEBI\b.*(ban|order|penalty|probe)",
+         r"blacklist", r"\braid(s|ed)?\b"]
+MACRO_EVERY_S = 300           # macro-only headlines are scored in a batch at most every 5 minutes
 
 
 def path(name: str):
@@ -250,7 +250,21 @@ def cycle(now: datetime, *, fetch: Callable = None, get: Callable = None, run: O
     _save(path(f"recent-{day}.json"), recent)
 
     alerts = []
-    if relevant and not first_run:                     # the first sweep of the day is backlog, not breaking
+    # A headline naming one of our stocks is scored now. Macro-only ones wait
+    # in a queue scored at most every 5 minutes, so general market chatter
+    # cannot spend the Claude usage the trading scans need.
+    if not first_run and relevant:
+        named = [x for x in relevant if x.get("matched")]
+        queue = state.setdefault("macro_queue", []) + [x for x in relevant if not x.get("matched")]
+        state["macro_queue"] = queue[-25:]
+        due = time.monotonic() - state.get("macro_at", -1e9) >= MACRO_EVERY_S
+        relevant = named + (state["macro_queue"] if due else [])
+        if due and state["macro_queue"]:
+            state["macro_at"] = time.monotonic()
+            state["macro_queue"] = []
+    elif first_run:
+        relevant = []                                  # the first sweep of the day is backlog, not breaking
+    if relevant:
         try:
             scored = score(relevant[:25], symbols, now, run)
         except Exception as exc:                        # noqa: BLE001

@@ -117,6 +117,40 @@ def opp(side: str) -> str:
     return "S" if side == "B" else "B"
 
 
+OUR_PREFIX = ("auto/", "stop/", "tgt/", "man/", "flat/", "exit/", "chat/", "ctl/", "brk/")
+
+
+def is_ours(o: dict, ours: set) -> bool:
+    return o["id"] in ours or str(o.get("remarks") or "").startswith(OUR_PREFIX)
+
+
+def is_stop(o: dict) -> bool:
+    return o.get("type") == "SL-LMT" or str(o.get("remarks") or "").startswith("stop/")
+
+
+def open_qty(placements: list, orders: list, entry_ids: set) -> dict:
+    """How much of each filled entry is still open, FIFO per symbol and side:
+    every filled closing order (stop, target, Claude's exit, a hand exit)
+    consumes the oldest entry first. A trade that has been closed is never
+    protected again, even when a later trade opens the same stock."""
+    closed: dict = {}
+    for o in orders:
+        if o["filled"] > 0 and o["id"] not in entry_ids:
+            k = (str(o["token"]), opp(o["side"]))         # a SELL closes longs
+            closed[k] = closed.get(k, 0) + o["filled"]
+    out = {}
+    fills = {o["id"]: o["filled"] for o in orders}
+    for p in placements:
+        f = fills.get(str(p.get("order_id")), 0)
+        if f <= 0:
+            continue
+        k = (str(p["token"]), p.get("side", "B"))
+        use = min(f, closed.get(k, 0))
+        closed[k] = closed.get(k, 0) - use
+        out[str(p["order_id"])] = f - use
+    return out
+
+
 # ------------------------------------------------------------------ tick
 
 def tick(broker, now: datetime, state: dict) -> dict:
@@ -144,8 +178,6 @@ def tick(broker, now: datetime, state: dict) -> dict:
     stops = latest_by(common.events("stop_placed"), "parent")
     exits = latest_by(common.events("target_exit"), "parent")
     adjusted = latest_by([r for r in common.events("plan_adjusted") if r.get("target")], "parent")
-    bot_tokens = {str(p["token"]) for p in placements
-                  if book.get(str(p.get("order_id")), {}).get("filled", 0) > 0}
 
     resting = [(p, book[str(p["order_id"])]) for p in placements
                if str(p.get("order_id")) in book and book[str(p["order_id"])]["pending"]
@@ -169,38 +201,101 @@ def tick(broker, now: datetime, state: dict) -> dict:
     except Exception as exc:                            # noqa: BLE001
         log({"event": "error", "reason": f"shock watch: {exc}"[:200]})
 
-    # 1-3. every filled auto entry: protect, take target, trail
+    ours_all = common.our_order_ids()
+    entry_ids = {str(p.get("order_id")) for p in placements}
+    remaining = open_qty(placements, orders, entry_ids)
+
+    def closing(tok: str, side: str) -> list:
+        """Pending orders that reduce the position on tok (side = position side)."""
+        return [o for o in orders if o["pending"] and str(o["token"]) == tok and o["side"] == opp(side)
+                and o["id"] not in entry_ids]
+
+    def unfilled(o: dict) -> int:
+        return max(0, o["qty"] - o["filled"])
+
+    # 0. exits in flight (target, Claude's exit, breach exit): chase every tick
+    #    until filled. A limit that price ran away from is no exit at all.
+    exiting = set()
+    for tok, pos in held.items():
+        side = "B" if pos["qty"] > 0 else "S"
+        for o in closing(tok, side):
+            if is_stop(o) or not is_ours(o, ours_all):
+                continue
+            exiting.add(tok)
+            try:
+                inst = broker.instrument_for(pos)
+                px = broker.marketable(inst, opp(side))
+                if px != o["price"]:
+                    broker.modify(o, inst, qty=o["qty"], price=px)
+                    log({"event": "exit_chased", "symbol": pos["symbol"], "order_id": o["id"],
+                         "from": str(o["price"]), "to": str(px)})
+            except ShoonyaError as exc:
+                log({"event": "modify_failed", "order_id": o["id"], "reason": str(exc)[:200]})
+
+    def breach_exit(p: dict, inst, side: str, qty: int, why: str) -> None:
+        """Price is already through the stop: an SL order would be rejected
+        or sit untriggered. Close now with a marketable limit."""
+        try:
+            eid = broker.place(inst, side=opp(side), qty=qty, price=broker.marketable(inst, opp(side)),
+                               remarks=f"brk/{p['symbol']}")
+            log({"event": "stop_breached_exit", "parent": str(p["order_id"]), "order_id": eid,
+                 "symbol": p["symbol"], "qty": qty, "reason": why})
+            common.notify(f"Stop breached: {p['symbol']}", why, priority="high")
+            exiting.add(str(p["token"]))
+            out["sold"] += 1
+        except ShoonyaError as exc:
+            log({"event": "exit_failed", "symbol": p["symbol"], "reason": str(exc)[:300]})
+            common.notify(f"UNPROTECTED {p['symbol']}", f"Breach exit failed: {exc}", priority="urgent")
+
+    stop_rejects: dict = {}
+    for st in common.events("stop_placed"):
+        so_ = book.get(str(st.get("order_id")))
+        if so_ and so_["status"] in ("REJECTED", "REJECT"):
+            stop_rejects[str(st.get("parent"))] = stop_rejects.get(str(st.get("parent")), 0) + 1
+
+    # 1-3. every filled auto entry still open: protect, take target, trail
     for p in placements:
-        o = book.get(str(p.get("order_id")))
-        if not o or o["filled"] <= 0:
-            continue
+        pid = str(p.get("order_id"))
+        o = book.get(pid)
+        if not o or o["filled"] <= 0 or remaining.get(pid, 0) <= 0:
+            continue                                      # never filled, or already closed
         side = p.get("side", "B")
-        pos = held.get(str(p["token"]))
+        tok = str(p["token"])
+        pos = held.get(tok)
         if not pos or (pos["qty"] > 0) != (side == "B"):
             continue                                      # closed (or flipped)
+        if tok in exiting:
+            continue                                      # an exit is working; it is chased above
         inst = inst_of(p)
-        pid = str(p["order_id"])
-        ex = exits.get(pid)
-        if ex:
-            eo = book.get(str(ex.get("order_id")))
-            if eo and eo["pending"]:                       # exit not filled yet: re-price
-                try:
-                    broker.modify(eo, inst, qty=eo["qty"], price=broker.marketable(inst, opp(side)))
-                except ShoonyaError as exc:
-                    log({"event": "modify_failed", "order_id": eo["id"], "reason": str(exc)[:200]})
-            continue
-
-        want = min(o["filled"], abs(pos["qty"]))
+        ltp = ltps.get(tok)
         st = stops.get(pid)
         so = book.get(str(st["order_id"])) if st else None
         stop_px = D(st.get("trigger")) if st else D(p["stop"])
+        if so is not None and so["filled"] > 0 and not so["pending"]:
+            continue                                      # stop executed
+        others = sum(unfilled(x) for x in closing(tok, side) if not (so and x["id"] == so["id"]))
+        room = abs(pos["qty"]) - others
+        want = min(remaining[pid], room)
+
         if so is None or (so["dead"] and so["filled"] == 0):
+            if want <= 0:
+                continue                                  # the position is already fully covered
+            breached = ltp is not None and (ltp <= stop_px if side == "B" else ltp >= stop_px)
+            if breached or stop_rejects.get(pid, 0) >= 2:
+                breach_exit(p, inst, side, want,
+                            f"price {ltp} is through the stop {stop_px}" if breached
+                            else f"the exchange rejected the stop {stop_rejects[pid]} times")
+                continue
             try:
                 oid = broker.place(inst, side=opp(side), qty=want,
                                    price=stop_limit(stop_px, inst.tick, opp(side)),
                                    trigger=stop_px, remarks=f"stop/{p['symbol']}")
                 log({"event": "stop_placed", "parent": pid, "order_id": oid, "symbol": p["symbol"],
                      "side": opp(side), "qty": want, "trigger": str(stop_px)})
+                orders.append({"id": str(oid), "token": tok, "side": opp(side), "pending": True, "dead": False,
+                               "qty": want, "filled": 0, "type": "SL-LMT", "remarks": f"stop/{p['symbol']}",
+                               "price": stop_limit(stop_px, inst.tick, opp(side)), "trigger": stop_px,
+                               "status": "OPEN", "symbol": p["symbol"]})
                 out["protected"] += 1
             except ShoonyaError as exc:
                 log({"event": "stop_failed", "parent": pid, "symbol": p["symbol"], "reason": str(exc)[:300]})
@@ -208,36 +303,67 @@ def tick(broker, now: datetime, state: dict) -> dict:
                               f"Stop could not be placed: {exc}. Retrying every few seconds.", priority="urgent")
             continue
         if not so["pending"]:
-            continue                                       # stop executed
-        if so["qty"] != want:
+            continue
+        want_total = so["filled"] + max(want, 0)
+        if want <= 0:
+            try:                                          # over-covered: this stop is surplus
+                broker.cancel(so["id"])
+                log({"event": "stop_cancelled", "order_id": so["id"], "symbol": p["symbol"],
+                     "reason": "other closing orders already cover the position"})
+            except ShoonyaError as exc:
+                log({"event": "cancel_failed", "order_id": so["id"], "reason": str(exc)[:200]})
+            continue
+        if so["qty"] != want_total:
             try:
-                broker.modify(so, inst, qty=want, price=so["price"], trigger=so["trigger"])
-                log({"event": "stop_resized", "order_id": so["id"], "qty": want})
+                broker.modify(so, inst, qty=want_total, price=so["price"], trigger=so["trigger"])
+                log({"event": "stop_resized", "order_id": so["id"], "qty": want_total})
             except ShoonyaError as exc:
                 log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})
 
-        ltp = ltps.get(str(p["token"]))
         if ltp is None:
+            continue
+        # 2a. a stop that triggered but whose limit price ran away (a fast gap):
+        #     re-price it to marketable so it actually fills.
+        trig = so["trigger"]
+        ran = (ltp <= trig and ltp < so["price"]) if side == "B" else (ltp >= trig and ltp > so["price"])
+        if trig > 0 and ran:
+            try:
+                px = broker.marketable(inst, opp(side))
+                px = min(px, trig) if side == "B" else max(px, trig)
+                broker.modify(so, inst, qty=so["qty"], price=px, trigger=trig)
+                log({"event": "stop_chased", "order_id": so["id"], "symbol": p["symbol"],
+                     "trigger": str(trig), "from": str(so["price"]), "to": str(px), "ltp": str(ltp)})
+                common.notify(f"Stop chased: {p['symbol']}", f"triggered at {trig}, price {ltp}", priority="high")
+            except ShoonyaError as exc:
+                log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})
             continue
         target = D(adjusted[pid]["target"]) if pid in adjusted else D(p["target"])
         hit = ltp >= target if side == "B" else ltp <= target
         if hit:
+            if o["pending"]:                              # no more of this entry once we are taking profit
+                try:
+                    broker.cancel(o["id"])
+                except ShoonyaError:
+                    pass
             try:
                 broker.cancel(so["id"])
             except ShoonyaError as exc:
                 log({"event": "target_skip", "symbol": p["symbol"],
                      "reason": f"stop cancel failed ({exc}); it has probably executed"})
                 continue
+            qty = so["qty"] - so["filled"]
             try:
-                eid = broker.place(inst, side=opp(side), qty=want, price=broker.marketable(inst, opp(side)),
+                eid = broker.place(inst, side=opp(side), qty=qty, price=broker.marketable(inst, opp(side)),
                                    remarks=f"tgt/{p['symbol']}")
                 log({"event": "target_exit", "parent": pid, "order_id": eid, "symbol": p["symbol"],
-                     "qty": want, "ltp": str(ltp), "target": str(target)})
+                     "qty": qty, "ltp": str(ltp), "target": str(target)})
+                exiting.add(tok)
                 out["sold"] += 1
             except ShoonyaError as exc:
                 log({"event": "exit_failed", "symbol": p["symbol"], "reason": str(exc)[:300]})
                 common.notify(f"UNPROTECTED {p['symbol']}",
-                              f"Stop cancelled for target but the exit failed: {exc}", priority="urgent")
+                              f"Stop cancelled for target but the exit failed: {exc}. The stop is re-placed next tick.",
+                              priority="urgent")
             continue
         entry = o["avg"] if o["avg"] > 0 else D(p["entry"])
         if common.setting("TRADER_AUTO_TRAIL", "false").lower() not in ("1", "true", "yes"):
@@ -255,7 +381,6 @@ def tick(broker, now: datetime, state: dict) -> dict:
                 log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})
 
     # 3a. our orders the broker rejected: log the reason once (margin, price band...)
-    ours_all = common.our_order_ids()
     told = {str(r.get("order_id")) for r in common.events("order_rejected")}
     for o in orders:
         if o["id"] in ours_all and o["status"] in ("REJECTED", "REJECT") and o["id"] not in told:
@@ -331,12 +456,15 @@ def tick(broker, now: datetime, state: dict) -> dict:
     #    and target): exit at Claude's target. Otherwise, with no closing
     #    order of their own: guarded by the manual +/- thresholds.
     pending = {(o["token"], o["side"]) for o in orders if o["pending"]}
+    managed = {(str(p["token"]), p.get("side", "B")) for p in placements
+               if remaining.get(str(p.get("order_id")), 0) > 0}
     for tok, pos in held.items():
         side = "B" if pos["qty"] > 0 else "S"
-        if tok in bot_tokens:
-            continue
+        if (tok, side) in managed or tok in exiting:
+            continue                    # the bot's own trade (above), or an exit already working
         adopt = adjusted.get(f"manual:{tok}")
-        so = next((o for o in orders if o["pending"] and str(o["token"]) == tok and o["side"] == opp(side)), None)
+        so = next((o for o in orders if o["pending"] and str(o["token"]) == tok and o["side"] == opp(side)
+                   and is_stop(o)), None)
         if adopt and so is not None:
             ltp = ltps.get(tok) or pos["ltp"]
             tgt = D(adopt["target"])

@@ -69,8 +69,17 @@ def price_for(broker, inst, side: str, round_no: int) -> Decimal:
 def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep) -> str:
     """Exit one position now: clear its pending closing-side orders (the
     stop), then a marketable limit for the whole quantity. Either side."""
-    inst = broker.instrument_for(pos)
+    # The caller's row may be a minute old (Claude thinks for a while): the
+    # stop or target may have closed it since. Exit what is open NOW, or
+    # nothing, so an exit can never open a position the other way.
     side = "S" if pos["qty"] > 0 else "B"
+    fresh = next((p for p in broker.positions() if str(p["token"]) == str(pos["token"])), None)
+    qty = fresh["qty"] if fresh else 0
+    if qty == 0 or (qty > 0) != (side == "S"):
+        log({"event": "exit_skipped", "symbol": pos["symbol"], "reason": "already closed"})
+        return None
+    pos = fresh
+    inst = broker.instrument_for(pos)
     for o in broker.orders():
         if o["token"] == pos["token"] and o["pending"] and o["side"] == side:
             try:
@@ -78,7 +87,12 @@ def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep) -> str:
             except ShoonyaError:
                 pass
     sleep(0.5)
-    return broker.place(inst, side=side, qty=abs(pos["qty"]), price=broker.marketable(inst, side),
+    fresh = next((p for p in broker.positions() if str(p["token"]) == str(pos["token"])), None)
+    qty = fresh["qty"] if fresh else 0
+    if qty == 0 or (qty > 0) != (side == "S"):
+        log({"event": "exit_skipped", "symbol": pos["symbol"], "reason": "the stop filled while it was cancelled"})
+        return None
+    return broker.place(inst, side=side, qty=abs(qty), price=broker.marketable(inst, side),
                         remarks=remarks[:60])
 
 
@@ -165,7 +179,8 @@ def run(broker=None, *, now=None, sleep=time.sleep) -> int:
     for o in orders:
         if not o["pending"]:
             continue
-        if o["id"] in ours or o["remarks"].startswith(("auto/", "stop/", "tgt/", "man/", "flat/", "chat/")):
+        if o["id"] in ours or o["remarks"].startswith(("auto/", "stop/", "tgt/", "man/", "flat/", "chat/",
+                                                        "exit/", "ctl/", "brk/")):
             try:
                 broker.cancel(o["id"])
                 swept += 1

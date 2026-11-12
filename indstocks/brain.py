@@ -179,7 +179,8 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
                     "fills_today": sum(fills.values()), "max_trades": limits.max_trades_per_day,
                     "extra_trades": _extra_view(positions, orders, placements, limits),
                     "max_entries_per_symbol": int(common.setting("TRADER_MAX_ENTRIES_PER_SYMBOL", "2")),
-                    "shorts_allowed": allow_short()},
+                    "shorts_allowed": allow_short(),
+                    "margin_free": _margin_free(broker)},
         "day_mode": mode,
         "breaking": _breaking(now),
         "internals": _internals(),
@@ -254,6 +255,11 @@ alerts from the last 30 minutes, newest first. A scan is started the moment one 
 may be why you are being asked now. React to them: material bad news plus price breaking down
 (below VWAP / the day low) is a short; good news plus a break up is a long. Don't fade a fresh
 news shock without a clear reversal. A shock with no headline still counts: price moves first.
+A stock-specific shock or alert in the last 30 minutes WAIVES the market-direction gate for that
+symbol in the same direction (a short on bad news is allowed on an up day, and the reverse).
+MARGIN: STATE.account.margin_free is what Shoonya will actually lend now. Resting entries block
+margin. If a better setup needs margin that stale resting entries hold, cancel the stalest first
+(action cancel) in the same response, then enter.
 STATE.internals: NSE's Nifty 50 advances/declines and every sector index's move. A green index
 with most stocks falling is a weak rally; read sectors to see where money is going.
 
@@ -442,6 +448,13 @@ def _breaking(now) -> list:
         return []
 
 
+def _margin_free(broker):
+    try:
+        return str(broker.free_margin())
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
 def _internals():
     try:
         import realtime
@@ -527,6 +540,21 @@ def rules(ctx: dict, insts: dict, session) -> dict:
     return {"view": "rule-based: opening-range break either way", "decisions": decisions}
 
 
+def _alert_if_down(now) -> None:
+    """Claude failing twice in a row means no trading decisions at all:
+    tell the phone (again at the 6th), not just the log."""
+    recent = 0
+    for r in common.events("brain_unavailable"):
+        try:
+            if now - datetime.fromisoformat(r["ts"]) <= timedelta(minutes=20):
+                recent += 1
+        except (KeyError, ValueError):
+            pass
+    if recent + 1 in (2, 6):
+        common.notify("Claude unavailable", f"{recent + 1} scans in a row got no decision: no new trades. "
+                      "Stops and targets still run.", priority="urgent")
+
+
 def decide(broker, session, now, *, cash, positions, orders, placements, limits,
            run: Optional[Callable] = None) -> dict:
     b = build(broker, session, now, cash=cash, positions=positions, orders=orders,
@@ -540,6 +568,7 @@ def decide(broker, session, now, *, cash, positions, orders, placements, limits,
             return {**out, "insts": b["insts"], "ctx": b["ctx"], "transcript": tr}
         except Exception as exc:                        # noqa: BLE001
             tr["error"] = f"{type(exc).__name__}: {exc}"[:500]
+            _alert_if_down(now)
             common.log("brain", {"event": "brain_unavailable", "reason": str(exc)[:300],
                                  "action": ("rule-based decisions this scan" if common.setting("TRADER_BRAIN_FALLBACK", "none").lower() == "rules" else "no trades this scan")})
             if common.setting("TRADER_BRAIN_FALLBACK", "none").lower() != "rules":
