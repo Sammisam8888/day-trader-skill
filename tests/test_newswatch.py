@@ -60,6 +60,23 @@ class Cycle(unittest.TestCase):
         a = common.events("news_alert")
         self.assertEqual((a[0]["symbol"], a[0]["score"]), ("LT", -0.9))
 
+    def test_macro_chatter_is_batched_not_scored_every_minute(self):
+        state, calls = {}, {"n": 0}
+        def run(prompt):
+            calls["n"] += 1
+            return json.dumps({"items": []})
+        def go(*titles):
+            newswatch.cycle(AT, fetch=lambda url, **k: rss(*titles), get=lambda api: [], run=run, state=state)
+        go("x")                                                   # backlog sweep
+        go("x", "RBI keeps repo rate unchanged")                  # first macro batch: scored
+        go("x", "RBI keeps repo rate unchanged", "Fed signals rate cut")   # within 5 min: queued
+        self.assertEqual(calls["n"], 1)
+        go("x", "RBI keeps repo rate unchanged", "Fed signals rate cut", "L&T wins order")   # named stock: now
+        self.assertEqual(calls["n"], 2)
+
+    def test_general_market_words_are_not_macro_news(self):
+        self.assertFalse(newswatch.match("Sensex, Nifty rally as FIIs buy", ["LT"])["macro"])
+
     def test_commentary_is_not_an_alert(self):
         self.run_cycle(["x"], {"items": []})
         self.run_cycle(["x", "L&T among stocks to watch today"],

@@ -160,6 +160,6 @@ def our_order_ids(day: Optional[str] = None) -> set:
     for r in read_log(day):
         if r.get("order_id") and r.get("event") in (
                 "placed", "stop_placed", "target_exit", "sold", "covered",
-                "short_covered", "chat_buy", "chat_sell"):
+                "short_covered", "chat_buy", "chat_sell", "stop_breached_exit"):
             ids.add(str(r["order_id"]))
     return ids

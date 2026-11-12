@@ -31,6 +31,7 @@ import profit_budget                                     # noqa: E402
 import common                                            # noqa: E402
 import control                                           # noqa: E402
 import daymode                                           # noqa: E402
+import realtime                                          # noqa: E402
 import regime                                            # noqa: E402
 import risk as risk_mod                                  # noqa: E402
 import sentiment                                         # noqa: E402
@@ -164,7 +165,8 @@ def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, 
         parent = str(plan["order_id"])
     qty = abs(pos["qty"])
     stop_order = next((o for o in orders if o["pending"] and o["token"] == pos["token"]
-                       and o["side"] == ("S" if long_ else "B")), None)
+                       and o["side"] == ("S" if long_ else "B")
+                       and (o.get("type") == "SL-LMT" or str(o.get("remarks", "")).startswith("stop/"))), None)
     new_stop = new_target = None
     problems = []
     if d.get("stop") is not None:
@@ -255,7 +257,7 @@ def retire_against(broker, orders: list, placements: list, direction: dict, rec:
         if not p or not o["pending"] or o["filled"] > 0:
             continue
         why = regime.check("BUY" if o["side"] == "B" else "SELL", p["symbol"], direction)
-        if not why:
+        if not why or any("direction gate waived" in str(x) for x in (p.get("advisory") or [])):
             continue
         if common.live():
             try:
@@ -303,9 +305,14 @@ def run(broker=None, now=None, *, decide=None) -> int:
     unrealised = sum((p["unrealised"] for p in positions), Decimal(0))
     if control.check_raises(realised + unrealised):
         limits = common.limits()
-    if realised + unrealised <= -limits.daily_loss_limit:
-        log({"event": "halted", "reason": "daily loss limit reached", "realised": str(realised),
-             "unrealised": str(unrealised), "limit": str(limits.daily_loss_limit)})
+    try:
+        import metrics
+        day_net = metrics.pnl(positions, {})["net"]      # after charges: what the account actually lost
+    except Exception:                                   # noqa: BLE001
+        day_net = realised + unrealised
+    if min(day_net, realised + unrealised) <= -limits.daily_loss_limit:
+        log({"event": "halted", "reason": "daily loss limit reached (after charges)", "realised": str(realised),
+             "unrealised": str(unrealised), "net": str(day_net), "limit": str(limits.daily_loss_limit)})
         return 0
     if cash > 0 and exposure >= cash * limits.max_leverage:
         log({"event": "halted", "reason": "leverage ceiling already reached",
@@ -398,6 +405,9 @@ def run(broker=None, now=None, *, decide=None) -> int:
             if common.live():
                 import flatten
                 oid = flatten.close_position(broker, pos, remarks=f"exit/{sym}")
+                if oid is None:
+                    act(i, "skipped", "already closed (its stop or target filled first)")
+                    continue
                 log({"event": "sold" if pos["qty"] > 0 else "covered", "symbol": sym, "qty": abs(pos["qty"]),
                      "order_id": oid, "reason": f"decider: {why}"})
                 act(i, "exited", f"closed {abs(pos['qty'])} with a marketable limit", order_id=oid)
@@ -452,8 +462,11 @@ def run(broker=None, now=None, *, decide=None) -> int:
             problems += [x for x in (against, mood_refusal) if x]
         else:
             mood_mult = 1.0
-            if against and daymode.direction_enforced() and not is_flip:
+            cat = realtime.catalyst(sym, side, now) if against else None
+            if against and daymode.direction_enforced() and not is_flip and not cat:
                 problems.append(against)
+            if cat:
+                advisory.append(f"direction gate waived: {cat}")
         if mode.get("halted"):
             problems.append(mode["halted"])
         if mode.get("flipped") and not is_flip:
