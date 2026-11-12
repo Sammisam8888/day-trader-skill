@@ -264,6 +264,7 @@ class AmbiguousPlaceOrder(unittest.TestCase):
                          "qty": "40", "remarks": "auto/NIFTYBEES", "status": "OPEN", "prctyp": "SL-LMT",
                          "norentm": AT.strftime("%H:%M:%S %d-%m-%Y")}]
             return {"stat": "Ok"}
+        sess.now = lambda clock=None: AT              # other modules set their own clock
         b = shoonya.Shoonya(token=tok, http=http, sleep=lambda s: None)
         oid = b.place(NIFTY, side="B", qty=40, price=D("281.2"), trigger=D("281.05"), remarks="auto/NIFTYBEES")
         self.assertEqual(oid, "777")
