@@ -29,6 +29,7 @@ jobs:
           echo "== claude cli"; sudo -u ubuntu -H bash -lc 'command -v claude; claude --version' 2>&1
           echo "== claude answers (as the trader calls it)"; sudo bash /opt/indstocks/day-trader-skill/scripts/cli-probe.sh 2>&1 | grep -v '^{"ts' | tail -4
           D=$(TZ=Asia/Kolkata date +%F)
+          echo "== trades today"; sudo grep -hE '"event": "(placed|sold|covered|target_exit|stop_placed|entry_cancelled|flip_on|day_summary|order_failed|news_alert)"' /var/lib/indstocks/auto/$D.jsonl | cut -c1-260 | tail -60
           echo "== log $D (last 120)"; sudo tail -n 120 /var/lib/indstocks/auto/$D.jsonl | cut -c1-400
           echo "== web"; curl -s -o /dev/null -w "/ %{http_code} %{content_type}\n" http://127.0.0.1:8080/; curl -s http://127.0.0.1:8080/api/state | python3 -c "import json,sys; d=json.load(sys.stdin); print('api/state', d.get('error') or 'ok', d.get('status'), (d.get('session') or {}).get('phase'))"
           echo "== shoonya"; sudo bash /opt/indstocks/day-trader-skill/scripts/shoonya-check.sh 2>&1 | tail -20
