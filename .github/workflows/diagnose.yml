@@ -23,7 +23,7 @@ jobs:
           ssh -o BatchMode=yes "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'REMOTE'
           set +e
           echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer fillmonitor dashboard newswatch
-          echo "== timers"; systemctl list-timers --no-pager --no-legend auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer; echo "== calendar today"; cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import session as s; x=s.session_for(s.now().replace(hour=10)); print(s.now().date(), 'TRADING' if x else 'CLOSED', x and (x.open.time(), x.last_entry.time(), x.flat_by.time()))"
+          echo "== timers"; systemctl list-timers --no-pager --no-legend auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer; echo "== calendar today"; cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import session as s; x=s.session_for(s.now().replace(hour=10)); print(s.now().date(), 'TRADING' if x else 'CLOSED', x and (x.open.time(), x.last_entry.time(), x.flat_by.time()))"
           echo "== halt"; cat /etc/indstocks.halt 2>/dev/null || echo "(not halted)"
           echo "== env (TRADER_*)"; sudo grep '^TRADER_' /etc/indstocks.env
           echo "== claude cli"; sudo -u ubuntu -H bash -lc 'command -v claude; claude --version' 2>&1
@@ -43,7 +43,7 @@ jobs:
           "' 2>&1 | tail -8; cd - >/dev/null
           echo "== audit today"; sudo bash /opt/indstocks/day-trader-skill/scripts/audit-day.sh 2>&1 | head -120
           echo "== audit yesterday"; sudo bash /opt/indstocks/day-trader-skill/scripts/audit-day.sh "$(TZ=Asia/Kolkata date -d yesterday +%F)" 2>&1 | head -120
-          echo "== lessons"; sudo python3 -c "import json;d=json.load(open('/var/lib/indstocks/learning/lessons.json'));[print(k,v['status'],'+%d/-%d'%(v['support'],v['against']),v['rule'][:200]) for k,v in d.items()]" 2>&1 | head -30
+          echo "== lessons"; sudo test -f /var/lib/indstocks/learning/lessons.json && sudo python3 -c "import json;d=json.load(open('/var/lib/indstocks/learning/lessons.json'));[print(k,v['status'],'+%d/-%d'%(v['support'],v['against']),v['rule'][:200]) for k,v in d.items()]" 2>&1 | head -30
           echo "== journal latest"; sudo bash -c 'f=$(ls -1t /var/lib/indstocks/learning/journal-*.json 2>/dev/null | head -1); [ -n "$f" ] && python3 -c "import json,sys;j=json.load(open(sys.argv[1]));print(j[\"day\"],j.get(\"summary\"));[print(\" \",r.get(\"verdict\"),\"|\",str(r.get(\"post_mortem\"))[:220]) for r in (j.get(\"reviews\") or [])]" "$f"' 2>&1 | head -30
           echo "== trades today"; sudo grep -hE '"event": "(placed|sold|covered|target_exit|stop_placed|entry_cancelled|flip_on|day_summary|order_failed|order_rejected|news_alert|price_shock|scan_kicked)"' /var/lib/indstocks/auto/$D.jsonl | cut -c1-260 | tail -60
           echo "== log $D (last 120)"; sudo tail -n 120 /var/lib/indstocks/auto/$D.jsonl | cut -c1-400
