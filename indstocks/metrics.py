@@ -29,21 +29,35 @@ def D(x) -> Decimal:
         return Decimal(0)
 
 
-def pnl(positions: List[dict], ltps: Dict[str, Decimal]) -> dict:
+def pnl(positions: List[dict], ltps: Dict[str, Decimal], orders: Optional[List[dict]] = None) -> dict:
     """Realised (closed), open (marked to LTP), charges (closed round trips
-    plus the exit still owed on open positions), net."""
+    plus the exit still owed on open positions), net.
+
+    With `orders`, brokerage is charged per executed ORDER as the broker
+    does: a stock traded twice is four orders, not two (13 Nov: the
+    per-stock count showed -51 net where the real figure was about -74)."""
     realised = sum((D(p["realised"]) for p in positions), Decimal(0))
-    open_, fees = Decimal(0), Decimal(0)
+    open_, fees, brok_sym, brok_owed = Decimal(0), Decimal(0), Decimal(0), Decimal(0)
     for p in positions:
         qty = int(p["qty"])
         avg = D(p["avg"])
         if qty:
             ltp = D(ltps.get(str(p["token"])) or p.get("ltp") or avg)
             open_ += (ltp - avg) * qty
-            fees += charges_mod.round_trip(avg * abs(qty), ltp * abs(qty)).total
+            c = charges_mod.round_trip(avg * abs(qty), ltp * abs(qty))
+            fees += c.total
+            brok_sym += c.brokerage
+            brok_owed += charges_mod.brokerage(ltp * abs(qty))          # the exit not yet sent
         q = min(int(p.get("buy_qty") or 0), int(p.get("sell_qty") or 0))
         if q:
-            fees += charges_mod.round_trip(D(p["buy_avg"]) * q, D(p["sell_avg"]) * q).total
+            c = charges_mod.round_trip(D(p["buy_avg"]) * q, D(p["sell_avg"]) * q)
+            fees += c.total
+            brok_sym += c.brokerage
+    if orders is not None:
+        brok_ord = sum((charges_mod.brokerage(D(o.get("avg")) * int(o.get("filled") or 0))
+                        for o in orders if int(o.get("filled") or 0) > 0
+                        and str(o.get("product") or "I") in ("I", "")), Decimal(0)) + brok_owed
+        fees += ((brok_ord - brok_sym) * (1 + charges_mod.GST_RATE)).quantize(Decimal("0.01"))
     return {"realised": realised, "open": open_, "charges": fees,
             "net": realised + open_ - fees}
 

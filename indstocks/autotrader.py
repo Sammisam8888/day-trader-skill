@@ -330,7 +330,7 @@ def run(broker=None, now=None, *, decide=None) -> int:
         limits = common.limits()
     try:
         import metrics
-        day_net = metrics.pnl(positions, {})["net"]      # after charges: what the account actually lost
+        day_net = metrics.pnl(positions, {}, orders)["net"]      # after charges: what the account actually lost
     except Exception:                                   # noqa: BLE001
         day_net = realised + unrealised
     if min(day_net, realised + unrealised) <= -limits.daily_loss_limit:

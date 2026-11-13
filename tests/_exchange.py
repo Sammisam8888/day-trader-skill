@@ -442,8 +442,15 @@ def run_day(day_candles, ticks, *, seed=1, chaos=0.0, hostile=0.1, scans=True, s
     clock = {"t": session.open - timedelta(minutes=6)}
     sess.now = lambda clock_=None: clock["t"]
     brain.find_claude = lambda: "/sim/claude"
-    flatten.WAIT_S = 0
+    flatten.WAIT_S = 6
     state = {} if state is None else state             # one fill-monitor process can live for days
+
+    def sim_sleep(s):
+        """Waiting moves the market on: the exchange keeps matching."""
+        clock["t"] = clock["t"] + timedelta(seconds=float(s))
+        ex.step(clock["t"])
+    flatten.run.__kwdefaults__["sleep"] = sim_sleep
+    flatten.close_position.__kwdefaults__["sleep"] = sim_sleep
     end = session.flat_by + timedelta(minutes=12)
     last_scan = None
     while clock["t"] <= end:
@@ -462,11 +469,12 @@ def run_day(day_candles, ticks, *, seed=1, chaos=0.0, hostile=0.1, scans=True, s
                 errors.append(f"{now:%H:%M:%S} scan: {type(exc).__name__}: {exc}\n{traceback.format_exc()[-600:]}")
         if now.strftime("%H:%M:%S") in ("15:08:00", "15:14:00"):
             try:
-                flatten.run(ex, now=now, sleep=lambda s: None)
+                flatten.run(ex, now=now)
             except Exception as exc:                    # noqa: BLE001
                 errors.append(f"{now:%H:%M:%S} flatten timer: {type(exc).__name__}: {exc}")
-        chk.check(common.events("placed"), now, session)
-        clock["t"] = now + STEP
+        chk.check(common.events("placed"), clock["t"], session)
+        clock["t"] = max(clock["t"], now) + STEP
+        clock["t"] = clock["t"].replace(second=clock["t"].second - clock["t"].second % 10, microsecond=0)
     chk.end_of_day(session)
     net = sum((p["realised"] for p in ex.pos.values()), D(0))
     return {"day": day.isoformat(), "violations": chk.violations, "errors": errors, "rejects": ex.rejects,

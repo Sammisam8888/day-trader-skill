@@ -278,7 +278,7 @@ def tick(broker, now: datetime, state: dict) -> dict:
     # 0b. the day lock: the whole day's net after charges, best kept on disk
     if profitlock.day_enabled() and not lock_best.get("_day_locked"):
         try:
-            day_net = metrics.pnl(positions, ltps)["net"]
+            day_net = metrics.pnl(positions, ltps, orders)["net"]
         except Exception:                               # noqa: BLE001
             day_net = None
         if day_net is not None:
@@ -667,7 +667,7 @@ def run() -> int:
             if state.get("pnl_minute") != minute:
                 state["pnl_minute"] = minute
                 log({"event": "pnl", **{k: str(v) for k, v in
-                                         metrics.pnl(snap["positions"], snap["ltps"]).items()}})
+                                         metrics.pnl(snap["positions"], snap["ltps"], snap["orders"]).items()}})
         key = (got.get("held"), got.get("resting"))
         if key != last or any(got.get(k) for k in ("protected", "cancelled", "sold", "moved")):
             log({"event": "state", **got})
