@@ -215,7 +215,21 @@ def tick(broker, now: datetime, state: dict) -> dict:
 
     # 0. exits in flight (target, Claude's exit, breach exit): chase every tick
     #    until filled. A limit that price ran away from is no exit at all.
+    #    An exit that has started (stop being cancelled, exit not yet placed)
+    #    counts too, for 20 seconds, unless it was aborted.
     exiting = set()
+    starts = {}
+    for r in common.events("exit_started") + common.events("exit_aborted"):
+        try:
+            t_ = datetime.fromisoformat(r["ts"])
+        except (KeyError, ValueError):
+            continue
+        tok_ = str(r.get("token"))
+        if r["event"] == "exit_started" and timedelta(0) <= now - t_ <= timedelta(seconds=20):
+            starts[tok_] = t_
+        elif r["event"] == "exit_aborted" and tok_ in starts and t_ >= starts[tok_]:
+            starts.pop(tok_)
+    exiting.update(starts)
     for tok, pos in held.items():
         side = "B" if pos["qty"] > 0 else "S"
         for o in closing(tok, side):

@@ -315,3 +315,36 @@ class Notifications(unittest.TestCase):
         finally:
             urllib.request.urlopen = orig
         self.assertEqual(len(sent), 1)
+
+
+class ExitStartedRace(unittest.TestCase):
+    """13 Nov 10:50: the fill monitor read the book between Claude's exit
+    cancelling the stop and placing the buy, and put a stop back."""
+    def setUp(self):
+        reset()
+        sess.now = lambda clock=None: AT
+        plan("P1")
+        common.log("fill", {"event": "stop_placed", "parent": "P1", "order_id": "S1", "trigger": "280.30"})
+
+    def book(self):
+        return FakeBroker(orders=[filled("P1"), order("S1", NIFTY, side="S", status="CANCELED", trigger="280.3")],
+                          positions=[position(NIFTY, 40, "281.02")], quotes={NIFTY.token: {"ltp": "281.10"}})
+
+    def test_no_stop_is_put_back_while_an_exit_is_starting(self):
+        common.log("flatten", {"event": "exit_started", "symbol": "NIFTYBEES", "token": NIFTY.token})
+        b = self.book()
+        fm.tick(b, AT, {})
+        self.assertEqual(b.placed, [])
+
+    def test_an_aborted_exit_is_protected_again(self):
+        common.log("flatten", {"event": "exit_started", "symbol": "NIFTYBEES", "token": NIFTY.token})
+        common.log("flatten", {"event": "exit_aborted", "symbol": "NIFTYBEES", "token": NIFTY.token})
+        b = self.book()
+        fm.tick(b, AT, {})
+        self.assertEqual(len(b.placed), 1)
+
+    def test_a_stale_start_does_not_block_protection(self):
+        common.log("flatten", {"event": "exit_started", "symbol": "NIFTYBEES", "token": NIFTY.token})
+        b = self.book()
+        fm.tick(b, AT + timedelta(seconds=30), {})
+        self.assertEqual(len(b.placed), 1)
