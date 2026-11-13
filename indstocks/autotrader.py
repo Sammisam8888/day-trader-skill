@@ -439,7 +439,13 @@ def run(broker=None, now=None, *, decide=None) -> int:
                 continue
             if common.live():
                 import flatten
-                oid = flatten.close_position(broker, pos, remarks=f"exit/{sym}")
+                try:
+                    oid = flatten.close_position(broker, pos, remarks=f"exit/{sym}")
+                except ShoonyaError as exc:
+                    # the stop was cancelled for this exit: the fill monitor puts it back
+                    log({"event": "exit_failed", "symbol": sym, "reason": str(exc)[:300]})
+                    act(i, "failed", f"exit failed: {exc}"[:300])
+                    continue
                 if oid is None:
                     act(i, "skipped", "already closed (its stop or target filled first)")
                     continue
