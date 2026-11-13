@@ -603,6 +603,7 @@ def run(broker=None, now=None, *, decide=None) -> int:
             "confidence": d.get("confidence"), "why": why, "call_id": call_id,
             "size_mult": str(size), "sentiment_note": mood_note, "advisory": advisory,
             "valid_minutes": valid_minutes(d), "setup": str(d.get("setup") or "")[:30] or None,
+            "lessons": [str(x)[:8] for x in (d.get("lessons") or [])][:6] if isinstance(d.get("lessons"), list) else [],
             "sentiment_bias": (mood or {}).get("tilt", {}).get("bias"),
             "direction": ((direction or {}).get("market") or {}).get("state"),
         }

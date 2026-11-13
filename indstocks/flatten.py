@@ -21,6 +21,7 @@ exposure to be managed). Delivery (CNC) holdings are never touched.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -229,7 +230,15 @@ def _run(broker, now, session, sleep) -> int:
              "charges": str(summ["charges"]), "trades": len(trades),
              "wins": sum(1 for x in trades if x["net"] > 0),
              "detail": [{k: str(v) for k, v in x.items()} for x in trades]})
-        record_results(trades, broker.orders())
+        book_ = broker.orders()
+        record_results(trades, book_)
+        try:
+            import learning
+            p_ = learning.store_dir() / f"book-{now.strftime('%Y-%m-%d')}.json"
+            p_.parent.mkdir(parents=True, exist_ok=True)
+            p_.write_text(json.dumps(book_, default=str))
+        except Exception:                               # noqa: BLE001
+            pass
     except ShoonyaError:
         pass
     return 1 if failed else 0

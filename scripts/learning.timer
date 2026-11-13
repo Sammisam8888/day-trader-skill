@@ -1,0 +1,11 @@
+[Unit]
+Description=Trade review after the close, weekdays
+
+[Timer]
+# After the flatten (15:05, backup 15:14) and the strategy book (15:40); the
+# Shoonya order book is still today's until the nightly settlement.
+OnCalendar=Mon..Fri *-*-* 15:50:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target
