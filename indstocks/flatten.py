@@ -213,7 +213,7 @@ def _run(broker, now, session, sleep) -> int:
         if not o["pending"]:
             continue
         if o["id"] in ours or o["remarks"].startswith(("auto/", "stop/", "tgt/", "man/", "flat/", "chat/",
-                                                        "exit/", "ctl/", "brk/")):
+                                                        "exit/", "ctl/", "brk/", "lock/")):
             try:
                 broker.cancel(o["id"])
                 swept += 1

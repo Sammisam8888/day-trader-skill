@@ -284,10 +284,16 @@ class Adjust(unittest.TestCase):
         self.assertEqual(b.modified, [])
         self.assertIn("over max loss per trade", ev("refused")[0]["reason"])
 
-    def test_target_extension_is_recorded_for_the_monitor(self):
+    def test_a_target_cannot_be_pushed_further_away(self):
         b = self.book()
         autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "NIFTYBEES", "target": 284.00}))
-        self.assertEqual(ev("plan_adjusted")[0]["target"], "284.00")
+        self.assertEqual(ev("plan_adjusted"), [])
+        self.assertIn("may only move closer", ev("refused")[-1]["reason"])
+
+    def test_a_closer_target_is_recorded_for_the_monitor(self):
+        b = self.book()
+        autotrader.run(b, now=AT, decide=claude({"action": "adjust", "symbol": "NIFTYBEES", "target": 282.00}))
+        self.assertEqual(ev("plan_adjusted")[0]["target"], "282.00")
 
     def test_claude_adopts_a_manual_position_with_a_stop_at_the_exchange(self):
         b = broker(positions=[position(SENSEX, 5, "899", ltp="900")])

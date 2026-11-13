@@ -257,6 +257,10 @@ may be why you are being asked now. React to them: material bad news plus price 
 news shock without a clear reversal. A shock with no headline still counts: price moves first.
 A stock-specific shock or alert in the last 30 minutes WAIVES the market-direction gate for that
 symbol in the same direction (a short on bad news is allowed on an up day, and the reverse).
+PROFIT LOCK (code, every few seconds, you cannot override it): once a trade is up Rs 40 after
+charges its stop goes to breakeven after charges, and if its net profit falls back to half of its
+best (never below +Rs 5) it is closed at market at once. Targets may only be moved CLOSER, never
+further away: if momentum is strong, tighten the stop instead of chasing the target.
 MARGIN: STATE.account.margin_free is what Shoonya will actually lend now. Resting entries block
 margin. If a better setup needs margin that stale resting entries hold, cancel the stalest first
 (action cancel) in the same response, then enter.

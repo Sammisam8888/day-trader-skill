@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common                                            # noqa: E402
 import flatten as flatten_mod                            # noqa: E402
 import metrics                                           # noqa: E402
+import profitlock                                        # noqa: E402
 import session as sess                                   # noqa: E402
 from market import to_tick                               # noqa: E402
 from shoonya import D, Instrument, LoginRequired, Shoonya, ShoonyaError  # noqa: E402
@@ -117,7 +118,7 @@ def opp(side: str) -> str:
     return "S" if side == "B" else "B"
 
 
-OUR_PREFIX = ("auto/", "stop/", "tgt/", "man/", "flat/", "exit/", "chat/", "ctl/", "brk/")
+OUR_PREFIX = ("auto/", "stop/", "tgt/", "man/", "flat/", "exit/", "chat/", "ctl/", "brk/", "lock/")
 
 
 def is_ours(o: dict, ours: set) -> bool:
@@ -267,7 +268,12 @@ def tick(broker, now: datetime, state: dict) -> dict:
         if so_ and so_["status"] in ("REJECTED", "REJECT"):
             stop_rejects[str(st.get("parent"))] = stop_rejects.get(str(st.get("parent")), 0) + 1
 
-    # 1-3. every filled auto entry still open: protect, take target, trail
+    lock_best = state.setdefault("lock_best", None)
+    if lock_best is None:
+        lock_best = state["lock_best"] = profitlock.load()
+    lock_dirty = [False]
+
+    # 1-3. every filled auto entry still open: protect, take target or lock profit, trail
     for p in placements:
         pid = str(p.get("order_id"))
         o = book.get(pid)
@@ -353,8 +359,35 @@ def tick(broker, now: datetime, state: dict) -> dict:
             continue
         target = D(adjusted[pid]["target"]) if pid in adjusted else D(p["target"])
         hit = ltp >= target if side == "B" else ltp <= target
-        if hit:
-            if o["pending"]:                              # no more of this entry once we are taking profit
+        entry = o["avg"] if o["avg"] > 0 else D(p["entry"])
+        open_q = so["qty"] - so["filled"]
+        lock_why = None
+        if profitlock.enabled() and open_q > 0:
+            net = profitlock.net_open(side, entry, open_q, ltp)
+            best, armed, lock_why = profitlock.check(lock_best.get(pid), net)
+            if best is not None and best != lock_best.get(pid):
+                if pid not in lock_best:
+                    log({"event": "profit_lock_armed", "parent": pid, "symbol": p["symbol"], "net": str(round(net, 2)),
+                         "floor": str(round(profitlock.floor(best), 2))})
+                lock_best[pid] = best
+                lock_dirty[0] = True
+            if armed and not lock_why:
+                # protect at the exchange too: stop to breakeven after charges
+                be = profitlock.breakeven_price(side, entry, open_q, inst.tick)
+                better = be > so["trigger"] if side == "B" else (so["trigger"] <= 0 or be < so["trigger"])
+                room = (ltp - be) if side == "B" else (be - ltp)
+                if better and room >= inst.tick * 2:
+                    try:
+                        broker.modify(so, inst, qty=so["qty"], price=stop_limit(be, inst.tick, opp(side)), trigger=be)
+                        log({"event": "stop_moved", "parent": pid, "order_id": so["id"], "symbol": p["symbol"],
+                             "from": str(so["trigger"]), "to": str(be), "ltp": str(ltp),
+                             "reason": "profit lock: breakeven after charges"})
+                        out["moved"] += 1
+                    except ShoonyaError as exc:
+                        log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})
+        if hit or lock_why:
+            # Book it now: cancel the stop (and any unfilled entry), marketable exit, chased until filled.
+            if o["pending"]:
                 try:
                     broker.cancel(o["id"])
                 except ShoonyaError:
@@ -365,21 +398,23 @@ def tick(broker, now: datetime, state: dict) -> dict:
                 log({"event": "target_skip", "symbol": p["symbol"],
                      "reason": f"stop cancel failed ({exc}); it has probably executed"})
                 continue
-            qty = so["qty"] - so["filled"]
+            tag = "tgt" if hit else "lock"
             try:
-                eid = broker.place(inst, side=opp(side), qty=qty, price=broker.marketable(inst, opp(side)),
-                                   remarks=f"tgt/{p['symbol']}")
+                eid = broker.place(inst, side=opp(side), qty=open_q, price=broker.marketable(inst, opp(side)),
+                                   remarks=f"{tag}/{p['symbol']}")
                 log({"event": "target_exit", "parent": pid, "order_id": eid, "symbol": p["symbol"],
-                     "qty": qty, "ltp": str(ltp), "target": str(target)})
+                     "qty": open_q, "ltp": str(ltp), "target": str(target),
+                     "reason": "target hit" if hit else lock_why})
+                if lock_why:
+                    common.notify(f"Profit booked: {p['symbol']}", lock_why, priority="high")
                 exiting.add(tok)
                 out["sold"] += 1
             except ShoonyaError as exc:
                 log({"event": "exit_failed", "symbol": p["symbol"], "reason": str(exc)[:300]})
                 common.notify(f"UNPROTECTED {p['symbol']}",
-                              f"Stop cancelled for target but the exit failed: {exc}. The stop is re-placed next tick.",
+                              f"Stop cancelled for the exit but the exit failed: {exc}. The stop is re-placed next tick.",
                               priority="urgent")
             continue
-        entry = o["avg"] if o["avg"] > 0 else D(p["entry"])
         if common.setting("TRADER_AUTO_TRAIL", "false").lower() not in ("1", "true", "yes"):
             continue                                    # Claude moves stops (adjust); nothing trails on its own
         moved = new_stop(entry, D(p["stop"]), ltp, inst.tick, so["trigger"], side)
@@ -393,6 +428,9 @@ def tick(broker, now: datetime, state: dict) -> dict:
                 out["moved"] += 1
             except ShoonyaError as exc:
                 log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})
+
+    if lock_dirty[0]:
+        profitlock.save(lock_best)
 
     # 3a. our orders the broker rejected: log the reason once (margin, price band...)
     told = {str(r.get("order_id")) for r in common.events("order_rejected")}

@@ -201,6 +201,16 @@ def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, 
         new_target = to_tick(Decimal(str(d["target"])), tick, mode="down" if long_ else "up")
         if long_ and new_target <= ltp or (not long_ and new_target >= ltp):
             problems.append(f"target {new_target} is not on the winning side of the price {ltp}")
+        if not manual:
+            # Targets only come closer. Pushing them away as price approaches is
+            # how a winner never gets booked (13 Nov).
+            current = Decimal(str(plan.get("target")))
+            for r in common.events("plan_adjusted"):
+                if str(r.get("parent")) == str(plan["order_id"]) and r.get("target"):
+                    current = Decimal(str(r["target"]))
+            if (long_ and new_target > current) or (not long_ and new_target < current):
+                problems.append(f"target {new_target} is further than the current {current}: "
+                                "targets may only move closer (book the profit, don't chase it)")
     if new_stop is None and new_target is None:
         problems.append("adjust needs a stop, a target or both")
     if problems:
