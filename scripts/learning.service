@@ -1,0 +1,10 @@
+[Unit]
+Description=Learning loop: Claude reviews every closed trade and updates the lessons
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/learning.py
+TimeoutStartSec=900
+User=root

@@ -186,6 +186,8 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
         "internals": _internals(),
         "no_entry_window": daymode.no_entry_window(now),
         "leaders": playbook.rank(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
+        "lessons": _lessons(),
+        "today_trades": _today_trades(placements, orders),
         "direction": {"market": direction["market"],
                       "stocks": {s: {"score": x["score"], "state": x["state"]} for s, x in trends.items()}},
         "sentiment": sentiment_view(now),
@@ -267,6 +269,12 @@ margin. If a better setup needs margin that stale resting entries hold, cancel t
 STATE.internals: NSE's Nifty 50 advances/declines and every sector index's move. A green index
 with most stocks falling is a weak rally; read sectors to see where money is going.
 
+LESSONS (STATE.lessons): rules you wrote yourself after reviewing past trades, strongest first
+("seen" = days that confirmed it, "failed" = days that contradicted it). Apply every one that fits
+the situation and put the ids you applied in the decision's "lessons" field, e.g. ["L003"]. If you
+deliberately go against a lesson, say why in the reason. STATE.today_trades: today's closed trades;
+don't repeat today's losing trade on the same stock and side without a new reason.
+
 DAY MODE (STATE.day_mode, enforced by code). After the day's losing trades reach stop_after, no
 new entries. If flip is enabled and, by then, the opposite of today's trades (a paper mirror of
 every fill) is winning, the day FLIPS instead: the listed setups become their exact opposites
@@ -338,7 +346,7 @@ Reply with ONE JSON object, nothing else:
 {{"view": "<one or two sentences on the market>",
   "decisions": [
     {{"action":"enter","symbol":"NIFTYBEES","side":"BUY","order":"stop","entry":281.05,"stop":280.30,
-      "target":282.60,"size":1.0,"valid_minutes":45,"setup":"orb","confidence":0.6,"reason":"<why, citing levels>"}},
+      "target":282.60,"size":1.0,"valid_minutes":45,"setup":"orb","confidence":0.6,"lessons":["L001"],"reason":"<why, citing levels>"}},
     {{"action":"adjust","symbol":"NIFTYBEES","stop":281.10,"target":283.40,"reason":"..."}},
     {{"action":"cancel","order_id":"<resting entry id>","reason":"..."}},
     {{"action":"exit","symbol":"...","reason":"..."}}
@@ -448,6 +456,26 @@ def _breaking(now) -> list:
     try:
         import realtime
         return realtime.breaking(now)
+    except Exception:                                   # noqa: BLE001
+        return []
+
+
+def _lessons():
+    try:
+        import learning
+        return learning.for_prompt()
+    except Exception:                                   # noqa: BLE001
+        return []
+
+
+def _today_trades(placements, orders):
+    """Today's closed trades so far: what already worked and what did not."""
+    try:
+        import learning
+        return [{"symbol": t["symbol"], "side": "BUY" if t["side"] == "B" else "SELL", "setup": t.get("setup"),
+                 "in": t["entry_time"], "out": t["exits"][-1]["time"], "how": t["exits"][-1]["how"],
+                 "net": str(t["net"])}
+                for t in learning.trades_from_book(placements, orders) if t["exits"]][-12:]
     except Exception:                                   # noqa: BLE001
         return []
 
