@@ -400,7 +400,11 @@ def tick(broker, now: datetime, state: dict) -> dict:
         lock_why = None
         if profitlock.enabled() and open_q > 0:
             net = profitlock.net_open(side, entry, open_q, ltp)
-            best, armed, lock_why = profitlock.check(lock_best.get(pid), net)
+            try:
+                risk_rs = D(p.get("risk")) * open_q / max(int(p.get("qty") or open_q), 1)
+            except (ArithmeticError, TypeError, ValueError):
+                risk_rs = None
+            best, armed, lock_why = profitlock.check(lock_best.get(pid), net, profitlock.arm_for(risk_rs))
             if best is not None and best != lock_best.get(pid):
                 if pid not in lock_best:
                     log({"event": "profit_lock_armed", "parent": pid, "symbol": p["symbol"], "net": str(round(net, 2)),

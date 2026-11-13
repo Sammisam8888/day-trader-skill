@@ -3,11 +3,11 @@ Profit lock: once a trade has shown real profit, it is not allowed to give
 it back. Checked by the fill monitor on every tick (seconds), with no model
 call in the way.
 
-  arm     the trade's open profit AFTER charges reaches TRADER_LOCK_ARM_RS
-          (Rs 40). From then on its best net profit is remembered.
-  floor   max(TRADER_LOCK_MIN_RS (Rs 5), best x TRADER_LOCK_KEEP_PCT (50%)).
-          A trade that showed +70 is closed at about +35; one that showed
-          +300 at about +150. An armed trade never ends below +Rs 5.
+  arm     the trade's open profit AFTER charges reaches TRADER_LOCK_ARM_R (3)
+          times its own planned risk (never under TRADER_LOCK_ARM_RS, Rs 40).
+          From then on its best net profit is remembered.
+  floor   max(TRADER_LOCK_MIN_RS (Rs 5), best x TRADER_LOCK_KEEP_PCT (70%)).
+          A trade that showed +900 is closed at about +630.
   exit    net profit at or under the floor: cancel the stop and close with a
           marketable order immediately (the fill monitor chases it to a fill).
   stop    on arming, the exchange stop moves to breakeven after charges, so
@@ -43,8 +43,27 @@ def arm_rs() -> Decimal:
     return _d("TRADER_LOCK_ARM_RS", "40")
 
 
+def arm_r() -> Decimal:
+    return _d("TRADER_LOCK_ARM_R", "3")
+
+
+def arm_for(risk_rs: Optional[Decimal]) -> Decimal:
+    """The net profit that arms the lock: TRADER_LOCK_ARM_R x the trade's own
+    planned risk (Rs lost at its stop), never under TRADER_LOCK_ARM_RS.
+
+    Back-test, 3 months, V3 (13 Nov): a flat Rs 40 arm lost Rs 9,444 against
+    +2,825 for no lock (noise shook every trade out, then it re-entered and
+    paid charges again); arming at 1R/2R also lost; 3R keeping 70% made
+    +2,844 and was the steadiest month to month. Winners pay for the losers
+    only if they are allowed to run; the lock protects the runners that
+    turn back."""
+    if risk_rs and risk_rs > 0:
+        return max(arm_rs(), risk_rs * arm_r())
+    return arm_rs()
+
+
 def keep() -> Decimal:
-    return _d("TRADER_LOCK_KEEP_PCT", "50") / 100
+    return _d("TRADER_LOCK_KEEP_PCT", "70") / 100
 
 
 def min_rs() -> Decimal:
@@ -70,9 +89,9 @@ def floor(best: Decimal) -> Decimal:
     return max(min_rs(), best * keep())
 
 
-def check(best: Optional[Decimal], net: Decimal):
+def check(best: Optional[Decimal], net: Decimal, arm: Optional[Decimal] = None):
     """(new_best, armed, exit_reason or None) for one trade at this tick."""
-    if best is None and net < arm_rs():
+    if best is None and net < (arm_rs() if arm is None else arm):
         return None, False, None
     best = net if best is None else max(best, net)
     f = floor(best)
@@ -120,7 +139,10 @@ def day_enabled() -> bool:
 
 def day_check(best: Optional[Decimal], net: Decimal):
     """(new_best, reason to lock the day or None)."""
-    arm = _d("TRADER_DAYLOCK_ARM_RS", "150")
+    # A catastrophe guard, not a profit taker: at Rs 150-1000 it cut the
+    # back-tested profit; at 1500 it never fired in 3 months but would keep
+    # most of a truly exceptional day.
+    arm = _d("TRADER_DAYLOCK_ARM_RS", "1500")
     best = net if best is None else max(best, net)
     if best < arm:
         return best, None

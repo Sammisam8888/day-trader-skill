@@ -83,6 +83,29 @@ class Config:
     flip: bool = False
     flip_after_losses: int = 3          # real losing trades before a flip is considered
     flip_halt_losses: int = 2           # losing trades while flipped before the day stops
+    # --- exits under test (13 Nov) ---
+    lock: bool = False                  # per-trade rupee profit lock (live profitlock.py)
+    lock_arm: D = D("40")
+    lock_keep: D = D("0.5")
+    lock_min: D = D("5")
+    lock_arm_r: Optional[D] = None      # arm at this many R of gross open profit instead of lock_arm rupees
+    daylock: bool = False               # whole-day lock (live day lock)
+    daylock_arm: D = D("150")
+    daylock_keep: D = D("0.5")
+    scale: bool = False                 # T1 50% at +scale_t1_r R, stop to breakeven; 30% trailed; 20% runner
+    scale_t1_r: D = D("1.0")
+    scale_t1_frac: D = D("0.5")
+    scale_trail_frac: D = D("0.3")
+
+
+def _cost_ps(entry, qty):
+    return charges.round_trip(entry * qty, entry * qty).total / qty if qty else D(0)
+
+
+def _net_at(p, px):
+    gross = (px - p.entry) * p.qty * (1 if p.side == "B" else -1)
+    buy, sell = (p.entry * p.qty, px * p.qty) if p.side == "B" else (px * p.qty, p.entry * p.qty)
+    return gross - charges.round_trip(buy, sell).total
 
 
 def load(path: str) -> Dict[str, dict]:
@@ -187,6 +210,7 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
     flip_losses = 0
     flip_at = None
     flat_at = datetime.combine(d, cfg.flat_by, tzinfo=IST)
+    day_best = D(-10 ** 9)
 
     def mclose(p: Pos, px: D):
         nonlocal mirror_net, mirror_closed
@@ -244,6 +268,24 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
         for s, p in list(open_pos.items()):
             c = bars[s][k]
             slip = p.tick * cfg.slippage_ticks
+            long_p = p.side == "B"
+            adverse, favour = (c.low, c.high) if long_p else (c.high, c.low)
+            # (a) profit lock / trailed tranche: floor from the PREVIOUS best, hit by this bar's adverse extreme
+            if (cfg.lock or cfg.scale) and getattr(p, "lock_best", None) is not None:
+                floor_net = max(cfg.lock_min, p.lock_best * cfg.lock_keep)
+                floor_px = p.entry + (floor_net / p.qty + _cost_ps(p.entry, p.qty)) * (1 if long_p else -1)
+                if (long_p and adverse <= floor_px) or (not long_p and adverse >= floor_px):
+                    px = min(floor_px, c.open) if long_p else max(floor_px, c.open)
+                    if cfg.scale and getattr(p, "runner", None):
+                        # only the trailed tranche goes; the runner keeps its breakeven stop
+                        run_q = p.runner
+                        part = replace(p, qty=p.qty - run_q)
+                        close(part, px, "lock", t)
+                        p.qty, p.runner, p.lock_best = run_q, None, None
+                    else:
+                        close(p, px, "lock", t)
+                        del open_pos[s]
+                        continue
             if p.side == "B":
                 if c.low <= p.stop:
                     close(p, min(p.stop, c.open) - slip, "stop", t)
@@ -262,6 +304,31 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
                     close(p, min(p.target, c.open) if c.open <= p.target else p.target, "target", t)
                     del open_pos[s]
                     continue
+            # (b) scale-out T1: limit-like at entry +/- t1 R, then stop to breakeven after charges
+            if cfg.scale and not getattr(p, "t1_done", False) and p.r > 0:
+                t1 = p.entry + p.r * cfg.scale_t1_r * (1 if long_p else -1)
+                if (long_p and favour >= t1) or (not long_p and favour <= t1):
+                    q1 = int(p.qty * cfg.scale_t1_frac)
+                    if 0 < q1 < p.qty:
+                        close(replace(p, qty=q1), t1, "t1", t)
+                        p.qty -= q1
+                        p.t1_done = True
+                        be = p.entry + _cost_ps(p.entry, p.qty) * (1 if long_p else -1)
+                        p.stop = max(p.stop, be) if long_p else min(p.stop, be)
+                        total = p.qty + q1
+                        p.runner = max(0, p.qty - int(total * cfg.scale_trail_frac))
+            # (c) best open net for the lock, from this bar's favourable extreme (used from the next bar)
+            if cfg.lock or (cfg.scale and getattr(p, "t1_done", False)):
+                q_ = p.qty - (getattr(p, "runner", None) or 0) if cfg.scale else p.qty
+                if q_ > 0:
+                    probe = replace(p, qty=q_)
+                    n = _net_at(probe, favour)
+                    best = getattr(p, "lock_best", None)
+                    arm_at = (p.r * p.qty * cfg.lock_arm_r) if cfg.lock_arm_r is not None else cfg.lock_arm
+                    if cfg.scale or best is not None or n >= arm_at:
+                        p.lock_best = n if best is None else max(best, n)
+                        if cfg.scale:
+                            p.lock_best = max(p.lock_best, D(0))
             # trailing (V2+), applied at the bar close
             if cfg.trail == "be1r":
                 gain = (c.close - p.entry) if p.side == "B" else (p.entry - c.close)
@@ -322,6 +389,19 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
             cooldown[s] -= 1
             if cooldown[s] <= 0:
                 del cooldown[s]
+        # ---- the day lock: day net (realised + open after charges) vs its best
+        if halted == "day lock":
+            continue
+        if cfg.daylock:
+            day_net = realised_net + sum((_net_at(p, bars[s][k].close) for s, p in open_pos.items()), D(0))
+            day_best = max(day_best, day_net)
+            if day_best >= cfg.daylock_arm and day_net <= max(cfg.lock_min, day_best * cfg.daylock_keep):
+                for s2, p2 in list(open_pos.items()):
+                    close(p2, bars[s2][k].close, "daylock", t)
+                    del open_pos[s2]
+                resting.clear()
+                halted = "day lock"
+                continue
         # ---- the scan, at this bar's close (bar k is the last closed bar)
         close_t = bars[syms[0]][k].closes_at
         if close_t.time() < cfg.no_entry_before or close_t.time() >= cfg.last_entry:
