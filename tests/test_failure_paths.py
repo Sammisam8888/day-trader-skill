@@ -509,3 +509,28 @@ class ExitFailureDoesNotKillTheScan(unittest.TestCase):
             sess.now = lambda clock=None: AT
         self.assertEqual(len(common.events("exit_failed", "2026-11-11")), 1)
         self.assertEqual(len(common.events("placed", "2026-11-11")), 1, "the entry after it still went in")
+
+
+class ChargesPerOrder(unittest.TestCase):
+    def test_a_stock_traded_twice_pays_brokerage_four_times(self):
+        import metrics
+        pos = [position(NIFTY, 0, "281", realised="0", buy_qty=80, buy_avg="281", sell_qty=80, sell_avg="281")]
+        once = metrics.pnl(pos, {}, [order(f"O{i}", NIFTY, status="COMPLETE", qty=80, filled=80, avg="281", typ="LMT")
+                                     for i in range(2)])
+        twice = metrics.pnl(pos, {}, [order(f"O{i}", NIFTY, status="COMPLETE", qty=40, filled=40, avg="281", typ="LMT")
+                                      for i in range(4)])
+        self.assertGreater(twice["charges"], once["charges"])
+        self.assertEqual(metrics.pnl(pos, {})["charges"], once["charges"], "two orders = the old per-stock count")
+
+
+class MustCloseIsNeverCancelled(unittest.TestCase):
+    def test_the_circuit_edge_exit_keeps_working_after_the_flatten(self):
+        reset()
+        late = datetime(2026, 11, 11, 15, 10, tzinfo=sess.IST)     # a late pass: straight to must-close
+        b = FakeBroker(positions=[position(NIFTY, 40, "281")])     # the fake never fills: the slow case
+        flatten.run(b, now=late, sleep=lambda s: None)
+        mc = [p for p in b.placed if p["remarks"] == "flat/NIFTYBEES"]
+        self.assertEqual(len(mc), 1)
+        self.assertEqual(mc[0]["price"], D("252"), "priced at the lower circuit: fills like a market order")
+        self.assertNotIn(b._orders[-1]["id"], b.cancelled, "it must stay at the exchange until it fills")
+        self.assertEqual(len(ev("flatten_incomplete")), 1, "and the owner is still alerted")

@@ -884,7 +884,7 @@ def api_state() -> dict:
                         if why else None})
     ord_out.sort(key=lambda x: (not x["pending"], x["time"] or ""), reverse=False)
 
-    summ = metrics.pnl(positions, ltps)
+    summ = metrics.pnl(positions, ltps, orders)
     trades = metrics.closed_trades(positions)
     wins = sum(1 for x in trades if x["net"] > 0)
     hist = [h for h in metrics.history(30) if h["day"] != day]

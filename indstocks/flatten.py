@@ -166,6 +166,7 @@ def _run(broker, now, session, sleep) -> int:
             inst = broker.instrument_for(pos)
             side = "S" if pos["qty"] > 0 else "B"
             # 1. clear every pending order on this symbol's closing side
+            raced = False
             for o in orders:
                 if o["token"] == pos["token"] and o["pending"] and o["side"] == side:
                     try:
@@ -173,14 +174,25 @@ def _run(broker, now, session, sleep) -> int:
                         log({"event": "cancelled", "symbol": pos["symbol"], "order_id": o["id"],
                              "reason": "clearing the way for the exit"})
                     except ShoonyaError as exc:
+                        raced = True                     # it may have just filled
                         log({"event": "cancel_failed", "order_id": o["id"], "reason": str(exc)[:200]})
+            qty = abs(pos["qty"])
+            if raced:
+                try:
+                    live = next((p for p in broker.positions() if p["token"] == pos["token"]), None)
+                except ShoonyaError:
+                    live = None
+                lq = live["qty"] if live else 0
+                if lq == 0 or (lq > 0) != (side == "S"):
+                    continue                             # closed by the order we could not cancel
+                qty = abs(lq)
             # 2. exit
             try:
                 px = price_for(broker, inst, side, rnd)
-                oid = broker.place(inst, side=side, qty=abs(pos["qty"]), price=px,
+                oid = broker.place(inst, side=side, qty=qty, price=px,
                                    remarks=f"flat/{pos['symbol']}")
                 log({"event": "sold" if side == "S" else "covered", "symbol": pos["symbol"],
-                     "qty": abs(pos["qty"]), "price": str(px), "order_id": oid, "round": rnd + 1,
+                     "qty": qty, "price": str(px), "order_id": oid, "round": rnd + 1,
                      "must_close": rnd >= ROUNDS})
             except ShoonyaError as exc:
                 log({"event": "sell_failed", "symbol": pos["symbol"], "qty": pos["qty"],
@@ -193,6 +205,20 @@ def _run(broker, now, session, sleep) -> int:
         except ShoonyaError as exc:
             log({"event": "error", "reason": f"could not re-read positions: {exc}"})
             break
+        if rnd >= ROUNDS:
+            # The must-close order sits at the circuit edge: it fills as soon as it
+            # reaches the book. Never cancel it; give it time instead (13 Nov replay:
+            # cancelling it after 6 s left positions to the broker's square-off).
+            for _ in range(3):
+                if not positions:
+                    break
+                sleep(WAIT_S)
+                try:
+                    positions = [p for p in broker.positions() if p["qty"] != 0]
+                    orders = broker.orders()
+                except ShoonyaError:
+                    break
+            continue
         # anything still open: pull our unfilled exits before re-pricing
         for o in orders:
             if o["pending"] and o["remarks"].startswith("flat/"):
@@ -216,9 +242,12 @@ def _run(broker, now, session, sleep) -> int:
     # sweep: every pending entry this system placed, and any orphan stop
     swept = 0
     ours = common.our_order_ids()
+    still = {(p["token"], "S" if p["qty"] > 0 else "B") for p in positions}
     for o in orders:
         if not o["pending"]:
             continue
+        if o["remarks"].startswith("flat/") and (o["token"], o["side"]) in still:
+            continue                                     # the exit still working on an open position
         if o["id"] in ours or o["remarks"].startswith(("auto/", "stop/", "tgt/", "man/", "flat/", "chat/",
                                                         "exit/", "ctl/", "brk/", "lock/")):
             try:
@@ -231,7 +260,7 @@ def _run(broker, now, session, sleep) -> int:
         import metrics
         allpos = broker.positions()
         trades = metrics.closed_trades(allpos)
-        summ = metrics.pnl(allpos, {})
+        summ = metrics.pnl(allpos, {}, broker.orders())
         log({"event": "day_summary", "net": str(summ["net"]), "realised": str(summ["realised"]),
              "charges": str(summ["charges"]), "trades": len(trades),
              "wins": sum(1 for x in trades if x["net"] > 0),
