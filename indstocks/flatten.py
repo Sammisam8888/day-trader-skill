@@ -27,6 +27,7 @@ import sys
 import time
 from datetime import timedelta
 from decimal import Decimal
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -67,12 +68,14 @@ def price_for(broker, inst, side: str, round_no: int) -> Decimal:
     return min(px, q["uc"]) if q["uc"] > 0 else px
 
 
-def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep) -> str:
+def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep, qty: Optional[int] = None) -> str:
     """Exit one position now: clear its pending closing-side orders (the
-    stop), then a marketable limit for the whole quantity. Either side."""
+    stop), then a marketable limit for the whole live quantity, or at most
+    `qty` of it (a partial exit; the fill monitor re-protects the rest)."""
     # The caller's row may be a minute old (Claude thinks for a while): the
     # stop or target may have closed it since. Exit what is open NOW, or
     # nothing, so an exit can never open a position the other way.
+    cap = qty
     side = "S" if pos["qty"] > 0 else "B"
     fresh = next((p for p in broker.positions() if str(p["token"]) == str(pos["token"])), None)
     qty = fresh["qty"] if fresh else 0
@@ -85,13 +88,13 @@ def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep) -> str:
     # exit it would otherwise see "no stop" and put one back (SBIN, 13 Nov 10:50).
     log({"event": "exit_started", "symbol": pos["symbol"], "token": str(pos["token"])})
     try:
-        return _cancel_and_exit(broker, pos, inst, side, remarks, sleep)
+        return _cancel_and_exit(broker, pos, inst, side, remarks, sleep, cap)
     except Exception:
         log({"event": "exit_aborted", "symbol": pos["symbol"], "token": str(pos["token"])})
         raise
 
 
-def _cancel_and_exit(broker, pos, inst, side, remarks, sleep):
+def _cancel_and_exit(broker, pos, inst, side, remarks, sleep, cap=None):
     for o in broker.orders():
         if o["token"] == pos["token"] and o["pending"] and o["side"] == side:
             try:
@@ -105,8 +108,11 @@ def _cancel_and_exit(broker, pos, inst, side, remarks, sleep):
         log({"event": "exit_skipped", "symbol": pos["symbol"], "reason": "the stop filled while it was cancelled"})
         log({"event": "exit_aborted", "symbol": pos["symbol"], "token": str(pos["token"])})
         return None
-    return broker.place(inst, side=side, qty=abs(qty), price=broker.marketable(inst, side),
-                        remarks=remarks[:60])
+    n = abs(qty) if cap is None else min(abs(qty), int(cap))
+    if n <= 0:
+        log({"event": "exit_aborted", "symbol": pos["symbol"], "token": str(pos["token"])})
+        return None
+    return broker.place(inst, side=side, qty=n, price=broker.marketable(inst, side), remarks=remarks[:60])
 
 
 def run(broker=None, *, now=None, sleep=time.sleep) -> int:

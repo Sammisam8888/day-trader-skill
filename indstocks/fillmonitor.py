@@ -214,9 +214,11 @@ def tick(broker, now: datetime, state: dict) -> dict:
     def unfilled(o: dict) -> int:
         return max(0, o["qty"] - o["filled"])
 
-    lock_best = state.setdefault("lock_best", None)
-    if lock_best is None:
-        lock_best = state["lock_best"] = profitlock.load()
+    # The process runs for days: the lock memory belongs to one trading day.
+    if state.get("lock_day") != session.day:
+        state["lock_day"] = session.day
+        state["lock_best"] = profitlock.load()
+    lock_best = state["lock_best"]
     lock_dirty = [False]
 
     # 0. exits in flight (target, Claude's exit, breach exit): chase every tick

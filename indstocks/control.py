@@ -229,10 +229,16 @@ def apply(cmd: dict, *, by: str = "claude", day_pnl: Optional[Decimal] = None, b
                         broker.cancel(o["id"])
                     except Exception:                   # noqa: BLE001
                         pass
+            failed = []
             for p in broker.positions():
                 if p["qty"] != 0:
-                    flatten.close_position(broker, p, remarks="ctl/flatten")
-                    closed += 1
+                    try:                                # one failure must not leave the rest open
+                        if flatten.close_position(broker, p, remarks="ctl/flatten") is not None:
+                            closed += 1
+                    except Exception as exc:            # noqa: BLE001
+                        failed.append(f"{p['symbol']}: {exc}"[:120])
+            if failed:
+                _notify("trader: flatten_now could not close", "; ".join(failed), "urgent")
         _notify("trader: flattened and halted", f"{by}: {reason}", "urgent")
         return _done(name, args, by, "applied", f"closed {closed} position(s), halted today: {reason}", now)
     if name == "resume_today":

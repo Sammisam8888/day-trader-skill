@@ -463,3 +463,49 @@ class DayLock(unittest.TestCase):
 
 
 from _fake import SENSEX as SENSEX_  # noqa: E402
+
+
+class PartialExit(unittest.TestCase):
+    def test_a_partial_exit_sells_only_what_was_asked(self):
+        reset()
+        b = FakeBroker(positions=[position(NIFTY, 40, "281.02")])
+        flatten.close_position(b, position(NIFTY, 40, "281.02"), remarks="chat/NIFTYBEES", sleep=lambda s: None, qty=10)
+        self.assertEqual(b.placed[0]["qty"], 10)
+
+    def test_a_partial_exit_never_exceeds_the_live_position(self):
+        reset()
+        b = FakeBroker(positions=[position(NIFTY, 6, "281.02")])
+        flatten.close_position(b, position(NIFTY, 40, "281.02"), remarks="chat/NIFTYBEES", sleep=lambda s: None, qty=10)
+        self.assertEqual(b.placed[0]["qty"], 6)
+
+
+class ExitFailureDoesNotKillTheScan(unittest.TestCase):
+    def test_a_failed_exit_is_reported_and_the_next_decision_still_runs(self):
+        import json as _j
+        import autotrader
+        import brain
+        from _fake import SENSEX, opening
+        reset(TRADER_DECIDER="claude", TRADER_MAX_LEVERAGE="2.0")
+        at = datetime(2026, 11, 11, 10, 0, tzinfo=sess.IST)
+        sess.now = lambda clock=None: at
+        brain.find_claude = lambda: "/x/claude"
+        b = FakeBroker(positions=[position(SENSEX, 5, "899", ltp="900")],
+                       candles={NIFTY.token: opening(at.date()), SENSEX.token: opening(at.date(), "900.00", "896.00")},
+                       quotes={NIFTY.token: {"ltp": "280.50", "uc": "308", "lc": "252"},
+                               SENSEX.token: {"ltp": "898.00", "uc": "990", "lc": "810"}})
+        real_place = b.place
+        def place(inst, **k):
+            if k.get("remarks", "").startswith("exit/"):
+                raise _fake.ShoonyaError("PlaceOrder: network: timed out")
+            return real_place(inst, **k)
+        b.place = place
+        reply = _j.dumps({"view": "t", "decisions": [
+            {"action": "exit", "symbol": "SENSEXIETF", "reason": "x"},
+            {"action": "enter", "symbol": "NIFTYBEES", "side": "BUY", "order": "stop", "entry": 281.05,
+             "stop": 280.30, "target": 282.80, "size": 1.0, "reason": "t"}]})
+        try:
+            autotrader.run(b, now=at, decide=lambda *a, **k: brain.decide(*a, **k, run=lambda p: reply))
+        finally:
+            sess.now = lambda clock=None: AT
+        self.assertEqual(len(common.events("exit_failed", "2026-11-11")), 1)
+        self.assertEqual(len(common.events("placed", "2026-11-11")), 1, "the entry after it still went in")

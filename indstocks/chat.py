@@ -198,8 +198,7 @@ def act_sell(broker, symbol: str, qty: int | None = None) -> str:
         return f"No open intraday position matching {symbol}."
     n = min(qty or abs(p["qty"]), abs(p["qty"]))
     import flatten
-    oid = flatten.close_position(broker, {**p, "qty": n if p["qty"] > 0 else -n},
-                                 remarks=f"chat/{p['symbol']}", sleep=_sleep)
+    oid = flatten.close_position(broker, p, remarks=f"chat/{p['symbol']}", sleep=_sleep, qty=n)
     common.log("chat", {"event": "chat_sell", "symbol": p["symbol"], "qty": n, "order_id": oid})
     left = abs(p["qty"]) - n
     verb = "Selling" if p["qty"] > 0 else "Buying back"
