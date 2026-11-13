@@ -80,6 +80,17 @@ def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep) -> str:
         return None
     pos = fresh
     inst = broker.instrument_for(pos)
+    # Tell the fill monitor first: between cancelling the stop and placing the
+    # exit it would otherwise see "no stop" and put one back (SBIN, 13 Nov 10:50).
+    log({"event": "exit_started", "symbol": pos["symbol"], "token": str(pos["token"])})
+    try:
+        return _cancel_and_exit(broker, pos, inst, side, remarks, sleep)
+    except Exception:
+        log({"event": "exit_aborted", "symbol": pos["symbol"], "token": str(pos["token"])})
+        raise
+
+
+def _cancel_and_exit(broker, pos, inst, side, remarks, sleep):
     for o in broker.orders():
         if o["token"] == pos["token"] and o["pending"] and o["side"] == side:
             try:
@@ -91,6 +102,7 @@ def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep) -> str:
     qty = fresh["qty"] if fresh else 0
     if qty == 0 or (qty > 0) != (side == "S"):
         log({"event": "exit_skipped", "symbol": pos["symbol"], "reason": "the stop filled while it was cancelled"})
+        log({"event": "exit_aborted", "symbol": pos["symbol"], "token": str(pos["token"])})
         return None
     return broker.place(inst, side=side, qty=abs(qty), price=broker.marketable(inst, side),
                         remarks=remarks[:60])
