@@ -348,3 +348,62 @@ class ExitStartedRace(unittest.TestCase):
         b = self.book()
         fm.tick(b, AT + timedelta(seconds=30), {})
         self.assertEqual(len(b.placed), 1)
+
+
+class ProfitLock(unittest.TestCase):
+    """13 Nov: +214 open at 12:21 became +17 net on the stops. Once a trade has
+    shown profit after charges it is booked before it can give it back."""
+    def setUp(self):
+        reset()
+        sess.now = lambda clock=None: AT
+        plan("P1", target="290.00")                    # a far target: the lock, not the target, must act
+        common.log("fill", {"event": "stop_placed", "parent": "P1", "order_id": "S1", "trigger": "280.30"})
+        self.state = {}
+
+    def tick(self, ltp, state=None):
+        b = FakeBroker(orders=[filled("P1"), order("S1", NIFTY, side="S", qty=40, price="278.90",
+                                                   trigger="280.30", remarks="stop/NIFTYBEES")],
+                       positions=[position(NIFTY, 40, "281.02")], quotes={NIFTY.token: {"ltp": ltp}})
+        fm.tick(b, AT, self.state if state is None else state)
+        return b
+
+    def test_small_profit_does_not_arm(self):
+        b = self.tick("281.60")                          # about +23 gross, +13 net
+        self.assertEqual((b.placed, b.modified), ([], []))
+        self.assertEqual(ev("profit_lock_armed"), [])
+
+    def test_arming_moves_the_exchange_stop_to_breakeven_after_charges(self):
+        b = self.tick("282.40")                          # about +55 gross, +45 net
+        self.assertEqual(len(ev("profit_lock_armed")), 1)
+        m = b.modified[-1]
+        self.assertEqual(m["id"], "S1")
+        self.assertGreater(m["trigger"], D("281.02"), "above entry: costs covered")
+        self.assertLess(m["trigger"], D("281.40"))
+        self.assertEqual(b.placed, [], "no exit while profit holds")
+
+    def test_giving_back_half_books_the_profit_at_market(self):
+        self.tick("282.40")
+        self.tick("283.00")                              # best about +69 net
+        b = self.tick("281.90")                          # about +25 net: under half the best
+        self.assertIn("S1", b.cancelled)
+        x = b.placed[-1]
+        self.assertEqual((x["side"], x["qty"], x["trigger"], x["remarks"]), ("S", 40, None, "lock/NIFTYBEES"))
+        self.assertIn("profit lock", ev("target_exit")[-1]["reason"])
+
+    def test_the_lock_survives_a_fill_monitor_restart(self):
+        self.tick("283.00")
+        b = self.tick("281.90", state={})               # a fresh process: best comes from disk
+        self.assertEqual(b.placed[-1]["remarks"], "lock/NIFTYBEES")
+
+    def test_an_armed_trade_never_ends_below_five_rupees(self):
+        import profitlock
+        reset(TRADER_LOCK_KEEP_PCT="0")
+        self.assertEqual(profitlock.floor(D("45")), D("5"))
+
+    def test_the_lock_can_be_switched_off(self):
+        reset(TRADER_LOCK="false")
+        plan("P1", target="290.00")
+        common.log("fill", {"event": "stop_placed", "parent": "P1", "order_id": "S1", "trigger": "280.30"})
+        self.tick("283.00")
+        b = self.tick("281.90")
+        self.assertEqual(b.placed, [])
