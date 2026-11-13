@@ -367,6 +367,22 @@ class ProfitLock(unittest.TestCase):
         fm.tick(b, AT, self.state if state is None else state)
         return b
 
+    def test_the_arm_scales_with_the_trades_own_risk(self):
+        import profitlock
+        self.assertEqual(profitlock.arm_for(D("200")), D("600"), "3R of a Rs 200 risk")
+        self.assertEqual(profitlock.arm_for(None), D("40"))
+        common.log("auto", {"event": "placed", "order_id": "P2", "symbol": "NIFTYBEES", "tsym": "NIFTYBEES-EQ",
+                            "side": "B", "token": NIFTY.token, "tick": "0.01", "qty": 40, "risk": "30",
+                            "entry": "281.03", "stop": "280.30", "target": "290.00"})
+        import json as _j
+        b = FakeBroker(orders=[filled("P2"), order("S2", NIFTY, side="S", qty=40, price="278.90", trigger="280.30",
+                                                   remarks="stop/NIFTYBEES")],
+                       positions=[position(NIFTY, 40, "281.02")], quotes={NIFTY.token: {"ltp": "282.40"}})
+        common.log("fill", {"event": "stop_placed", "parent": "P2", "order_id": "S2", "trigger": "280.30"})
+        fm.tick(b, AT, {})
+        self.assertNotIn("P2", [r.get("parent") for r in ev("profit_lock_armed")],
+                         "+45 net is 1.5R of a Rs 30 risk: let it run")
+
     def test_small_profit_does_not_arm(self):
         b = self.tick("281.60")                          # about +23 gross, +13 net
         self.assertEqual((b.placed, b.modified), ([], []))
@@ -424,23 +440,23 @@ class DayLock(unittest.TestCase):
         return b
 
     def test_giving_back_half_the_days_best_closes_everything_and_halts(self):
-        self.tick("300")
+        self.tick("2000")
         self.assertIsNone(common.halted())
-        b = self.tick("120")
+        b = self.tick("900")
         self.assertIn("day lock", common.halted())
         self.assertEqual([(p["side"], p["qty"], p["remarks"]) for p in b.placed], [("S", 40, "lock/NIFTYBEES")])
         self.assertEqual(len(ev("day_locked")), 1)
-        self.tick("100")
+        self.tick("800")
         self.assertEqual(len(ev("day_locked")), 1, "locks once")
 
-    def test_a_small_day_never_arms(self):
-        self.tick("100")
+    def test_a_normal_good_day_is_left_alone(self):
+        self.tick("300")                                 # 13 Nov's best: under the Rs 1500 guard
         self.tick("10")
         self.assertIsNone(common.halted())
 
     def test_claude_cannot_lift_the_day_lock(self):
         import control
-        self.tick("300"); self.tick("120")
+        self.tick("2000"); self.tick("900")
         outcome = control.apply({"command": "resume_today", "reason": "x"}, by="claude", now=AT)
         self.assertNotEqual(outcome[0], "applied")
         self.assertIn("day lock", common.halted())
