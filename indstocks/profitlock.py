@@ -106,3 +106,25 @@ def save(best: dict) -> None:
         tmp.replace(p)
     except OSError:
         pass
+
+
+# ------------------------------------------------------------------ the day
+# The same rule for the whole day: once the day's net (realised + open, after
+# charges) has reached TRADER_DAYLOCK_ARM_RS (Rs 150), falling back to
+# TRADER_DAYLOCK_KEEP_PCT (50%) of its best closes everything and stops new
+# entries for the rest of the day. 13 Nov: +300 net at its best, ended -51.
+
+def day_enabled() -> bool:
+    return common.setting("TRADER_DAYLOCK", "true").lower() in ("1", "true", "yes")
+
+
+def day_check(best: Optional[Decimal], net: Decimal):
+    """(new_best, reason to lock the day or None)."""
+    arm = _d("TRADER_DAYLOCK_ARM_RS", "150")
+    best = net if best is None else max(best, net)
+    if best < arm:
+        return best, None
+    f = max(min_rs(), best * _d("TRADER_DAYLOCK_KEEP_PCT", "50") / 100)
+    if net <= f:
+        return best, f"day lock: day net {net:.0f} fell to {f:.0f}, half of its best {best:.0f}"
+    return best, None
