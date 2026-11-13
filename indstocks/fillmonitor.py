@@ -214,6 +214,11 @@ def tick(broker, now: datetime, state: dict) -> dict:
     def unfilled(o: dict) -> int:
         return max(0, o["qty"] - o["filled"])
 
+    lock_best = state.setdefault("lock_best", None)
+    if lock_best is None:
+        lock_best = state["lock_best"] = profitlock.load()
+    lock_dirty = [False]
+
     # 0. exits in flight (target, Claude's exit, breach exit): chase every tick
     #    until filled. A limit that price ran away from is no exit at all.
     #    An exit that has started (stop being cancelled, exit not yet placed)
@@ -268,10 +273,41 @@ def tick(broker, now: datetime, state: dict) -> dict:
         if so_ and so_["status"] in ("REJECTED", "REJECT"):
             stop_rejects[str(st.get("parent"))] = stop_rejects.get(str(st.get("parent")), 0) + 1
 
-    lock_best = state.setdefault("lock_best", None)
-    if lock_best is None:
-        lock_best = state["lock_best"] = profitlock.load()
-    lock_dirty = [False]
+    # 0b. the day lock: the whole day's net after charges, best kept on disk
+    if profitlock.day_enabled() and not lock_best.get("_day_locked"):
+        try:
+            day_net = metrics.pnl(positions, ltps)["net"]
+        except Exception:                               # noqa: BLE001
+            day_net = None
+        if day_net is not None:
+            best_d, why_d = profitlock.day_check(lock_best.get("_day"), day_net)
+            if best_d != lock_best.get("_day"):
+                lock_best["_day"] = best_d
+                lock_dirty[0] = True
+            if why_d:
+                lock_best["_day_locked"] = Decimal(1)
+                lock_dirty[0] = True
+                import control
+                st = control.today()
+                st["halt"] = {"by": "owner", "reason": why_d, "ts": now.isoformat(timespec="seconds"),
+                              "trigger": "day_lock"}
+                control.write_json(control.day_file(), st)
+                log({"event": "day_locked", "net": str(round(day_net, 2)), "best": str(round(best_d, 2)),
+                     "reason": why_d})
+                common.notify("Day locked: profit protected", why_d + ". Closing all positions; no new entries today. "
+                              "Resume from the dashboard if you want.", priority="urgent")
+                for o in orders:                         # resting entries first
+                    if o["pending"] and o["id"] in entry_ids:
+                        try:
+                            broker.cancel(o["id"])
+                        except ShoonyaError:
+                            pass
+                for pos in held.values():
+                    try:
+                        flatten_mod.close_position(broker, pos, remarks=f"lock/{pos['symbol']}")
+                        exiting.add(str(pos["token"]))
+                    except ShoonyaError as exc:
+                        log({"event": "exit_failed", "symbol": pos["symbol"], "reason": str(exc)[:300]})
 
     # 1-3. every filled auto entry still open: protect, take target or lock profit, trail
     for p in placements:

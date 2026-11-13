@@ -263,6 +263,9 @@ PROFIT LOCK (code, every few seconds, you cannot override it): once a trade is u
 charges its stop goes to breakeven after charges, and if its net profit falls back to half of its
 best (never below +Rs 5) it is closed at market at once. Targets may only be moved CLOSER, never
 further away: if momentum is strong, tighten the stop instead of chasing the target.
+DAY LOCK (code): once the day's net after charges has reached Rs 150, falling to half of its best
+closes everything and stops entries for the day. Protect a good day: after a strong morning, take
+only A-grade setups, smaller.
 MARGIN: STATE.account.margin_free is what Shoonya will actually lend now. Resting entries block
 margin. If a better setup needs margin that stale resting entries hold, cancel the stalest first
 (action cancel) in the same response, then enter.

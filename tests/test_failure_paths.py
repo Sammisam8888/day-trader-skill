@@ -407,3 +407,43 @@ class ProfitLock(unittest.TestCase):
         self.tick("283.00")
         b = self.tick("281.90")
         self.assertEqual(b.placed, [])
+
+
+class DayLock(unittest.TestCase):
+    """13 Nov: +300 net at the day's best, ended -51."""
+    def setUp(self):
+        reset()
+        sess.now = lambda clock=None: AT
+        self.state = {}
+
+    def tick(self, realised, ltp="281.00"):
+        closed = position(SENSEX_, 0, "900", realised=realised, buy_qty=20, sell_qty=20, sell_avg="905")
+        b = FakeBroker(positions=[closed, position(NIFTY, 40, "281.02", ltp=ltp)],
+                       quotes={NIFTY.token: {"ltp": ltp}})
+        fm.tick(b, AT, self.state)
+        return b
+
+    def test_giving_back_half_the_days_best_closes_everything_and_halts(self):
+        self.tick("300")
+        self.assertIsNone(common.halted())
+        b = self.tick("120")
+        self.assertIn("day lock", common.halted())
+        self.assertEqual([(p["side"], p["qty"], p["remarks"]) for p in b.placed], [("S", 40, "lock/NIFTYBEES")])
+        self.assertEqual(len(ev("day_locked")), 1)
+        self.tick("100")
+        self.assertEqual(len(ev("day_locked")), 1, "locks once")
+
+    def test_a_small_day_never_arms(self):
+        self.tick("100")
+        self.tick("10")
+        self.assertIsNone(common.halted())
+
+    def test_claude_cannot_lift_the_day_lock(self):
+        import control
+        self.tick("300"); self.tick("120")
+        outcome = control.apply({"command": "resume_today", "reason": "x"}, by="claude", now=AT)
+        self.assertNotEqual(outcome[0], "applied")
+        self.assertIn("day lock", common.halted())
+
+
+from _fake import SENSEX as SENSEX_  # noqa: E402
