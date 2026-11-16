@@ -45,6 +45,20 @@ jobs:
           echo "== audit yesterday"; sudo bash /opt/indstocks/day-trader-skill/scripts/audit-day.sh "$(TZ=Asia/Kolkata date -d yesterday +%F)" 2>&1 | head -120
           echo "== lessons"; sudo test -f /var/lib/indstocks/learning/lessons.json && sudo python3 -c "import json;d=json.load(open('/var/lib/indstocks/learning/lessons.json'));[print(k,v['status'],'+%d/-%d'%(v['support'],v['against']),v['rule'][:200]) for k,v in d.items()]" 2>&1 | head -30
           echo "== journal latest"; sudo bash -c 'f=$(ls -1t /var/lib/indstocks/learning/journal-*.json 2>/dev/null | head -1); [ -n "$f" ] && python3 -c "import json,sys;j=json.load(open(sys.argv[1]));print(j[\"day\"],j.get(\"summary\"));[print(\" \",r.get(\"verdict\"),\"|\",str(r.get(\"post_mortem\"))[:220]) for r in (j.get(\"reviews\") or [])]" "$f"' 2>&1 | head -30
+          echo "== sizing today"; sudo python3 -c "
+          import json,sys
+          for l in open('/var/lib/indstocks/auto/'+sys.argv[1]+'.jsonl'):
+              r=json.loads(l)
+              if r.get('event')=='placed': print(r['ts'][11:16],r['symbol'],r['side'],'qty',r['qty'],'value',r.get('position_value'),'lev',r.get('leverage'),'size',r.get('size_mult'),'risk',r.get('risk'),'margin',r.get('margin'),'|',str(r.get('sentiment_note'))[:80])
+              if r.get('event') in ('unsized',): print(r['ts'][11:16],'UNSIZED',r.get('symbol'),r.get('reason'))
+          " "$D" 2>&1 | tail -30
+          echo "== decisions today (size asked)"; sudo python3 -c "
+          import json,sys
+          for l in open('/var/lib/indstocks/brain/'+sys.argv[1]+'.jsonl'):
+              r=json.loads(l)
+              for d in r.get('decisions') or []:
+                  if d.get('action')=='enter': print(r['ts'][11:16],d.get('symbol'),d.get('side'),'size',d.get('size'),'conf',d.get('confidence'))
+          " "$D" 2>&1 | tail -30
           echo "== trades today"; sudo grep -hE '"event": "(placed|sold|covered|target_exit|stop_placed|entry_cancelled|flip_on|day_summary|order_failed|order_rejected|news_alert|price_shock|scan_kicked)"' /var/lib/indstocks/auto/$D.jsonl | cut -c1-260 | tail -60
           echo "== log $D (last 120)"; sudo tail -n 120 /var/lib/indstocks/auto/$D.jsonl | cut -c1-400
           echo "== web"; curl -s -o /dev/null -w "/ %{http_code} %{content_type}\n" http://127.0.0.1:8080/; curl -s http://127.0.0.1:8080/api/state | python3 -c "import json,sys; d=json.load(sys.stdin); print('api/state', d.get('error') or 'ok', d.get('status'), (d.get('session') or {}).get('phase'))"
