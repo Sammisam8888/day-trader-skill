@@ -133,3 +133,20 @@ class Flow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LosersCountEveryExit(unittest.TestCase):
+    """16 Nov: three trades the AI exited at a loss were not counted, so the
+    3-loser circuit breaker never fired."""
+    def test_ai_exits_and_lock_exits_count_as_losers(self):
+        from _fake import NIFTY, SENSEX, order
+        reset()
+        def o(oid, inst, side, avg, remarks, hh):
+            x = order(oid, inst, side=side, status="COMPLETE", qty=40, filled=40, avg=avg, typ="LMT", remarks=remarks)
+            x["time"] = f"{hh}:00:00 16-11-2026"
+            return x
+        placements = [{"event": "placed", "order_id": "E1", "symbol": "NIFTYBEES", "token": NIFTY.token, "side": "B"},
+                      {"event": "placed", "order_id": "E2", "symbol": "SENSEXIETF", "token": SENSEX.token, "side": "B"}]
+        orders = [o("E1", NIFTY, "B", "281.00", "auto/NIFTYBEES", 10), o("X1", NIFTY, "S", "280.00", "exit/NIFTYBEES", 11),
+                  o("E2", SENSEX, "B", "900.00", "auto/SENSEXIETF", 10), o("X2", SENSEX, "S", "905.00", "tgt/SENSEXIETF", 11)]
+        self.assertEqual(daymode.losers(orders, placements), {"normal": 1, "flip": 0})

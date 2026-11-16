@@ -75,21 +75,18 @@ def _int(key: str, default: int) -> int:
 
 
 def losers(orders: List[dict], placements: List[dict]) -> Dict[str, int]:
-    """Losing trades today (our filled stops worse than the entry), split into
-    normal and flipped."""
-    book = {o["id"]: o for o in orders}
-    plans = {str(p.get("order_id")): p for p in placements}
+    """Losing trades today, split into normal and flipped: every CLOSED trade
+    that netted below zero after charges, however it closed (stop, the AI's
+    exit, profit lock, flatten, by hand), as the V3 back-test counts them.
+
+    Until 16 Nov only trades closed by a stop ORDER counted, so trades the AI
+    exited early were invisible: three losers by 10:36 and the day's
+    circuit breaker (stop or flip after 3) never fired."""
+    import learning
     out = {"normal": 0, "flip": 0}
-    for st in common.events("stop_placed"):
-        so = book.get(str(st.get("order_id")))
-        parent = plans.get(str(st.get("parent")))
-        po = book.get(str(st.get("parent")))
-        if not so or not parent or not po or so["filled"] <= 0 or not so.get("avg") or not po.get("avg"):
-            continue
-        long_ = parent.get("side", "B") == "B"
-        pnl = (Decimal(str(so["avg"])) - Decimal(str(po["avg"]))) * (1 if long_ else -1)
-        if pnl < 0:
-            out["flip" if str(parent.get("setup") or "").endswith(FLIP_SUFFIX) else "normal"] += 1
+    for t in learning.trades_from_book(placements, orders):
+        if t["exits"] and t["net"] < 0:
+            out["flip" if str(t.get("setup") or "").endswith(FLIP_SUFFIX) else "normal"] += 1
     return out
 
 
