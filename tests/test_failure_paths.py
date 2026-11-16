@@ -594,3 +594,46 @@ class FlattenBeforeTheBrokersSquareOff(unittest.TestCase):
         self.assertEqual(s.flat_by.strftime("%H:%M"), "14:50")
         self.assertLessEqual(s.flat_by + timedelta(minutes=5), s.flat_by.replace(hour=15, minute=0))
         self.assertEqual(s.last_entry.strftime("%H:%M"), "14:35", "an entry always has 15 minutes to work")
+
+
+class OnlyTestedSetups(unittest.TestCase):
+    """16 Nov: five vwap_pullback trades (not in V3's tested set) netted -606."""
+    def run_with(self, setup):
+        import json as _j
+        import autotrader
+        import brain
+        from _fake import SENSEX, opening
+        reset(TRADER_DECIDER="ai", TRADER_MAX_LEVERAGE="2.0", TRADER_SETUPS="orb,failed_break,day_break")
+        at = datetime(2026, 11, 11, 10, 0, tzinfo=sess.IST)
+        sess.now = lambda clock=None: at
+        brain.find_cli = lambda: "/x/ai"
+        b = FakeBroker(candles={NIFTY.token: opening(at.date()), SENSEX.token: opening(at.date(), "900.00", "896.00")},
+                       quotes={NIFTY.token: {"ltp": "280.50", "uc": "308", "lc": "252"},
+                               SENSEX.token: {"ltp": "898.00", "uc": "990", "lc": "810"}})
+        d = {"action": "enter", "symbol": "NIFTYBEES", "side": "BUY", "order": "stop", "entry": 281.05,
+             "stop": 280.30, "target": 284.10, "size": 1.0, "reason": "t"}
+        if setup is not None:
+            d["setup"] = setup
+        seen = {}
+        def run(p):
+            seen["p"] = p
+            return _j.dumps({"view": "t", "decisions": [d]})
+        try:
+            autotrader.run(b, now=at, decide=lambda *a, **k: brain.decide(*a, **k, run=run))
+        finally:
+            sess.now = lambda clock=None: AT
+        return b, seen["p"]
+
+    def test_an_untested_setup_is_refused(self):
+        b, prompt = self.run_with("vwap_pullback")
+        self.assertEqual(b.placed, [])
+        self.assertIn("not one of the tested setups", common.events("refused", "2026-11-11")[-1]["reason"])
+        self.assertIn('"allowed_setups":["day_break","failed_break","orb"]', prompt)
+
+    def test_an_entry_must_name_its_setup(self):
+        b, _ = self.run_with(None)
+        self.assertEqual(b.placed, [])
+
+    def test_a_tested_setup_goes_in(self):
+        b, _ = self.run_with("orb")
+        self.assertEqual(len(b.placed), 1)

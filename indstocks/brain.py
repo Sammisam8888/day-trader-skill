@@ -188,6 +188,7 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
         "no_entry_window": daymode.no_entry_window(now),
         "leaders": playbook.rank(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
         "lessons": _lessons(),
+        "allowed_setups": sorted(allowed) if allowed else "any",
         "today_trades": _today_trades(placements, orders),
         "direction": {"market": direction["market"],
                       "stocks": {s: {"score": x["score"], "state": x["state"]} for s, x in trends.items()}},
@@ -246,7 +247,10 @@ THE PLAYBOOK. Each market lists "setups" detected by code from closed bars, each
 trigger entry, a stop where the idea is wrong and a 2R target:
 - orb: opening-range break (long above the high / short below the low), 09:30-11:00.
 - vwap_pullback: in a trending stock, a pullback to VWAP that holds (long) or a rally into VWAP
-  that is rejected (short). The best continuation entry on trend days.
+  that is rejected (short).
+ONLY the setups in STATE.allowed_setups may be entered (the back-tested set; a *_flip of them in
+flip mode). Every enter decision must name its setup; the code refuses any other setup or none.
+VWAP still matters as a level for stops, targets and exits even when vwap_pullback is not allowed.
 - failed_break: a break of the range that closes back inside traps the breakout traders; trade
   the other way (break above fails -> short; break below fails -> long).
 - day_break: after 10:30, a trending stock pressing its day high (long) or day low (short).

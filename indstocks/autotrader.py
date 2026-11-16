@@ -516,6 +516,17 @@ def run(broker=None, now=None, *, decide=None) -> int:
             problems.append(mode["halted"])
         if mode.get("flipped") and not is_flip:
             problems.append("flip mode: today only the listed *_flip setups may be entered")
+        # Only the back-tested setups (TRADER_SETUPS). 16 Nov: five vwap_pullback
+        # trades, a setup V3 dropped for losing, netted -606; nothing refused them.
+        allowed_ = daymode.allowed_setups()
+        setup_ = str(d.get("setup") or "").strip()
+        base_ = setup_
+        for suf in (daymode.FLIP_SUFFIX, "_fade"):
+            if base_.endswith(suf):
+                base_ = base_[: -len(suf)]
+        if allowed_ and base_ not in allowed_:
+            problems.append(f"setup {setup_ or '(none named)'} is not one of the tested setups "
+                            f"{', '.join(sorted(allowed_))}")
         window = daymode.no_entry_window(now)
         if window:
             problems.append(window)
