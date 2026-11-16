@@ -375,8 +375,15 @@ def run(broker=None, now=None, *, decide=None) -> int:
     def act(i: int, outcome: str, reason: str = "", **extra) -> None:
         actions.append({"decision": i, "outcome": outcome, "reason": reason, **extra})
 
-    day = risk_mod.DayState(trades_taken=len(rec["filled"]), risk_committed=rec["risk"],
-                            open_symbols=tuple(held_syms), exposure=exposure, unrealised_pnl=unrealised)
+    # The day's limit is enforced by the hard daily stop (fill monitor: at -limit
+    # net it closes everything). Entry checks use the day's ACTUAL net so far
+    # (realised + open, after charges), as the back-test does. The old "total
+    # risk today" summed the planned risk of every trade filled today, winners
+    # and closed ones included: with a Rs 300 day limit one trade would have
+    # blocked the rest of the day (16 Nov).
+    day = risk_mod.DayState(trades_taken=len(rec["filled"]), risk_committed=Decimal(0),
+                            open_symbols=tuple(held_syms), exposure=exposure,
+                            unrealised_pnl=min(day_net, realised + unrealised))
     buying_power = cash * limits.max_leverage
     # Pending entries block margin at Shoonya just like positions: count them.
     our_ids = {str(p.get("order_id")) for p in placements}

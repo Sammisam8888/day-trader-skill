@@ -129,6 +129,15 @@ jobs:
             sudo touch /var/lib/indstocks/.profile-v3-live
           fi
           # Aggressive afternoon: entries until 14:30 (one time; edit the env file to change).
+          # Kill at Rs 300 (owner, 16 Nov 19:49): the hard daily stop closes everything at
+          # -300 net after charges; a trade may risk up to 300 (back-test: 300/300 made
+          # +2,032 over 3 months at 60k; 300/200 only +61).
+          if [ ! -f /var/lib/indstocks/.profile-kill-300-v1 ]; then
+            for kv in TRADER_DAILY_LOSS=300 TRADER_MAX_LOSS=300; do
+              k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
+            done
+            sudo touch /var/lib/indstocks/.profile-kill-300-v1
+          fi
           # Full size (owner, 16 Nov 09:54): use the 5x; every entry takes its full slot.
           if [ ! -f /var/lib/indstocks/.profile-full-size-v1 ]; then
             sudo sed -i "/^TRADER_SIZE_FLOOR=/d" /etc/indstocks.env

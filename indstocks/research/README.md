@@ -28,3 +28,15 @@ The AI's live judgement and historical sentiment are not replayed.
 Early profit taking cuts the few 4R winners that pay for the many small
 losers, and re-entries after an early exit pay charges again. `lock`,
 `lock_arm_r`, `daylock` and `scale` in `portfolio_sim.Config` reproduce these.
+
+## Daily kill levels, 16 Nov 2026 (V3 at Rs 60.6k, 3 months, hard close at the limit)
+
+| daily kill | max loss per trade | 3-mo net | green days | worst day (sim, pessimistic) |
+|---|---|---|---|---|
+| 300 | 200 | +61 | 26/66 | -437 |
+| 300 (live from 17 Nov) | 300 | +2,032 | 22/66 | -581 |
+| 1000 | 400 | +4,907 | 30/66 | -1,173 |
+| 2500 | 600 | +10,261 | 31/66 | -2,132 |
+
+`hard_daily=True` closes every position at the bar's worst price once the
+day's net reaches the limit (the live check runs every few seconds).

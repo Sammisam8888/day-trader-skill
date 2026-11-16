@@ -89,6 +89,7 @@ class Config:
     lock_keep: D = D("0.5")
     lock_min: D = D("5")
     lock_arm_r: Optional[D] = None      # arm at this many R of gross open profit instead of lock_arm rupees
+    hard_daily: bool = False            # live hard daily stop: at -daily_loss net, close all, halt
     daylock: bool = False               # whole-day lock (live day lock)
     daylock_arm: D = D("150")
     daylock_keep: D = D("0.5")
@@ -390,8 +391,20 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
             if cooldown[s] <= 0:
                 del cooldown[s]
         # ---- the day lock: day net (realised + open after charges) vs its best
-        if halted == "day lock":
+        if halted in ("day lock", "hard daily stop"):
             continue
+        if cfg.hard_daily:
+            # checked on this bar's worst prices (the live check runs every few seconds)
+            worst_net = realised_net + sum((_net_at(p, bars[s][k].low if p.side == "B" else bars[s][k].high)
+                                            for s, p in open_pos.items()), D(0))
+            if worst_net <= -cfg.daily_loss:
+                for s2, p2 in list(open_pos.items()):
+                    c2 = bars[s2][k]
+                    close(p2, c2.low if p2.side == "B" else c2.high, "hard_daily", t)
+                    del open_pos[s2]
+                resting.clear()
+                halted = "hard daily stop"
+                continue
         if cfg.daylock:
             day_net = realised_net + sum((_net_at(p, bars[s][k].close) for s, p in open_pos.items()), D(0))
             day_best = max(day_best, day_net)

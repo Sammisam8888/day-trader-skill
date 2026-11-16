@@ -637,3 +637,31 @@ class OnlyTestedSetups(unittest.TestCase):
     def test_a_tested_setup_goes_in(self):
         b, _ = self.run_with("orb")
         self.assertEqual(len(b.placed), 1)
+
+
+class KillAt300(unittest.TestCase):
+    def test_a_closed_trade_does_not_use_up_the_days_limit(self):
+        import json as _j
+        import autotrader
+        import brain
+        from _fake import SENSEX, opening
+        reset(TRADER_DECIDER="ai", TRADER_MAX_LEVERAGE="5.0", TRADER_DAILY_LOSS="300", TRADER_MAX_LOSS="300")
+        at = datetime(2026, 11, 11, 10, 30, tzinfo=sess.IST)
+        sess.now = lambda clock=None: at
+        brain.find_cli = lambda: "/x/ai"
+        common.log("auto", {"event": "placed", "order_id": "OLD", "symbol": "SENSEXIETF", "side": "B",
+                            "token": SENSEX.token, "risk": "290"})
+        closed = position(SENSEX, 0, "900", realised="40", buy_qty=20, sell_qty=20, sell_avg="902")
+        b = FakeBroker(positions=[closed], orders=[order("OLD", SENSEX, status="COMPLETE", filled=20, qty=20, avg="900", typ="LMT")],
+                       candles={NIFTY.token: opening(at.date()), SENSEX.token: opening(at.date(), "900.00", "896.00")},
+                       quotes={NIFTY.token: {"ltp": "280.50", "uc": "308", "lc": "252"},
+                               SENSEX.token: {"ltp": "898.00", "uc": "990", "lc": "810"}})
+        reply = _j.dumps({"view": "t", "decisions": [{"action": "enter", "symbol": "NIFTYBEES", "side": "BUY",
+                          "order": "stop", "entry": 281.05, "stop": 280.30, "target": 284.10, "size": 1.0,
+                          "setup": "orb", "reason": "t"}]})
+        try:
+            autotrader.run(b, now=at, decide=lambda *a, **k: brain.decide(*a, **k, run=lambda p: reply))
+        finally:
+            sess.now = lambda clock=None: AT
+        self.assertEqual(len(b.placed), 1, common.events("blocked", "2026-11-11"))
+        self.assertLessEqual(D(common.events("placed", "2026-11-11")[-1]["risk"]), D("300"))
