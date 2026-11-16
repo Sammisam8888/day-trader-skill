@@ -470,7 +470,7 @@ class Network(unittest.TestCase):
                          "https://query2.finance.yahoo.com/v8/finance/chart/TSLA?range=60d&interval=5m")
         self.assertIn("/chart/BRK-B?", tm.chart_url("brk.b", "query1"))
         self.assertEqual(tm.UA, "Mozilla/5.0 (compatible; day-trader-skill/2.0; "
-                                "+https://github.com/Jakeschincariol/day-trader-skill)")
+                                "+https://github.com/Sammisam8888/day-trader-skill)")
 
     def test_429_waits_retries_then_falls_back_to_query1(self):
         self.answer([429, 429, 200])

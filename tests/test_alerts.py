@@ -16,7 +16,7 @@ alerts = load("trader-alerts", "alerts")
 QDIR = os.path.join(FIX, "trader-alerts")
 PLAN = os.path.join(FIX, "trader-budget", "plan-tsla.json")
 DT = datetime.datetime
-UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
+UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Sammisam8888/day-trader-skill)"
 
 # NYSE holidays as published at https://www.nyse.com/markets/hours-calendars (read 2026-10-13)
 NYSE_2026 = ["2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19",

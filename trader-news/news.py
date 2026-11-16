@@ -58,7 +58,7 @@ SEC_FEED = ("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=%s&t
             "&dateb=&owner=include&count=%d&output=atom")
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 PLACEHOLDER = "you@example.com"
-BROWSER_UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
+BROWSER_UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Sammisam8888/day-trader-skill)"
 KEEP_DAYS = 30
 MOVE_PCT = 3.0  # a stock this far from yesterday's close is flagged as moving
 

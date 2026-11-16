@@ -78,7 +78,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
+UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Sammisam8888/day-trader-skill)"
 PAUSE = 0.5          # seconds between requests: be polite to free endpoints
 BACKOFF = 5.0        # seconds to wait once after a 429
 HOSTS = ("query2", "query1")

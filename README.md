@@ -16,17 +16,12 @@ past day the same setup fired, and tells you the honest odds.
 And no trade goes through until you say yes. Nothing in this pack can place
 an order on its own. Paper trading is the default.
 
-> **Looking for the original Trader skill?** Copy an investor's 13F, the
-> stock screener, tax lots and rebalancing live in
-> [github.com/Jakeschincariol/trader-skill](https://github.com/Jakeschincariol/trader-skill).
-> This repo is its day-trading sequel: the Trader skill v2.
-
 ## Install
 
 Paste this into the AI:
 
 ```
-https://github.com/Jakeschincariol/day-trader-skill
+https://github.com/Sammisam8888/day-trader-skill
 
 install skill
 ```
@@ -34,7 +29,7 @@ install skill
 Or as a plugin, in the CLI:
 
 ```
-/plugin marketplace add Jakeschincariol/day-trader-skill
+/plugin marketplace add Sammisam8888/day-trader-skill
 /plugin install day-trader-skill@day-trader-skill
 ```
 
@@ -43,7 +38,7 @@ the CLI namespaces plugin skills, so installed as a plugin they show up as
 plain `/trader-scanner`:
 
 ```bash
-git clone https://github.com/Jakeschincariol/day-trader-skill.git
+git clone https://github.com/Sammisam8888/day-trader-skill.git
 cp -r day-trader-skill/trader-* ~/.ai/skills/
 ```
 
@@ -213,4 +208,4 @@ trader-pelosi/      SKILL.md, ptr.py
 tests/              unittest suite + offline fixtures
 ```
 
-MIT. Made by [Jake Schincariol](https://opusjake.ai).
+MIT. Maintained by [Sammisam8888](https://github.com/Sammisam8888).

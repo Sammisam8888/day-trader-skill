@@ -79,7 +79,7 @@ import time
 import urllib.error
 import urllib.request
 
-UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
+UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Sammisam8888/day-trader-skill)"
 YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
 NASDAQ_FILES = ("nasdaqlisted.txt", "otherlisted.txt")
 NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/"
