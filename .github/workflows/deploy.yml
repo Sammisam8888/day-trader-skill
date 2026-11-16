@@ -129,6 +129,12 @@ jobs:
             sudo touch /var/lib/indstocks/.profile-v3-live
           fi
           # Aggressive afternoon: entries until 14:30 (one time; edit the env file to change).
+          # Full size (owner, 16 Nov 09:54): use the 5x; every entry takes its full slot.
+          if [ ! -f /var/lib/indstocks/.profile-full-size-v1 ]; then
+            sudo sed -i "/^TRADER_SIZE_FLOOR=/d" /etc/indstocks.env
+            echo "TRADER_SIZE_FLOOR=1.0" | sudo tee -a /etc/indstocks.env >/dev/null
+            sudo touch /var/lib/indstocks/.profile-full-size-v1
+          fi
           if [ ! -f /var/lib/indstocks/.profile-last-entry-v1 ]; then
             sudo sed -i "/^TRADER_LAST_ENTRY=/d" /etc/indstocks.env
             echo "TRADER_LAST_ENTRY=14:30" | sudo tee -a /etc/indstocks.env >/dev/null

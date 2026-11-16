@@ -534,3 +534,28 @@ class MustCloseIsNeverCancelled(unittest.TestCase):
         self.assertEqual(mc[0]["price"], D("252"), "priced at the lower circuit: fills like a market order")
         self.assertNotIn(b._orders[-1]["id"], b.cancelled, "it must stay at the exchange until it fills")
         self.assertEqual(len(ev("flatten_incomplete")), 1, "and the owner is still alerted")
+
+
+class SizeFloor(unittest.TestCase):
+    def test_a_half_size_ask_takes_the_full_slot_when_the_owner_set_the_floor(self):
+        import json as _j
+        import autotrader
+        import brain
+        from _fake import SENSEX, opening
+        out = {}
+        for floor in ("0.25", "1.0"):
+            reset(TRADER_DECIDER="ai", TRADER_MAX_LEVERAGE="5.0", TRADER_SIZE_FLOOR=floor, TRADER_MAX_LOSS="5000")
+            at = datetime(2026, 11, 11, 10, 0, tzinfo=sess.IST)
+            sess.now = lambda clock=None: at
+            brain.find_cli = lambda: "/x/ai"
+            b = FakeBroker(candles={NIFTY.token: opening(at.date()), SENSEX.token: opening(at.date(), "900.00", "896.00")},
+                           quotes={NIFTY.token: {"ltp": "280.50", "uc": "308", "lc": "252"},
+                                   SENSEX.token: {"ltp": "898.00", "uc": "990", "lc": "810"}})
+            reply = _j.dumps({"view": "t", "decisions": [{"action": "enter", "symbol": "NIFTYBEES", "side": "BUY",
+                              "order": "stop", "entry": 281.05, "stop": 280.30, "target": 284.10, "size": 0.5, "reason": "t"}]})
+            try:
+                autotrader.run(b, now=at, decide=lambda *a, **k: brain.decide(*a, **k, run=lambda p: reply))
+            finally:
+                sess.now = lambda clock=None: AT
+            out[floor] = b.placed[0]["qty"]
+        self.assertGreaterEqual(out["1.0"], out["0.25"] * 2 - 1, out)

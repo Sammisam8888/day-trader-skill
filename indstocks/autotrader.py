@@ -543,7 +543,18 @@ def run(broker=None, now=None, *, decide=None) -> int:
             log({"event": "refused", "symbol": sym, "side": side, "reason": str(exc)[:300], "decider_reason": why})
             act(i, "refused", str(exc)[:300])
             continue
-        size = min(max(Decimal(str(d.get("size", 1) or 1)), Decimal("0.25")), Decimal(1))
+        # TRADER_SIZE_FLOOR (owner, 16 Nov: use the 5x): the AI's "size" below it is
+        # raised to it. 1.0 = every trade takes its full slot of buying power; risk per
+        # trade is still capped by max loss per trade, margin by Shoonya's free margin.
+        try:
+            floor_ = min(max(Decimal(common.setting("TRADER_SIZE_FLOOR", "0.25")), Decimal("0.25")), Decimal(1))
+        except ArithmeticError:
+            floor_ = Decimal("0.25")
+        try:
+            asked = Decimal(str(d.get("size", 1) or 1))
+        except ArithmeticError:
+            asked = Decimal(1)
+        size = min(max(asked, floor_), Decimal(1))
         size = max(size * Decimal(str(mood_mult)) * control.size_mult(), Decimal("0.25"))
         lev = limits.max_leverage if limits.max_leverage > 0 else Decimal(1)
         sizing = risk_mod.size_position(plan, slot_cash * size / lev, limits)

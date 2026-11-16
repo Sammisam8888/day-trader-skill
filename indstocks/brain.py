@@ -180,7 +180,8 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
                     "extra_trades": _extra_view(positions, orders, placements, limits),
                     "max_entries_per_symbol": int(common.setting("TRADER_MAX_ENTRIES_PER_SYMBOL", "2")),
                     "shorts_allowed": allow_short(),
-                    "margin_free": _margin_free(broker)},
+                    "margin_free": _margin_free(broker),
+                    "size_floor": common.setting("TRADER_SIZE_FLOOR", "0.25")},
         "day_mode": mode,
         "breaking": _breaking(now),
         "internals": _internals(),
@@ -354,7 +355,8 @@ Reply with ONE JSON object, nothing else:
     {{"action":"cancel","order_id":"<resting entry id>","reason":"..."}},
     {{"action":"exit","symbol":"...","reason":"..."}}
   ]}}
-"decisions" may be empty. size is 0.25 to 1.0 of a normal slot. In "adjust", give stop, target or both;
+"decisions" may be empty. size is 0.25 to 1.0 of a normal slot (the owner may set a floor: when
+account.size_floor is 1, every entry is a full slot, so express low conviction by not trading). In "adjust", give stop, target or both;
 the new stop must stay on the losing side of the price and its loss must fit max_loss_per_trade."""
 
 
