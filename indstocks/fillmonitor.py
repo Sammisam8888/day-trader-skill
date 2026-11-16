@@ -275,41 +275,53 @@ def tick(broker, now: datetime, state: dict) -> dict:
         if so_ and so_["status"] in ("REJECTED", "REJECT"):
             stop_rejects[str(st.get("parent"))] = stop_rejects.get(str(st.get("parent")), 0) + 1
 
-    # 0b. the day lock: the whole day's net after charges, best kept on disk
-    if profitlock.day_enabled() and not lock_best.get("_day_locked"):
-        try:
-            day_net = metrics.pnl(positions, ltps, orders)["net"]
-        except Exception:                               # noqa: BLE001
-            day_net = None
-        if day_net is not None:
-            best_d, why_d = profitlock.day_check(lock_best.get("_day"), day_net)
-            if best_d != lock_best.get("_day"):
-                lock_best["_day"] = best_d
-                lock_dirty[0] = True
-            if why_d:
-                lock_best["_day_locked"] = Decimal(1)
-                lock_dirty[0] = True
-                import control
-                st = control.today()
-                st["halt"] = {"by": "owner", "reason": why_d, "ts": now.isoformat(timespec="seconds"),
-                              "trigger": "day_lock"}
-                control.write_json(control.day_file(), st)
-                log({"event": "day_locked", "net": str(round(day_net, 2)), "best": str(round(best_d, 2)),
-                     "reason": why_d})
-                common.notify("Day locked: profit protected", why_d + ". Closing all positions; no new entries today. "
-                              "Resume from the dashboard if you want.", priority="urgent")
-                for o in orders:                         # resting entries first
-                    if o["pending"] and o["id"] in entry_ids:
-                        try:
-                            broker.cancel(o["id"])
-                        except ShoonyaError:
-                            pass
-                for pos in held.values():
-                    try:
-                        flatten_mod.close_position(broker, pos, remarks=f"lock/{pos['symbol']}")
-                        exiting.add(str(pos["token"]))
-                    except ShoonyaError as exc:
-                        log({"event": "exit_failed", "symbol": pos["symbol"], "reason": str(exc)[:300]})
+    # 0b. the whole day: net after charges (brokerage per order), every tick.
+    def close_all_and_halt(reason: str, trigger: str, event: str, title: str, extra: dict) -> None:
+        import control
+        st = control.today()
+        st["halt"] = {"by": "owner", "reason": reason, "ts": now.isoformat(timespec="seconds"), "trigger": trigger}
+        control.write_json(control.day_file(), st)
+        log({"event": event, "reason": reason, **extra})
+        common.notify(title, reason + ". Closing all positions; no new entries today. "
+                      "Resume from the dashboard if you want.", priority="urgent")
+        for o in orders:                                 # resting entries first
+            if o["pending"] and o["id"] in entry_ids:
+                try:
+                    broker.cancel(o["id"])
+                except ShoonyaError:
+                    pass
+        for pos in held.values():
+            try:
+                flatten_mod.close_position(broker, pos, remarks=f"lock/{pos['symbol']}")
+                exiting.add(str(pos["token"]))
+            except ShoonyaError as exc:
+                log({"event": "exit_failed", "symbol": pos["symbol"], "reason": str(exc)[:300]})
+
+    try:
+        day_net = metrics.pnl(positions, ltps, orders)["net"]
+    except Exception:                                   # noqa: BLE001
+        day_net = None
+    # (i) the hard daily stop: at -daily_loss_limit after charges, everything closes.
+    #     Before 16 Nov the limit only blocked new entries; open trades ran on.
+    if day_net is not None and not lock_best.get("_loss_stopped"):
+        limit_ = common.limits().daily_loss_limit
+        if limit_ > 0 and day_net <= -limit_:
+            lock_best["_loss_stopped"] = Decimal(1)
+            lock_dirty[0] = True
+            close_all_and_halt(f"daily loss stop: day net {day_net:.0f} reached -{limit_:.0f}", "daily_loss",
+                               "daily_loss_stop", "DAILY LOSS STOP", {"net": str(round(day_net, 2))})
+    # (ii) the day lock: a big day may not give back more than half
+    if profitlock.day_enabled() and not lock_best.get("_day_locked") and not lock_best.get("_loss_stopped") \
+            and day_net is not None:
+        best_d, why_d = profitlock.day_check(lock_best.get("_day"), day_net)
+        if best_d != lock_best.get("_day"):
+            lock_best["_day"] = best_d
+            lock_dirty[0] = True
+        if why_d:
+            lock_best["_day_locked"] = Decimal(1)
+            lock_dirty[0] = True
+            close_all_and_halt(why_d, "day_lock", "day_locked", "Day locked: profit protected",
+                               {"net": str(round(day_net, 2)), "best": str(round(best_d, 2))})
 
     # 1-3. every filled auto entry still open: protect, take target or lock profit, trail
     for p in placements:
