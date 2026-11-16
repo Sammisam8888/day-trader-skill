@@ -640,7 +640,7 @@ def render(day: str, flash: str = "", flash_err: bool = False) -> str:
                  f"<form method=post action=/resume><input type=hidden name=tab value=controls><button class=btn-resume>Resume</button></form>")
     else:
         p.append("<form method=post action=/halt><input type=hidden name=tab value=controls><input type=text name=reason placeholder='reason (optional)'>"
-                 "<button class=btn-halt style='margin-top:10px'>Halt &mdash; stop placing new orders</button></form>")
+                 "<button class=btn-halt style='margin-top:10px'>Halt &mdash; stop trading and exit all positions</button></form>")
     p.append("<details><summary>Risk limits &amp; credentials</summary><form method=post action=/limits><input type=hidden name=tab value=controls>")
     for key, label, typ in EDITABLE:
         p.append(f"<label>{e(label)}</label><input type={typ} {'step=any ' if typ == 'number' else ''}name={e(key)} "
@@ -1079,11 +1079,26 @@ def api_sentiment(day: str) -> dict:
                "scorecard": sentiment.scorecard()})
 
 
+def kill_all(reason: str) -> str:
+    """The Halt button (owner, 16 Nov): stop new entries AND exit everything now:
+    cancel this system's pending orders and close every open intraday position
+    with a marketable order. The halt file stays until Resume."""
+    HALT_FILE.write_text(reason[:200] + "\n", encoding="utf-8")
+    try:
+        import control
+        outcome, msg = control.apply({"command": "flatten_now", "reason": reason[:200]}, by="owner",
+                                     broker=sh.Shoonya())
+        return f"Halted and exiting: {msg}" if outcome == "applied" else f"Halted; exit {outcome}: {msg}"
+    except Exception as exc:                            # noqa: BLE001
+        return (f"Halted (no new entries), but closing positions failed: {exc}. "
+                "Close them in the Shoonya app.")[:400]
+
+
 def api_action(body: dict) -> dict:
     a = str(body.get("action") or "")
     if a == "halt":
-        HALT_FILE.write_text((str(body.get("reason") or "halted from dashboard"))[:200] + "\n", encoding="utf-8")
-        return {"ok": True, "message": "Halted. No new entries. Stops, targets and the flatten keep running."}
+        msg = kill_all(str(body.get("reason") or "halted from dashboard"))
+        return {"ok": "failed" not in msg, "message": msg}
     if a == "resume":
         try:
             HALT_FILE.unlink()
@@ -1259,8 +1274,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/halt":
                 reason = (form.get("reason") or ["halted from dashboard"])[0].strip() or "halted from dashboard"
-                HALT_FILE.write_text(reason + "\n", encoding="utf-8")
-                flash = "Halted. No new orders will be placed. Resting orders at the exchange remain."
+                flash = kill_all(reason)
             elif path == "/resume":
                 try:
                     HALT_FILE.unlink()

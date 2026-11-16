@@ -665,3 +665,20 @@ class KillAt300(unittest.TestCase):
             sess.now = lambda clock=None: AT
         self.assertEqual(len(b.placed), 1, common.events("blocked", "2026-11-11"))
         self.assertLessEqual(D(common.events("placed", "2026-11-11")[-1]["risk"]), D("300"))
+
+
+class HaltButtonExitsEverything(unittest.TestCase):
+    def test_halt_stops_entries_and_closes_open_positions(self):
+        import dashboard
+        reset()
+        b = FakeBroker(positions=[position(NIFTY, 40, "281.02")])
+        orig = dashboard.sh.Shoonya
+        dashboard.sh.Shoonya = lambda *a, **k: b
+        try:
+            out = dashboard.api_action({"action": "halt", "reason": "owner kill"})
+        finally:
+            dashboard.sh.Shoonya = orig
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(dashboard.HALT_FILE.exists())
+        self.assertEqual([(p["side"], p["qty"]) for p in b.placed], [("S", 40)], "the open long is sold")
+        dashboard.HALT_FILE.unlink()

@@ -146,7 +146,7 @@ export default function App() {
             {st && <Badge tone={st.tone} className="px-2 py-1"><Dot tone={st.tone} live={s?.status === "live"} />{st.label}</Badge>}
             {s && (s.status === "halted"
               ? <Btn variant="solid" className="px-2.5 py-1.5" onClick={() => run("resume")}><Play size={14} />Resume</Btn>
-              : <Btn variant="danger" className="px-2.5 py-1.5" onClick={() => { const r = prompt("Halt new entries. Reason?", "manual halt"); if (r !== null) run("halt", { reason: r }); }}><Pause size={14} />Halt</Btn>)}
+              : <Btn variant="danger" className="px-2.5 py-1.5" onClick={() => { const r = prompt("Halt: stop trading AND exit every open position at market now. Reason?", "manual kill"); if (r !== null) run("halt", { reason: r }); }}><Pause size={14} />Halt</Btn>)}
             <a href="/classic?tab=controls" className="rounded-lg border border-line-2 bg-panel-2 p-2 text-dim hover:text-fg" title="Settings, limits, terminal"><Settings2 size={16} /></a>
           </div>
         </div>
