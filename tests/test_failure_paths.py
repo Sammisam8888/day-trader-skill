@@ -559,3 +559,25 @@ class SizeFloor(unittest.TestCase):
                 sess.now = lambda clock=None: AT
             out[floor] = b.placed[0]["qty"]
         self.assertGreaterEqual(out["1.0"], out["0.25"] * 2 - 1, out)
+
+
+class HardDailyStop(unittest.TestCase):
+    def setUp(self):
+        reset(TRADER_DAILY_LOSS="2500")
+        sess.now = lambda clock=None: AT
+        self.state = {}
+
+    def tick(self, realised, ltp="281.00"):
+        closed = position(SENSEX_, 0, "900", realised=realised, buy_qty=20, sell_qty=20, sell_avg="905")
+        b = FakeBroker(positions=[closed, position(NIFTY, 40, "281.02", ltp=ltp)], quotes={NIFTY.token: {"ltp": ltp}})
+        fm.tick(b, AT, self.state)
+        return b
+
+    def test_reaching_the_daily_loss_closes_everything_not_just_new_entries(self):
+        self.tick("-1000")
+        self.assertIsNone(common.halted())
+        b = self.tick("-2600")
+        self.assertIn("daily loss stop", common.halted())
+        self.assertEqual([(p["side"], p["qty"]) for p in b.placed], [("S", 40)])
+        self.tick("-2700")
+        self.assertEqual(len(ev("daily_loss_stop")), 1, "fires once")

@@ -267,6 +267,8 @@ because the few 4R winners pay for all the small losers. Do not micro-manage a t
 working; move a stop only on a real change (a failed level, a reversal), not on every wiggle.
 Targets may only be moved CLOSER, never further away.
 DAY LOCK (code): a day that reaches Rs 1500 net and falls to half of it is closed and halted.
+DAILY LOSS STOP (code): at -daily_loss_limit net after charges every position is closed at market and
+the day is halted. Size so that a normal string of stops cannot reach it.
 MARGIN: STATE.account.margin_free is what Shoonya will actually lend now. Resting entries block
 margin. If a better setup needs margin that stale resting entries hold, cancel the stalest first
 (action cancel) in the same response, then enter.
