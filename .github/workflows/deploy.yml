@@ -71,20 +71,6 @@ jobs:
             echo 'TRADER_LIVE=false' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo mkdir -p /var/lib/indstocks && sudo touch /var/lib/indstocks/.broker-shoonya
           fi
-          # ---- one-time migration: the decision layer was renamed ----------
-          # The box still carries the old env value and the old sentinel names.
-          # Without this, a deploy leaves TRADER_DECIDER at a value the code no
-          # longer matches (silently dropping to rule-based decisions) and sees
-          # the profile sentinel missing, re-applying the 2026-11-09 limits over
-          # the ones tuned since. Delete this block once a deploy has run.
-          sudo sed -i 's/^TRADER_DECIDER=claude$/TRADER_DECIDER=ai/' /etc/indstocks.env
-          sudo sed -i 's/^TRADER_CLAUDE_BIN=/TRADER_CLI_BIN=/' /etc/indstocks.env
-          if [ -f /var/lib/indstocks/.profile-claude-aggressive-v1 ] \
-             && [ ! -f /var/lib/indstocks/.profile-ai-aggressive-v1 ]; then
-            sudo mv /var/lib/indstocks/.profile-claude-aggressive-v1 \
-                    /var/lib/indstocks/.profile-ai-aggressive-v1
-          fi
-          # ---- end migration ------------------------------------------------
           # Profile the owner chose on 2026-11-09: the AI decides, shorts and
           # re-entry on, 2x leverage, more symbols. Applied ONCE; later edits
           # on the dashboard or in chat are never overwritten.
