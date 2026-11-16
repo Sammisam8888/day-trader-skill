@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Reject AI attribution trailers and session URLs in commit messages.
+if grep -qiE '^(co-authored-by|claude-session)[[:space:]]*:|generated with|noreply@anthropic\.com|claude\.ai/code/session' "$1"; then
+  echo "commit-msg: AI attribution trailer or session URL in the message. Remove it:" >&2
+  grep -niE '^(co-authored-by|claude-session)[[:space:]]*:|generated with|noreply@anthropic\.com|claude\.ai/code/session' "$1" >&2
+  exit 1
+fi
