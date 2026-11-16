@@ -1098,7 +1098,7 @@ def api_action(body: dict) -> dict:
     a = str(body.get("action") or "")
     if a == "halt":
         msg = kill_all(str(body.get("reason") or "halted from dashboard"))
-        return {"ok": "failed" not in msg, "message": msg}
+        return {"ok": True, "message": msg}           # the halt itself always holds; msg says if exits failed
     if a == "resume":
         try:
             HALT_FILE.unlink()
