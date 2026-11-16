@@ -581,3 +581,16 @@ class HardDailyStop(unittest.TestCase):
         self.assertEqual([(p["side"], p["qty"]) for p in b.placed], [("S", 40)])
         self.tick("-2700")
         self.assertEqual(len(ev("daily_loss_stop")), 1, "fires once")
+
+
+class FlattenBeforeTheBrokersSquareOff(unittest.TestCase):
+    """16 Nov: Shoonya squares off MIS in F&O stocks at 15:00 (closing auction
+    rules); our 15:05 exits were rejected."""
+    def test_default_flatten_is_before_three(self):
+        import datetime as _dt
+        reset()
+        common.ENV_FILE.write_text("TRADER_LIVE=true\nTRADER_LAST_ENTRY=14:45\n")
+        s = sess.Session(_dt.date(2026, 11, 17))
+        self.assertEqual(s.flat_by.strftime("%H:%M"), "14:50")
+        self.assertLessEqual(s.flat_by + timedelta(minutes=5), s.flat_by.replace(hour=15, minute=0))
+        self.assertEqual(s.last_entry.strftime("%H:%M"), "14:35", "an entry always has 15 minutes to work")

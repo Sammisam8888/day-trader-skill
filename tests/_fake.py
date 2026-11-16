@@ -144,6 +144,7 @@ def reset(**env):
             pass
     lines = [f"{k}={v}" for k, v in {"TRADER_LIVE": "true", "TRADER_SYMBOLS": "NIFTYBEES,SENSEXIETF",
                                       "TRADER_INTERNALS": "false", "TRADER_KICK_SCAN": "false",
+                                      "TRADER_FLAT_BY": "15:05",   # the suite was written for a 15:05 flatten
                                       **env}.items()]
     common.ENV_FILE.write_text("\n".join(lines) + "\n")
 

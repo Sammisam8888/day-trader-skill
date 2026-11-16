@@ -33,28 +33,50 @@ OPENING_RANGE_MINUTES = 15
 LAST_ENTRY = time(12, 30)
 
 
-def _last_entry() -> time:
-    """TRADER_LAST_ENTRY (HH:MM) from /etc/indstocks.env, read fresh each call;
-    12:30 if unset. Kept between 10:00 and 14:50 so a trade always has time
-    to work before the 15:05 flatten."""
-    raw = os.environ.get("TRADER_LAST_ENTRY", "")
+def _env(key: str) -> str:
+    raw = os.environ.get(key, "")
     env_file = Path(os.environ.get("TRADER_ENV_FILE", "/etc/indstocks.env"))
     try:
         for line in env_file.read_text(encoding="utf-8").splitlines():
-            if line.startswith("TRADER_LAST_ENTRY="):
+            if line.startswith(key + "="):
                 raw = line.split("=", 1)[1].strip()
     except OSError:
         pass
+    return raw
+
+
+def _hhmm(raw: str) -> Optional[time]:
     try:
         hh, mm = (int(x) for x in raw.split(":"))
-        t = time(hh, mm)
+        return time(hh, mm)
     except ValueError:
+        return None
+
+
+# Our own square-off, ahead of the broker's. Since NSE's closing auction
+# (3 Aug 2026) brokers square off MIS in F&O stocks at 15:00 (Shoonya
+# rejected our 15:05 exits on 16 Nov: "MIS orders are disallowed after
+# system square off"). TRADER_FLAT_BY, default 14:50, kept 14:30-15:10. The
+# fill monitor flattens at this time and 5 minutes later; the flatten timers
+# (14:53, 14:57) are a backup.
+FLAT_BY = time(14, 50)
+
+
+def _flat_by() -> time:
+    t = _hhmm(_env("TRADER_FLAT_BY"))
+    return FLAT_BY if t is None else min(max(t, time(14, 30)), time(15, 10))
+
+
+def _last_entry() -> time:
+    """TRADER_LAST_ENTRY (HH:MM) from /etc/indstocks.env, read fresh each call;
+    12:30 if unset. Kept between 10:00 and 15 minutes before the flatten so a
+    trade always has time to work."""
+    t = _hhmm(_env("TRADER_LAST_ENTRY"))
+    if t is None:
         return LAST_ENTRY
-    return min(max(t, time(10, 0)), time(14, 50))
-# Our own square-off, ahead of the broker's (Shoonya MIS ~15:15-15:20). The
-# fill monitor runs the flatten at this moment; the flatten timers are a
-# backup for when the monitor is down.
-FLAT_BY = time(15, 5)
+    fb = _flat_by()
+    latest = time((fb.hour * 60 + fb.minute - 15) // 60, (fb.hour * 60 + fb.minute - 15) % 60)
+    return min(max(t, time(10, 0)), latest)
 
 # Special sessions: (open, last_entry, flat_by, close). A date here trades
 # even on a weekend or a listed holiday. Muhurat 2026: Sunday 8 Nov,
@@ -162,7 +184,7 @@ class Session:
 
     @property
     def flat_by(self) -> datetime:
-        return at(self.day, self.special[2] if self.special else FLAT_BY)
+        return at(self.day, self.special[2] if self.special else _flat_by())
 
     @property
     def close(self) -> datetime:

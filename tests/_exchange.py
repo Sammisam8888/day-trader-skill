@@ -467,7 +467,8 @@ def run_day(day_candles, ticks, *, seed=1, chaos=0.0, hostile=0.1, scans=True, s
                 autotrader.run(ex, now=now, decide=lambda *a, **k: brain.decide(*a, **k, run=decide_run))
             except Exception as exc:                    # noqa: BLE001
                 errors.append(f"{now:%H:%M:%S} scan: {type(exc).__name__}: {exc}\n{traceback.format_exc()[-600:]}")
-        if now.strftime("%H:%M:%S") in ("15:08:00", "15:14:00"):
+        if now.strftime("%H:%M:%S") in ((session.flat_by + timedelta(minutes=3)).strftime("%H:%M:%S"),
+                                        (session.flat_by + timedelta(minutes=7)).strftime("%H:%M:%S")):
             try:
                 flatten.run(ex, now=now)
             except Exception as exc:                    # noqa: BLE001
