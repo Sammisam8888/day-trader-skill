@@ -131,6 +131,17 @@ jobs:
             sudo touch /var/lib/indstocks/.profile-v3-live
           fi
           # Aggressive afternoon: entries until 14:30 (one time; edit the env file to change).
+          # Owner, 17 Nov 13:21: resume trading today after the day lock tripped on the stale
+          # morning peak during the 13:20 rollout; reset today's lock memory so the Rs 600 lock
+          # guards new gains. One time (sentinel).
+          if [ ! -f /var/lib/indstocks/.profile-resume-2026-11-17 ]; then
+            f=/var/lib/indstocks/auto/lock/best-2026-11-17.json
+            if [ -f "$f" ]; then
+              sudo python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); [d.pop(k, None) for k in ('_day', '_day_locked')]; json.dump(d, open(p, 'w'))" "$f"
+            fi
+            (cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import control; print(control.apply({'command': 'resume_today', 'reason': 'owner: resume after the 13:20 rollout lock'}, by='owner'))") || true
+            sudo touch /var/lib/indstocks/.profile-resume-2026-11-17
+          fi
           # Day lock at Rs 600, keep 60% (owner, 17 Nov 13:15: a +895 day ended -30 on stops).
           # Today's peak was already given back: clear today's day-best so the lock protects
           # new gains from now on instead of halting the day at once.
