@@ -153,9 +153,11 @@ def load_token(now: Optional[datetime] = None) -> Optional[dict]:
     return rec
 
 
-def save_token(token: str, uid: str, actid: str) -> dict:
+def save_token(token: str, uid: str, actid: str, access: str = "") -> dict:
     rec = {"token": token, "uid": uid, "actid": actid,
            "at": sess.now().isoformat(timespec="seconds")}
+    if access:
+        rec["access"] = access          # the OAuth access token: the websocket wants this one
     TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = TOKEN_FILE.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -222,7 +224,7 @@ def exchange_code(code: str, http: Callable = _http) -> dict:
         raise ShoonyaError(f"login failed: {emsg}")
     uid = resp.get("uid") or resp.get("USERID") or env("SHOONYA_USER_ID")
     actid = resp.get("actid") or uid
-    return save_token(resp["susertoken"], uid, actid)
+    return save_token(resp["susertoken"], uid, actid, str(resp.get("access_token") or ""))
 
 
 # ------------------------------------------------------------------ data

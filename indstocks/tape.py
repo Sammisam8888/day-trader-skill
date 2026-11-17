@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common  # noqa: E402
 import session as sess  # noqa: E402
 
-WS_URL = os.environ.get("SHOONYA_WS", "wss://api.shoonya.com/NorenWSTP/")
+WS_URL = os.environ.get("SHOONYA_WS", "wss://api.shoonya.com/NorenWSAPI/")
 TAPE_DIR = common.STATE_DIR / "tape"
 LIVE_FILE = TAPE_DIR / "live.json"
 
@@ -222,6 +222,13 @@ def read_live(max_age_s: float = 10.0) -> Dict[str, dict]:
 
 # ------------------------------------------------------------ the recorder
 
+def connect_msg(tok: dict) -> str:
+    """OAuth websocket login (Shoonya's NorenRestApiOAuth 0.0.41): t=a with the
+    OAuth access token; the session token is the fallback for an older login file."""
+    return json.dumps({"t": "a", "uid": tok["uid"], "actid": tok["uid"],
+                       "accesstoken": tok.get("access") or tok["token"], "source": "API"})
+
+
 def symbols() -> list:
     syms = [s.strip().upper() for s in common.setting("TRADER_SYMBOLS", "NIFTYBEES").split(",") if s.strip()]
     for s in ("NIFTYBEES", "BANKBEES"):
@@ -260,14 +267,13 @@ def session_once(stop_at: float) -> None:
     files = {s: open(out_dir / f"{s}.jsonl", "a", encoding="utf-8") for s in books}
     ws = WS(WS_URL)
     try:
-        ws.send(json.dumps({"t": "c", "uid": tok["uid"], "actid": tok.get("actid") or tok["uid"],
-                            "susertoken": tok["token"], "source": "API"}))
+        ws.send(connect_msg(tok))
         ack = ws.recv() or ""
         try:
             a = json.loads(ack)
         except ValueError:
             a = {}
-        if a.get("t") != "ck" or str(a.get("s", "")).upper() != "OK":
+        if a.get("t") not in ("ak", "ck") or str(a.get("s", "")).upper() != "OK":
             raise ConnectionError(f"connect refused: {ack[:200]}")
         ws.send(json.dumps({"t": "d", "k": "#".join(f"NSE|{t}" for t in by_token)}))
         common.log("tape", {"event": "tape_connected", "symbols": len(books)})
@@ -291,8 +297,8 @@ def session_once(stop_at: float) -> None:
             if now - last_live >= 1.0:
                 _write_live(books, now)
                 last_live = now
-            if now - last_beat >= 25:
-                ws.send(json.dumps({"t": "h"}))
+            if now - last_beat >= 3:
+                ws.send(json.dumps({"t": "h"}), opcode=9)       # ping, as Shoonya's own client does
                 last_beat = now
             if now - last_flush >= 5:
                 for fh in files.values():
@@ -330,8 +336,7 @@ def check() -> None:
     inst = Shoonya().instrument("NIFTYBEES")
     ws = WS(WS_URL)
     try:
-        ws.send(json.dumps({"t": "c", "uid": tok["uid"], "actid": tok.get("actid") or tok["uid"],
-                            "susertoken": tok["token"], "source": "API"}))
+        ws.send(connect_msg(tok))
         print("ack:", (ws.recv() or "")[:200])
         ws.send(json.dumps({"t": "d", "k": f"NSE|{inst.token}"}))
         ws.sock.settimeout(8)
