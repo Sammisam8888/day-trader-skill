@@ -142,6 +142,14 @@ jobs:
             (cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import control; print(control.apply({'command': 'resume_today', 'reason': 'owner: resume after the 13:20 rollout lock'}, by='owner'))") || true
             sudo touch /var/lib/indstocks/.profile-resume-2026-11-17
           fi
+          # Owner, 17 Nov 18:50: paper mode from 18 Nov. The live strategy lost about Rs 20,800
+          # over 10 months in the back-test (Feb-Nov 2026); no real orders until a model passes
+          # the 10-month test. Turn back on with scripts/go-live.sh. One time (sentinel).
+          if [ ! -f /var/lib/indstocks/.profile-paper-2026-11-18 ]; then
+            sudo sed -i '/^TRADER_LIVE=/d' /etc/indstocks.env
+            echo 'TRADER_LIVE=false' | sudo tee -a /etc/indstocks.env >/dev/null
+            sudo touch /var/lib/indstocks/.profile-paper-2026-11-18
+          fi
           # Ratchet day lock (owner, 17 Nov 14:25): the kept share of the day's best rises
           # as the day gets better, and +1000 net banks the day. Replaces the 600/60 step.
           if [ ! -f /var/lib/indstocks/.profile-ratchet-v1 ]; then
