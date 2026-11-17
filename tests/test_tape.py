@@ -74,5 +74,59 @@ class Features(unittest.TestCase):
         self.assertEqual(list(tape.read_live()), ["A"])
 
 
+class MomentumExit(unittest.TestCase):
+    """A winner whose buying has died: logged in shadow mode, acted on only when on."""
+    def setUp(self):
+        reset()
+
+    def live(self, mom):
+        import json
+        import time
+        tape.TAPE_DIR.mkdir(parents=True, exist_ok=True)
+        tape.LIVE_FILE.write_text(json.dumps({"symbols": {"LT": {"momentum": mom, "chg_1m": -0.3, "upticks": 0.1,
+                                                                  "imbalance": 0.3, "updated": time.time()}}}))
+
+    def test_shadow_logs_once_after_the_hold(self):
+        from datetime import datetime, timedelta
+        from decimal import Decimal as D
+        import common
+        import fillmonitor as fm
+        import session as sess
+        t = datetime(2026, 11, 18, 11, 0, tzinfo=sess.IST)
+        st = {}
+        self.live(-0.8)
+        self.assertIsNone(fm.momentum_exit(st, "p1", "LT", "B", D("3900"), 50, D("3910"), t))
+        why = fm.momentum_exit(st, "p1", "LT", "B", D("3900"), 50, D("3910"), t + timedelta(seconds=21))
+        self.assertIn("momentum exit", why)
+        fm.momentum_exit(st, "p1", "LT", "B", D("3900"), 50, D("3910"), t + timedelta(seconds=30))
+        self.assertEqual(len(common.events("momentum_exit_shadow")), 1)
+
+    def test_not_in_profit_or_momentum_with_us_does_nothing(self):
+        from datetime import datetime, timedelta
+        from decimal import Decimal as D
+        import fillmonitor as fm
+        import session as sess
+        t = datetime(2026, 11, 18, 11, 0, tzinfo=sess.IST)
+        st = {}
+        self.live(-0.8)
+        fm.momentum_exit(st, "p1", "LT", "B", D("3900"), 50, D("3899"), t)
+        self.assertIsNone(fm.momentum_exit(st, "p1", "LT", "B", D("3900"), 50, D("3899"), t + timedelta(seconds=60)))
+        self.live(0.8)
+        fm.momentum_exit(st, "p2", "LT", "B", D("3900"), 50, D("3910"), t)
+        self.assertIsNone(fm.momentum_exit(st, "p2", "LT", "B", D("3900"), 50, D("3910"), t + timedelta(seconds=60)))
+
+    def test_off_means_off(self):
+        from datetime import datetime, timedelta
+        from decimal import Decimal as D
+        import fillmonitor as fm
+        import session as sess
+        reset(TRADER_MOMENTUM_EXIT="off")
+        t = datetime(2026, 11, 18, 11, 0, tzinfo=sess.IST)
+        st = {}
+        self.live(-0.9)
+        fm.momentum_exit(st, "p1", "LT", "B", D("3900"), 50, D("3910"), t)
+        self.assertIsNone(fm.momentum_exit(st, "p1", "LT", "B", D("3900"), 50, D("3910"), t + timedelta(seconds=60)))
+
+
 if __name__ == "__main__":
     unittest.main()

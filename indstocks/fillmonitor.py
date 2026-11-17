@@ -154,6 +154,46 @@ def open_qty(placements: list, orders: list, entry_ids: set) -> dict:
 
 # ------------------------------------------------------------------ tick
 
+def momentum_exit(state: dict, pid: str, symbol: str, side: str, entry, qty: int, ltp, now: datetime):
+    """The tape says the move is over: a trade in profit after charges whose
+    per-second momentum (tape.py) has turned hard against it for
+    TRADER_MOMENTUM_HOLD_S (20 s). Returns the reason, logged once per trade.
+    TRADER_MOMENTUM_EXIT: shadow (default: log only, measure it first), on, off."""
+    mode = common.setting("TRADER_MOMENTUM_EXIT", "shadow").lower()
+    if mode not in ("shadow", "on"):
+        return None
+    try:
+        import tape
+        f = tape.read_live().get(symbol)
+    except Exception:                                    # noqa: BLE001
+        return None
+    if not f or f.get("momentum") is None:
+        return None
+    net = profitlock.net_open(side, entry, qty, ltp)
+    try:
+        min_net = Decimal(common.setting("TRADER_MOMENTUM_MIN_NET", "40"))
+        cut = float(common.setting("TRADER_MOMENTUM_CUT", "0.5"))
+        hold = float(common.setting("TRADER_MOMENTUM_HOLD_S", "20"))
+    except (ArithmeticError, ValueError):
+        return None
+    against = f["momentum"] <= -cut if side == "B" else f["momentum"] >= cut
+    since = state.setdefault("mom_against", {})
+    if net < min_net or not against:
+        since.pop(pid, None)
+        return None
+    t0 = since.setdefault(pid, now.timestamp())
+    if now.timestamp() - t0 < hold:
+        return None
+    why = (f"momentum exit: tape {f['momentum']:+.2f} against the trade for {now.timestamp() - t0:.0f}s "
+           f"(1m {f.get('chg_1m')}%, upticks {f.get('upticks')}, book {f.get('imbalance')}), net {net:.0f}")
+    done = state.setdefault("mom_logged", set())
+    if pid not in done:
+        done.add(pid)
+        log({"event": "momentum_exit" if mode == "on" else "momentum_exit_shadow", "parent": pid,
+             "symbol": symbol, "net": str(round(net, 2)), "ltp": str(ltp), "tape": f, "reason": why})
+    return why
+
+
 def tick(broker, now: datetime, state: dict) -> dict:
     session = sess.session_for(now)
     if session is None or now < session.open - timedelta(minutes=5) or now >= session.close:
@@ -439,6 +479,10 @@ def tick(broker, now: datetime, state: dict) -> dict:
                         out["moved"] += 1
                     except ShoonyaError as exc:
                         log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})
+        if open_q > 0 and not hit and not lock_why:
+            mom_why = momentum_exit(state, pid, p["symbol"], side, entry, open_q, ltp, now)
+            if mom_why and common.setting("TRADER_MOMENTUM_EXIT", "shadow").lower() == "on":
+                lock_why = mom_why
         if hit or lock_why:
             # Book it now: cancel the stop (and any unfilled entry), marketable exit, chased until filled.
             if o["pending"]:
