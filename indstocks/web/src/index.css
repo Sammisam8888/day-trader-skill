@@ -25,6 +25,13 @@
 }
 
 html, body, #root { height: 100%; }
+/* Nothing may make the page wider than the phone: the browser would zoom out
+   and the whole dashboard shrinks to part of the screen (17 Nov). */
+html, body { overflow-x: hidden; max-width: 100vw; }
+.grid > * { min-width: 0; }
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+table { max-width: 100%; }
 body {
   background: var(--color-bg);
   color: var(--color-fg);

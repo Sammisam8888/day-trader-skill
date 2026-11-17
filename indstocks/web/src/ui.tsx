@@ -4,11 +4,11 @@ import { clsx } from "./fmt";
 export function Card({ title, right, children, className, pad = true }:
   { title?: ReactNode; right?: ReactNode; children: ReactNode; className?: string; pad?: boolean }) {
   return (
-    <section className={clsx("rounded-2xl border border-line bg-panel/80 backdrop-blur-sm shadow-[0_1px_0_#ffffff08_inset]", className)}>
+    <section className={clsx("min-w-0 max-w-full rounded-2xl border border-line bg-panel/80 backdrop-blur-sm shadow-[0_1px_0_#ffffff08_inset]", className)}>
       {(title || right) && (
-        <header className="flex items-center justify-between gap-3 border-b border-line px-4 py-2.5">
-          <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-dim">{title}</h2>
-          <div className="flex items-center gap-2">{right}</div>
+        <header className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-line px-4 py-2.5">
+          <h2 className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.12em] text-dim">{title}</h2>
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{right}</div>
         </header>
       )}
       <div className={pad ? "p-4" : ""}>{children}</div>

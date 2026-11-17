@@ -27,7 +27,7 @@ function ScoreTable({ title, rows, labels }: { title: string; rows: Record<strin
     <div>
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-dim">{title}</div>
       {keys.length === 0 ? <div className="text-sm text-faint">no closed trades yet</div> : (
-        <table className="num w-full text-sm">
+        <div className="overflow-x-auto"><table className="num w-full text-sm">
           <thead><tr className="text-left text-[11px] text-faint"><th className="py-1 font-normal">group</th><th className="font-normal">trades</th><th className="font-normal">win %</th><th className="text-right font-normal">net ₹</th></tr></thead>
           <tbody>{keys.map((k) => (
             <tr key={k} className="border-t border-line">
@@ -35,7 +35,7 @@ function ScoreTable({ title, rows, labels }: { title: string; rows: Record<strin
               <td>{rows[k].trades ? Math.round((rows[k].wins / rows[k].trades) * 100) : 0}%</td>
               <td className={clsx("text-right", rows[k].net >= 0 ? "text-up" : "text-down")}>{sgn(rows[k].net, 0)}</td>
             </tr>))}</tbody>
-        </table>
+        </table></div>
       )}
     </div>
   );

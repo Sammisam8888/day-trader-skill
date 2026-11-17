@@ -179,13 +179,13 @@ export default function App() {
             <>
               <Kpis s={s} />
               <div className="grid gap-4 xl:grid-cols-5">
-                <div className="xl:col-span-3"><PriceChart s={s} /></div>
-                <div className="xl:col-span-2"><PnlChart s={s} /></div>
+                <div className="min-w-0 xl:col-span-3"><PriceChart s={s} /></div>
+                <div className="min-w-0 xl:col-span-2"><PnlChart s={s} /></div>
               </div>
               <Positions items={s.positions} onExit={exit} />
               <div className="grid gap-4 xl:grid-cols-2">
                 <Blotter orders={s.orders} onCancel={setConfirm} compact />
-                <div className="space-y-4"><ClosedTrades items={s.closed} /><Journal s={s} /></div>
+                <div className="min-w-0 space-y-4"><ClosedTrades items={s.closed} /><Journal s={s} /></div>
               </div>
             </>
           )}

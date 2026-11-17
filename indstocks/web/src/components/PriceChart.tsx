@@ -73,13 +73,13 @@ export default function PriceChart({ s }: { s: State }) {
   const ltp = s.symbols.find((x) => x.symbol === sym)?.ltp;
   return (
     <Card title="Price" pad={false} right={
-      <div className="flex gap-1">
+      <div className="no-scrollbar flex min-w-0 max-w-full gap-1 overflow-x-auto">
         {symbols.map((x) => (
           <button key={x} onClick={() => setSym(x)}
-            className={clsx("rounded-md px-2 py-1 text-xs font-semibold", x === sym ? "bg-line-2 text-fg" : "text-dim hover:text-fg")}>{x}</button>
+            className={clsx("shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-xs font-semibold", x === sym ? "bg-line-2 text-fg" : "text-dim hover:text-fg")}>{x}</button>
         ))}
       </div>}>
-      <div className="flex items-baseline gap-3 px-4 pt-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 pt-3">
         <span className="text-lg font-semibold">{sym}</span>
         <span className="num text-lg">{price(ltp)}</span>
         {data?.levels.trigger != null && <span className="text-xs text-faint">plan: trigger {price(data.levels.trigger)} · stop {price(data.levels.stop)} · target {price(data.levels.target)}</span>}

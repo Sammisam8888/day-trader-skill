@@ -37,7 +37,7 @@ export default function Control() {
           <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-down/30 bg-down-bg p-3 text-sm">
             <span>{c.halt.reason}</span><Btn variant="ghost" onClick={() => run("control_resume")}>Resume</Btn>
           </div>)}
-        <table className="num w-full text-sm">
+        <div className="overflow-x-auto"><table className="num w-full text-sm">
           <thead><tr className="text-left text-[11px] text-faint"><th className="py-1 font-normal">limit</th><th className="font-normal">yours</th><th className="font-normal">today</th><th className="font-normal">the AI's ceiling</th></tr></thead>
           <tbody>{Object.keys(c.base).map((k) => {
             const t = c.risk[k]; const up = k in c.raised;
@@ -51,7 +51,7 @@ export default function Control() {
           {(c.risk.size || c.risk.sides) && <tr className="border-t border-line"><td className="py-1.5 text-dim">Size / sides</td><td>1 / both</td>
             <td className="text-info">{c.risk.size ?? "1"} / {(c.risk.sides ?? "BOTH").toLowerCase()}</td><td /></tr>}
           </tbody>
-        </table>
+        </table></div>
         <div className="mt-4 text-[11px] font-semibold uppercase tracking-wider text-dim">Commands today</div>
         {c.history.length === 0 ? <p className="mt-1 text-sm text-faint">None. The AI issues these rarely: halts, risk changes, calendar fixes.</p> : (
           <ul className="mt-1 space-y-2">{c.history.map((h, i) => (
