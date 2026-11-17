@@ -270,7 +270,8 @@ market. Below 3R, winners must be allowed to run: back-tested, cutting them earl
 because the few 4R winners pay for all the small losers. Do not micro-manage a trade that is
 working; move a stop only on a real change (a failed level, a reversal), not on every wiggle.
 Targets may only be moved CLOSER, never further away.
-DAY LOCK (code): a day that reaches Rs 1500 net and falls to half of it is closed and halted.
+DAY LOCK (code): once the day reaches Rs 600 net after charges, falling to 60% of its best closes
+everything and halts the day. Protect a good day: once it is well green, take only A-grade setups.
 DAILY LOSS STOP (code): at -daily_loss_limit net after charges every position is closed at market and
 the day is halted. Size so that a normal string of stops cannot reach it.
 MARGIN: STATE.account.margin_free is what Shoonya will actually lend now. Resting entries block
