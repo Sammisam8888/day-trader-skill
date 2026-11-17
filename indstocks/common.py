@@ -120,6 +120,12 @@ def log(job: str, record: dict) -> dict:
     except OSError:
         pass
     print(json.dumps(rec, default=str), flush=True)
+    if record.get("event") == "placed":                 # a phone alert for every order the scan places
+        try:
+            import push
+            push.trade_placed(rec)
+        except Exception:                               # noqa: BLE001
+            pass
     return rec
 
 

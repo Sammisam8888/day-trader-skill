@@ -1136,6 +1136,31 @@ def api_action(body: dict) -> dict:
     if a == "exit":
         msg = exit_position(sh.Shoonya(), str(body.get("token") or ""))
         return {"ok": not msg.lower().startswith("no open"), "message": msg}
+    if a in ("exit_now", "exit_all_now"):
+        # From the phone notification: close now at an urgent price (1% through the
+        # touch, fills at once like a market order); the fill monitor chases the rest.
+        import flatten
+        broker = sh.Shoonya()
+        tok = str(body.get("token") or "")
+        pos = [p for p in broker.positions() if p["qty"] != 0 and (a == "exit_all_now" or p["token"] == tok)]
+        if not pos:
+            return {"ok": False, "message": "no open position to close"}
+        done, failed = [], []
+        for p in pos:
+            try:
+                oid = flatten.close_position(broker, p, remarks=f"now/{p['symbol']}", urgent=True)
+                common.log("dash", {"event": "sold" if p["qty"] > 0 else "covered", "symbol": p["symbol"],
+                                    "qty": abs(p["qty"]), "order_id": oid, "reason": "owner: sell now (phone)"})
+                done.append(p["symbol"])
+            except Exception as exc:                    # noqa: BLE001
+                failed.append(f"{p['symbol']}: {exc}"[:120])
+        msg = (f"Closing {', '.join(done)} now." if done else "") + (f" Failed: {'; '.join(failed)}" if failed else "")
+        return {"ok": not failed, "message": msg.strip()}
+    if a == "push_test":
+        import push
+        push.send({"type": "trade", "tag": "test", "renotify": True, "title": "Notifications are on",
+                   "body": "Trades, fills, exits and live P&L will arrive here."}, wait=True)
+        return {"ok": True, "message": f"sent to {len(push.subscriptions())} device(s)"}
     return {"ok": False, "message": f"unknown action {a!r}"}
 
 
@@ -1173,7 +1198,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store" if f.suffix == ".html" else "public, max-age=31536000, immutable")
+        self.send_header("Cache-Control", "no-store" if f.suffix == ".html" or f.name == "sw.js"
+                         else "public, max-age=31536000, immutable")
         self.end_headers()
         self.wfile.write(body)
         return True
@@ -1215,6 +1241,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:                    # noqa: BLE001
                 msg, err = f"login failed: {exc}", "1"
             return self._redirect("/?" + urlencode({"flash": msg[:300], "err": err}))
+        if path == "/api/push/key":
+            try:
+                import push
+                return self._json({"key": push.public_key()})
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"key": None, "error": str(exc)[:200]})
         if path == "/api/state":
             try:
                 return self._json(api_state())
@@ -1263,6 +1295,13 @@ class Handler(BaseHTTPRequestHandler):
         from urllib.parse import parse_qs, urlparse
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
+        if path == "/api/push/subscribe":
+            try:
+                import push
+                body = json.loads(self.rfile.read(length).decode("utf-8") or "{}") if length else {}
+                return self._json({"ok": push.subscribe(body)})
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"ok": False, "message": f"{type(exc).__name__}: {exc}"[:300]})
         if path == "/api/action":
             try:
                 body = json.loads(self.rfile.read(length).decode("utf-8") or "{}") if length else {}

@@ -4,6 +4,7 @@ import { act, getState, type Order, type Position, type State } from "./api";
 import Activity from "./components/Activity";
 import Brain from "./components/Brain";
 import Market from "./components/Market";
+import Notify from "./components/Notify";
 import TradeDrawer from "./components/TradeDrawer";
 import Blotter, { ConfirmCancel } from "./components/Blotter";
 import Chat from "./components/Chat";
@@ -167,6 +168,7 @@ export default function App() {
         </nav>
       </header>
 
+      <Notify />
       {!s ? (
         <div className="grid gap-3 lg:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="h-28 animate-pulse rounded-2xl bg-panel" />)}</div>
       ) : (

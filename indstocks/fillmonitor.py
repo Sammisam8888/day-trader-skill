@@ -118,7 +118,7 @@ def opp(side: str) -> str:
     return "S" if side == "B" else "B"
 
 
-OUR_PREFIX = ("auto/", "stop/", "tgt/", "man/", "flat/", "exit/", "chat/", "ctl/", "brk/", "lock/")
+OUR_PREFIX = ("auto/", "stop/", "tgt/", "man/", "flat/", "exit/", "chat/", "ctl/", "brk/", "lock/", "now/")
 
 
 def is_ours(o: dict, ours: set) -> bool:
@@ -675,6 +675,13 @@ def run() -> int:
                 except ShoonyaError:
                     pass
             metrics.write_snapshot({**snap, "cash": state.get("cash")})
+            try:                                        # live cards on the owner's phone
+                import push
+                push.position_cards(snap["positions"], snap["orders"], snap["ltps"], now, state)
+            except Exception as exc:                    # noqa: BLE001
+                if not state.get("push_err_logged"):
+                    state["push_err_logged"] = True
+                    log({"event": "error", "reason": f"push: {exc}"[:200]})
             minute = now.strftime("%H:%M")
             if state.get("pnl_minute") != minute:
                 state["pnl_minute"] = minute

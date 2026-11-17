@@ -171,4 +171,13 @@ jobs:
             sleep 2
             systemctl is-active --quiet "$unit" || { journalctl -u "$unit" -n 50 --no-pager; exit 1; }
           done
+          # Private HTTPS for the dashboard on the tailnet only (tailscale serve, never funnel):
+          # browsers allow notifications and service workers only over HTTPS.
+          if sudo tailscale status --json | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('CertDomains') else 1)"; then
+            sudo timeout 60 tailscale serve --bg --https=443 http://127.0.0.1:8080 >/dev/null 2>&1 \
+              && echo "dashboard: https://$(sudo tailscale status --json | python3 -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))")/" \
+              || echo "tailscale serve failed (dashboard stays on http)"
+          else
+            echo "Tailscale HTTPS certificates are off for this tailnet: enable them (admin console, DNS page) and redeploy"
+          fi
           REMOTE

@@ -68,7 +68,23 @@ def price_for(broker, inst, side: str, round_no: int) -> Decimal:
     return min(px, q["uc"]) if q["uc"] > 0 else px
 
 
-def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep, qty: Optional[int] = None) -> str:
+def urgent_price(broker, inst, side: str) -> Decimal:
+    """An exit that must fill now: TRADER_URGENT_PCT (1%) through the touch,
+    inside the circuit. A limit this far through fills at the best prices on
+    the book at once, like a market order (which Shoonya's API rejects)."""
+    q = broker.quote(inst.token, inst.exch)
+    pct = Decimal(common.setting("TRADER_URGENT_PCT", "1.0")) / 100
+    if side == "S":
+        ref = q["bid"] if q["bid"] > 0 else q["ltp"]
+        px = to_tick(ref * (1 - pct), inst.tick, mode="down")
+        return max(px, q["lc"]) if q["lc"] > 0 else px
+    ref = q["ask"] if q["ask"] > 0 else q["ltp"]
+    px = to_tick(ref * (1 + pct), inst.tick, mode="up")
+    return min(px, q["uc"]) if q["uc"] > 0 else px
+
+
+def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep, qty: Optional[int] = None,
+                   urgent: bool = False) -> str:
     """Exit one position now: clear its pending closing-side orders (the
     stop), then a marketable limit for the whole live quantity, or at most
     `qty` of it (a partial exit; the fill monitor re-protects the rest)."""
@@ -88,13 +104,13 @@ def close_position(broker, pos: dict, *, remarks: str, sleep=time.sleep, qty: Op
     # exit it would otherwise see "no stop" and put one back (SBIN, 13 Nov 10:50).
     log({"event": "exit_started", "symbol": pos["symbol"], "token": str(pos["token"])})
     try:
-        return _cancel_and_exit(broker, pos, inst, side, remarks, sleep, cap)
+        return _cancel_and_exit(broker, pos, inst, side, remarks, sleep, cap, urgent)
     except Exception:
         log({"event": "exit_aborted", "symbol": pos["symbol"], "token": str(pos["token"])})
         raise
 
 
-def _cancel_and_exit(broker, pos, inst, side, remarks, sleep, cap=None):
+def _cancel_and_exit(broker, pos, inst, side, remarks, sleep, cap=None, urgent=False):
     for o in broker.orders():
         if o["token"] == pos["token"] and o["pending"] and o["side"] == side:
             try:
@@ -112,7 +128,8 @@ def _cancel_and_exit(broker, pos, inst, side, remarks, sleep, cap=None):
     if n <= 0:
         log({"event": "exit_aborted", "symbol": pos["symbol"], "token": str(pos["token"])})
         return None
-    return broker.place(inst, side=side, qty=n, price=broker.marketable(inst, side), remarks=remarks[:60])
+    px = urgent_price(broker, inst, side) if urgent else broker.marketable(inst, side)
+    return broker.place(inst, side=side, qty=n, price=px, remarks=remarks[:60])
 
 
 def run(broker=None, *, now=None, sleep=time.sleep) -> int:
@@ -249,7 +266,7 @@ def _run(broker, now, session, sleep) -> int:
         if o["remarks"].startswith("flat/") and (o["token"], o["side"]) in still:
             continue                                     # the exit still working on an open position
         if o["id"] in ours or o["remarks"].startswith(("auto/", "stop/", "tgt/", "man/", "flat/", "chat/",
-                                                        "exit/", "ctl/", "brk/", "lock/")):
+                                                        "exit/", "ctl/", "brk/", "lock/", "now/")):
             try:
                 broker.cancel(o["id"])
                 swept += 1
