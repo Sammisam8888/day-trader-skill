@@ -94,7 +94,18 @@ class AIDecides(unittest.TestCase):
         self.assertIn(needle, msgs)
 
     def test_refuses_a_chase(self):
-        self.refused(enter(entry=280.40, stop=279.9, target=282), "would chase")
+        # 280.00 is 0.18% behind the price 280.50: further than the 0.15% the code will take
+        self.refused(enter(entry=280.00, stop=279.0, target=284), "would chase")
+
+    def test_a_trigger_just_crossed_goes_in_at_market(self):
+        # 17 Nov: SBIN and RELIANCE were refused 0.06% past their triggers while breaking out
+        b = broker()
+        autotrader.run(b, now=AT, decide=ai(enter(entry=280.40, stop=279.40, target=284.50)))
+        self.assertEqual(len(b.placed), 1)
+        p = b.placed[0]
+        self.assertIsNone(p["trigger"], "a marketable limit, not a stop above the price")
+        self.assertGreater(p["price"], D("280.50"))
+        self.assertEqual(ev("placed")[0]["order_type"], "stop")
 
     def test_refuses_levels_in_the_wrong_order(self):
         self.refused(enter(stop=282.0, target=283.0), "long plan must be")

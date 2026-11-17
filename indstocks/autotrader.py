@@ -106,10 +106,20 @@ def build_plan(d: dict, inst, q: dict):
     trigger = None
     if order == "stop":
         trigger = to_tick(entry, tick, mode="up" if side == "B" else "down")
-        if side == "B" and trigger <= ltp:
-            raise strat.PlanError(f"buy trigger {trigger} is not above the price {ltp}; that would chase")
-        if side == "S" and trigger >= ltp:
-            raise strat.PlanError(f"sell trigger {trigger} is not below the price {ltp}; that would chase")
+        crossed = (side == "B" and trigger <= ltp) or (side == "S" and trigger >= ltp)
+        if crossed:
+            # The break is happening while the decision travels (17 Nov: SBIN and
+            # RELIANCE refused 0.06% past their triggers). Within TRADER_CHASE_PCT
+            # take it now at a marketable price, as the back-test fills a stop entry
+            # the bar gaps through; the plan is re-measured from that price, so
+            # reward:risk and the size floors still decide. Further away: refused.
+            past = abs(ltp - trigger) / trigger * 100
+            limit_pct = Decimal(common.setting("TRADER_CHASE_PCT", "0.15"))
+            if past > limit_pct:
+                raise strat.PlanError(f"{'buy' if side == 'B' else 'sell'} trigger {trigger} is {past:.2f}% "
+                                      f"behind the price {ltp}; that would chase")
+            order, trigger = "now", None
+    if order == "stop":
         # The limit beyond the trigger must survive a fast break: 2 ticks missed the L&T
         # breakdown on 12 Nov. Use the larger of 2 ticks and TRADER_ENTRY_BAND_PCT (0.1%).
         # Capped at a quarter of the trade's risk so it never eats the reward:risk.
