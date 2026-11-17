@@ -93,6 +93,8 @@ class Config:
     daylock: bool = False               # whole-day lock (live day lock)
     daylock_arm: D = D("150")
     daylock_keep: D = D("0.5")
+    daylock_steps: Optional[tuple] = None   # ratchet ladder ((arm_rs, keep_frac), ...), ascending
+    day_target: Optional[D] = None      # day net at or above this: close all, done for the day
     scale: bool = False                 # T1 50% at +scale_t1_r R, stop to breakeven; 30% trailed; 20% runner
     scale_t1_r: D = D("1.0")
     scale_t1_frac: D = D("0.5")
@@ -408,9 +410,18 @@ def run_day(data, d, prev_days, book, cash: D, cfg: Config, log: list) -> dict:
         if cfg.daylock:
             day_net = realised_net + sum((_net_at(p, bars[s][k].close) for s, p in open_pos.items()), D(0))
             day_best = max(day_best, day_net)
-            if day_best >= cfg.daylock_arm and day_net <= max(cfg.lock_min, day_best * cfg.daylock_keep):
+            if cfg.daylock_steps:
+                keep = None
+                for arm_rs, kf in cfg.daylock_steps:
+                    if day_best >= arm_rs:
+                        keep = kf
+                trip = keep is not None and day_net <= max(cfg.lock_min, day_best * keep)
+            else:
+                trip = day_best >= cfg.daylock_arm and day_net <= max(cfg.lock_min, day_best * cfg.daylock_keep)
+            hit = cfg.day_target is not None and day_net >= cfg.day_target
+            if trip or hit:
                 for s2, p2 in list(open_pos.items()):
-                    close(p2, bars[s2][k].close, "daylock", t)
+                    close(p2, bars[s2][k].close, "daytarget" if hit and not trip else "daylock", t)
                     del open_pos[s2]
                 resting.clear()
                 halted = "day lock"

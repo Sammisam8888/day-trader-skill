@@ -40,3 +40,15 @@ losers, and re-entries after an early exit pay charges again. `lock`,
 
 `hard_daily=True` closes every position at the bar's worst price once the
 day's net reaches the limit (the live check runs every few seconds).
+
+## Ratchet day lock, 17 Nov 2026 (live V3 at Rs 60.6k, kill 300, 3 months)
+
+| day lock | 3-mo net | green days | max drawdown | Aug / Sep / Oct |
+|---|---|---|---|---|
+| none | +2,640 | 22/66 | 3,700 | -1,959 / +2,426 / +2,173 |
+| single step 600 keep 60% | +432 | 22/66 | 4,238 | |
+| ratchet 150:40,300:55,600:65,1000:75,2000:80 | +1,454 | 34/66 | 2,168 | +116 / +157 / +1,181 |
+| same + bank the day at +1000 (live from 18 Nov) | +2,468 | 34/66 | 2,160 | +487 / +47 / +1,934 |
+
+`daylock_steps` and `day_target` in `portfolio_sim.Config`. Checked at bar
+closes in the sim; live it runs every few seconds, so it trips a little earlier.

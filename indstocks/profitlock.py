@@ -137,13 +137,51 @@ def day_enabled() -> bool:
     return common.setting("TRADER_DAYLOCK", "true").lower() in ("1", "true", "yes")
 
 
+def day_steps():
+    """The ratchet ladder from TRADER_DAYLOCK_STEPS, "150:40,300:55,...":
+    once the day's best net reaches arm_rs, keep at least pct% of that best.
+    The kept share rises as the day gets better. Empty: the single-step lock."""
+    out = []
+    for part in common.setting("TRADER_DAYLOCK_STEPS", "").split(","):
+        try:
+            a, k = part.split(":")
+            out.append((Decimal(a.strip()), Decimal(k.strip()) / 100))
+        except (ValueError, ArithmeticError):
+            continue
+    return sorted(out)
+
+
+def day_target() -> Optional[Decimal]:
+    v = common.setting("TRADER_DAY_TARGET", "")
+    try:
+        return Decimal(v) if v and Decimal(v) > 0 else None
+    except ArithmeticError:
+        return None
+
+
 def day_check(best: Optional[Decimal], net: Decimal):
     """(new_best, reason to lock the day or None)."""
-    # A catastrophe guard, not a profit taker: at Rs 150-1000 it cut the
-    # back-tested profit; at 1500 it never fired in 3 months but would keep
-    # most of a truly exceptional day.
-    arm = _d("TRADER_DAYLOCK_ARM_RS", "1500")
     best = net if best is None else max(best, net)
+    tgt = day_target()
+    if tgt is not None and net >= tgt:
+        return best, f"day target: day net {net:.0f} reached the target {tgt:.0f}, banked"
+    steps = day_steps()
+    if steps:
+        # 17 Nov: +895 at the best, ended about -30. Back-test, 3 months at Rs 60k
+        # (150:40,300:55,600:65,1000:75,2000:80 + target 1000): positive every month,
+        # green days 22 -> 34 of 66, worst drawdown 3,700 -> 2,168.
+        keep_now = None
+        for arm_rs, kf in steps:
+            if best >= arm_rs:
+                keep_now = kf
+        if keep_now is None:
+            return best, None
+        f = max(min_rs(), best * keep_now)
+        if net <= f:
+            return best, f"day lock: day net {net:.0f} fell to {f:.0f}, {keep_now * 100:.0f}% of its best {best:.0f}"
+        return best, None
+    # Single step (no ladder set): a catastrophe guard at TRADER_DAYLOCK_ARM_RS.
+    arm = _d("TRADER_DAYLOCK_ARM_RS", "1500")
     if best < arm:
         return best, None
     f = max(min_rs(), best * _d("TRADER_DAYLOCK_KEEP_PCT", "50") / 100)
