@@ -1,0 +1,14 @@
+[Unit]
+Description=The tape: live ticks and order book from Shoonya's websocket, recorded and summarised every second (market data only)
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/tape.py
+Restart=always
+RestartSec=20
+User=root
+
+[Install]
+WantedBy=multi-user.target

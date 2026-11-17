@@ -22,7 +22,7 @@ jobs:
         run: |
           ssh -o BatchMode=yes "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'REMOTE'
           set +e
-          echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer fillmonitor dashboard newswatch
+          echo "== services"; systemctl is-active auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer fillmonitor dashboard newswatch tape
           echo "== timers"; systemctl list-timers --no-pager --no-legend auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer; echo "== calendar today"; cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import session as s; x=s.session_for(s.now().replace(hour=10)); print(s.now().date(), 'TRADING' if x else 'CLOSED', x and (x.open.time(), x.last_entry.time(), x.flat_by.time()))"
           echo "== halt"; cat /etc/indstocks.halt 2>/dev/null || echo "(not halted)"
           echo "== env (TRADER_*)"; sudo grep '^TRADER_' /etc/indstocks.env
@@ -30,6 +30,8 @@ jobs:
           echo "== ai answers (as the trader calls it)"; sudo bash /opt/indstocks/day-trader-skill/scripts/cli-probe.sh 2>&1 | grep -v '^{"ts' | tail -4
           D=$(TZ=Asia/Kolkata date +%F)
           echo "== newswatch"; sudo journalctl -u newswatch -n 8 --no-pager | cut -c1-260
+          echo "== tape"; sudo journalctl -u tape -n 5 --no-pager | cut -c1-200; sudo ls -la /var/lib/indstocks/auto/tape/ 2>/dev/null | tail -3; sudo head -c 1500 /var/lib/indstocks/auto/tape/live.json 2>/dev/null; echo
+          (cd /opt/indstocks/day-trader-skill/indstocks && sudo bash -c 'set -a; . /etc/indstocks.env; set +a; timeout 40 python3 tape.py --check' 2>&1 | cut -c1-300) || true
           echo "== feeds"; for u in https://www.moneycontrol.com/rss/latestnews.xml https://www.business-standard.com/rss/markets-106.rss https://www.livemint.com/rss/markets; do printf '%-60s ' "$u"; curl -s -o /dev/null -m 10 -A "Mozilla/5.0" -w "%{http_code}\n" "$u"; done
           echo "== news sources (read-only fetch)"; cd /opt/indstocks/day-trader-skill/indstocks && sudo bash -c 'set -a; . /etc/indstocks.env; set +a; timeout 120 python3 -c "
           from datetime import timedelta
