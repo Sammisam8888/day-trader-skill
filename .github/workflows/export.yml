@@ -1,0 +1,56 @@
+name: export-candles
+
+# Read-only: export candles from the box for offline simulation and publish
+# them to the sim-data branch. Market data only; fixed script, validated inputs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "calendar days back"
+        default: "100"
+      interval:
+        description: "candle minutes (1, 3, 5, 15)"
+        default: "5"
+      universe:
+        description: "live or fno"
+        default: "live"
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Write deploy key and pinned host key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Export
+        env:
+          DAYS: ${{ github.event.inputs.days }}
+          IV: ${{ github.event.inputs.interval }}
+          UNI: ${{ github.event.inputs.universe }}
+        run: |
+          case "$DAYS" in ''|*[!0-9]*) DAYS=100;; esac
+          case "$IV" in 1|3|5|15) ;; *) IV=5;; esac
+          case "$UNI" in live|fno) ;; *) UNI=live;; esac
+          echo "NAME=candles-$UNI-$IV.json.gz" >> "$GITHUB_ENV"
+          ssh -o BatchMode=yes -o ServerAliveInterval=30 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "sudo bash /opt/indstocks/day-trader-skill/scripts/export-candles.sh $DAYS $IV $UNI" > out.json.gz
+          ls -la out.json.gz
+          gzip -t out.json.gz
+      - name: Publish to the sim-data branch
+        run: |
+          git clone -q --depth 1 --branch sim-data "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data || \
+            (git init -q data && cd data && git checkout -q -b sim-data)
+          cd data
+          git config user.name "export-bot" && git config user.email "export-bot@users.noreply.github.com"
+          cp ../out.json.gz "$NAME"
+          git add "$NAME" && git commit -q -m "$NAME $(date -u +%F)"
+          git push -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:sim-data
