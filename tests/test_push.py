@@ -93,23 +93,35 @@ class Cards(unittest.TestCase):
     def tearDown(self):
         push.send = self.orig
 
-    def test_open_position_card_has_net_ltp_stop_target_and_sell(self):
+    def test_one_live_card_with_every_position_and_its_sell_button(self):
+        from _fake import SENSEX
         common.log("auto", {"event": "placed", "order_id": "P1", "symbol": "NIFTYBEES", "token": NIFTY.token,
                             "side": "B", "qty": 40, "stop": "280.30", "target": "284.00", "why": "ORB break, market UP"})
         self.sent.clear()                               # the order alert itself is tested below
         orders = [order("P1", NIFTY, status="COMPLETE", filled=40, avg="281.00", typ="LMT"),
                   order("S1", NIFTY, side="S", status="TRIGGER_PENDING", trigger="280.30", price="278.90")]
         state = {}
-        push.position_cards([position(NIFTY, 40, "281.00")], orders, {NIFTY.token: D("282.00")}, AT, state)
-        kinds = [m["type"] for m in self.sent]
-        self.assertEqual(kinds, ["trade", "position", "day"])
+        push.position_cards([position(NIFTY, 40, "281.00"), position(SENSEX, 10, "899.00")], orders,
+                            {NIFTY.token: D("282.00"), SENSEX.token: D("901")}, AT, state)
+        self.assertEqual([m["type"] for m in self.sent], ["trade", "trade", "live"])
         self.assertIn("ORB break", self.sent[0]["body"], "the fill alert carries the reason")
-        card = self.sent[1]
-        self.assertIn("net", card["title"])
-        for part in ("40 @ 281", "LTP 282", "SL 280.3", "TP 284"):
-            self.assertIn(part, card["body"])
-        self.assertEqual(card["actions"][0]["action"], "sell")
-        self.assertIn("after charges", self.sent[2]["title"])
+        card = self.sent[-1]
+        self.assertIn("net after charges | 2 open", card["title"])
+        first, second, day = card["body"].split("\n")
+        for part in ("NIFTYBEES L40", "LTP 282", "SL 280.3", "TP 284"):
+            self.assertIn(part, first)
+        self.assertTrue(second.startswith("SENSEXIETF L10"))
+        self.assertIn("Charges", day)
+        self.assertEqual([a["action"] for a in card["actions"]], [f"sell:{NIFTY.token}", f"sell:{SENSEX.token}"])
+
+    def test_one_position_gets_sell_and_exit_all_three_get_exit_all_and_choose(self):
+        from _fake import SENSEX
+        push.position_cards([position(NIFTY, 40, "281.00")], [], {NIFTY.token: D("282")}, AT, {})
+        self.assertEqual([a["action"] for a in self.sent[-1]["actions"]], [f"sell:{NIFTY.token}", "exitall"])
+        third = dict(position(SENSEX, 5, "900"), token="999", symbol="THIRD", tsym="THIRD-EQ")
+        push.position_cards([position(NIFTY, 40, "281.00"), position(SENSEX, 5, "899"), third], [],
+                            {NIFTY.token: D("282")}, AT, {})
+        self.assertEqual([a["action"] for a in self.sent[-1]["actions"]], ["exitall", "open"])
 
     def test_cards_refresh_at_most_once_a_minute_but_a_close_is_at_once(self):
         state = {}
@@ -119,7 +131,6 @@ class Cards(unittest.TestCase):
         self.assertEqual(len(self.sent), n, "no spam every tick")
         closed = position(NIFTY, 0, "281.00", realised="40", buy_qty=40, sell_qty=40, sell_avg="282")
         push.position_cards([closed], [], {}, AT, state)
-        self.assertIn("close", [m["type"] for m in self.sent[n:]])
         self.assertTrue(any(m.get("title", "").startswith("Closed NIFTYBEES") for m in self.sent[n:]))
 
     def test_a_placed_order_alerts_with_its_reason(self):

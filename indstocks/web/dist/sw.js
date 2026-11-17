@@ -32,8 +32,10 @@ async function act(body) {
 self.addEventListener("notificationclick", (event) => {
   const d = event.notification.data || {};
   const run = async () => {
-    if (event.action === "sell" || event.action === "exitall") {
-      const body = event.action === "sell" ? { action: "exit_now", token: d.token } : { action: "exit_all_now" };
+    const a = event.action || "";
+    if (a.startsWith("sell") || a === "exitall") {
+      const token = a.startsWith("sell:") ? a.slice(5) : d.token;
+      const body = a === "exitall" ? { action: "exit_all_now" } : { action: "exit_now", token };
       let res;
       try { res = await act(body); } catch (e) { res = { ok: false, message: String(e) }; }
       await self.registration.showNotification(res.ok ? "Exit sent" : "Exit FAILED: open the app",

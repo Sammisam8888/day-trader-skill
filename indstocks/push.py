@@ -12,11 +12,10 @@ even with the dashboard closed.
 
 What is sent (see web/public/sw.js for how it is shown):
   trade     an order placed, a fill, an exit, with the one-line reason
-  position  one card per open position, replaced in place (same tag):
-            net P&L after charges, qty, entry, LTP, stop, target, and a
-            "Sell now" button
-  day       today's net after charges (realised + open), with "Exit all now"
-  close     removes a position card when the position is gone
+  live      ONE card, replaced in place (tag "live"): today's net after
+            charges, then a line per open position (net after charges, LTP,
+            stop, target), with Sell buttons (Android allows 2: one per
+            position for 1-2 positions, else Exit all + Choose)
 
 Sending never blocks the caller (a background thread) and never raises.
 """
@@ -182,7 +181,7 @@ def send(message: dict, *, ttl: int = 120, urgency: str = "high", wait: bool = F
         gone = []
         for s in subs:
             try:
-                code = _post(s, data, ttl, urgency, topic if message.get("type") in ("position", "day") else None)
+                code = _post(s, data, ttl, urgency, topic if message.get("type") in ("live",) else None)
                 if code in (404, 410):
                     gone.append(s["endpoint"])
             except Exception:                           # noqa: BLE001
@@ -250,7 +249,6 @@ def position_cards(positions: List[dict], orders: List[dict], ltps: Dict[str, De
                     net = metrics.closed_trades([closed])[0]["net"]
                 except (IndexError, KeyError):
                     net = None
-            send({"type": "close", "tag": f"pos-{tok}"})
             send({"type": "trade", "tag": f"closed-{tok}-{now:%H%M%S}", "renotify": True,
                   "title": f"Closed {was['symbol']}" + (f": {rs(net)} net today on it" if net is not None else ""),
                   "body": "Position closed (stop, target, exit or flatten)."})
@@ -262,6 +260,7 @@ def position_cards(positions: List[dict], orders: List[dict], ltps: Dict[str, De
         return
     state["push_at"] = time.monotonic()
 
+    lines, actions = [], []
     for tok, p in held.items():
         side = "B" if p["qty"] > 0 else "S"
         ltp = Decimal(str(ltps.get(tok) or p.get("ltp") or p["avg"]))
@@ -271,19 +270,21 @@ def position_cards(positions: List[dict], orders: List[dict], ltps: Dict[str, De
                      and o["side"] != side and o.get("type") == "SL-LMT"), None)
         pl = next((x for x in reversed(placements) if str(x.get("token")) == tok), {})
         tgt = adjusted.get(str(pl.get("order_id"))) or pl.get("target")
-        send({"type": "position", "tag": f"pos-{tok}", "silent": not changed, "sticky": True,
-              "token": tok, "symbol": p["symbol"],
-              "title": f"{p['symbol']} {'LONG' if side == 'B' else 'SHORT'} {rs(net)} net",
-              "body": f"{qty} @ {p['avg']} | LTP {ltp} | SL {stop or '-'} | TP {tgt or '-'}",
-              "actions": [{"action": "sell", "title": "Sell now" if side == "B" else "Buy back now"}]},
-             ttl=90, urgency="normal" if not changed else "high")
+        lines.append(f"{p['symbol']} {'L' if side == 'B' else 'S'}{qty} {rs(net)} | LTP {ltp} | "
+                     f"SL {stop or '-'} | TP {tgt or '-'}")
+        actions.append({"action": f"sell:{tok}", "title": f"{'Sell' if side == 'B' else 'Cover'} {p['symbol']}"})
     try:
         day = metrics.pnl(positions, ltps, orders)
     except Exception:                                   # noqa: BLE001
         return
-    send({"type": "day", "tag": "day", "silent": not changed, "sticky": True,
-          "title": f"Today {rs(day['net'])} net after charges",
-          "body": f"Realised {rs(day['realised'])} | Open {rs(day['open'])} | Charges Rs {day['charges']:,.0f} | "
-                  f"{len(held)} open",
-          "actions": [{"action": "exitall", "title": "Exit all now"}] if held else []},
+    # Android shows at most 2 buttons on a web notification: one per position
+    # when there are 1-2 (plus Exit all for a single one), else Exit all + Choose.
+    if len(actions) == 1:
+        actions.append({"action": "exitall", "title": "Exit all now"})
+    elif len(actions) > 2:
+        actions = [{"action": "exitall", "title": "Exit all now"}, {"action": "open", "title": "Choose..."}]
+    lines.append(f"Realised {rs(day['realised'])} | Open {rs(day['open'])} | Charges Rs {day['charges']:,.0f}")
+    send({"type": "live", "tag": "live", "silent": not changed, "sticky": bool(held),
+          "title": f"Today {rs(day['net'])} net after charges" + (f" | {len(held)} open" if held else " | flat"),
+          "body": "\n".join(lines), "actions": actions if held else []},
          ttl=90, urgency="normal" if not changed else "high")
