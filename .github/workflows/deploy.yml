@@ -142,6 +142,19 @@ jobs:
             (cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import control; print(control.apply({'command': 'resume_today', 'reason': 'owner: resume after the 13:20 rollout lock'}, by='owner'))") || true
             sudo touch /var/lib/indstocks/.profile-resume-2026-11-17
           fi
+          # Owner, 17 Nov 14:00: override the 3-loser stop for the rest of today only.
+          # The Rs 300 daily kill still applies. A transient timer puts it back at 15:30.
+          if [ ! -f /var/lib/indstocks/.profile-losers-override-2026-11-17 ]; then
+            sudo sed -i "/^TRADER_STOP_AFTER_LOSSES=/d" /etc/indstocks.env
+            echo "TRADER_STOP_AFTER_LOSSES=0" | sudo tee -a /etc/indstocks.env >/dev/null
+            sudo systemd-run --unit=indstocks-losers-restore --on-calendar="2026-11-17 10:00:00 UTC" \
+              /bin/sh -c 'sed -i "/^TRADER_STOP_AFTER_LOSSES=/d" /etc/indstocks.env; echo TRADER_STOP_AFTER_LOSSES=3 >> /etc/indstocks.env' || true
+            sudo touch /var/lib/indstocks/.profile-losers-override-2026-11-17
+          fi
+          # Safety net: on any later deploy, a stale override is put back to 3.
+          if [ "$(TZ=Asia/Kolkata date +%F)" != "2026-11-17" ] && sudo grep -q "^TRADER_STOP_AFTER_LOSSES=0$" /etc/indstocks.env; then
+            sudo sed -i "s/^TRADER_STOP_AFTER_LOSSES=0$/TRADER_STOP_AFTER_LOSSES=3/" /etc/indstocks.env
+          fi
           # Day lock at Rs 600, keep 60% (owner, 17 Nov 13:15: a +895 day ended -30 on stops).
           # Today's peak was already given back: clear today's day-best so the lock protects
           # new gains from now on instead of halting the day at once.
