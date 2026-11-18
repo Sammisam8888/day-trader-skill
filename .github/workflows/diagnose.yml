@@ -31,7 +31,7 @@ jobs:
           D=$(TZ=Asia/Kolkata date +%F)
           echo "== newswatch"; sudo journalctl -u newswatch -n 8 --no-pager | cut -c1-260
           echo "== tape"; sudo journalctl -u tape -n 5 --no-pager | cut -c1-200; sudo ls -la /var/lib/indstocks/auto/tape/ 2>/dev/null | tail -3; sudo head -c 1500 /var/lib/indstocks/auto/tape/live.json 2>/dev/null; echo
-          (cd /opt/indstocks/day-trader-skill/indstocks && sudo bash -c 'set -a; . /etc/indstocks.env; set +a; timeout 40 python3 tape.py --check' 2>&1 | cut -c1-300) || true
+          if [ "$(TZ=Asia/Kolkata date +%H%M)" -lt 0900 ] || [ "$(TZ=Asia/Kolkata date +%H%M)" -gt 1540 ]; then (cd /opt/indstocks/day-trader-skill/indstocks && sudo bash -c 'set -a; . /etc/indstocks.env; set +a; timeout 40 python3 tape.py --check' 2>&1 | cut -c1-300) || true; else echo "tape check skipped in market hours (one websocket per login)"; fi
           echo "== feeds"; for u in https://www.moneycontrol.com/rss/latestnews.xml https://www.business-standard.com/rss/markets-106.rss https://www.livemint.com/rss/markets; do printf '%-60s ' "$u"; curl -s -o /dev/null -m 10 -A "Mozilla/5.0" -w "%{http_code}\n" "$u"; done
           echo "== news sources (read-only fetch)"; cd /opt/indstocks/day-trader-skill/indstocks && sudo bash -c 'set -a; . /etc/indstocks.env; set +a; timeout 120 python3 -c "
           from datetime import timedelta
