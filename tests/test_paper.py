@@ -129,5 +129,29 @@ class Api(unittest.TestCase):
         self.assertEqual(r["trades"][1]["stop"], 9)
 
 
+class ForTheAI(unittest.TestCase):
+    def setUp(self):
+        reset(TRADER_TAPE_EXTRA="TCS, ITC,RELIANCE")
+
+    def test_the_ai_sees_breakouts_vs_fades(self):
+        import json
+        import brain
+        paper.PAPER_DIR.mkdir(parents=True, exist_ok=True)
+        now = datetime(2026, 11, 18, 11, 0, tzinfo=sess.IST)
+        m = {"orb15": {"net": "-200", "trades": 3, "wins": 0}, "orb15_inv": {"net": "90", "trades": 3, "wins": 3},
+             "rsi2": {"net": "0", "trades": 0, "wins": 0}}
+        (paper.PAPER_DIR / "2026-11-18-summary.json").write_text(json.dumps({"models": m}))
+        v = brain._paper_bench(now)
+        self.assertEqual(v["best"][0]["model"], "orb15_inv")
+        self.assertEqual((v["breakout_models_net"], v["fade_models_net"]), (-200, 90))
+        self.assertEqual(brain._paper_bench(datetime(2026, 11, 19, 11, 0, tzinfo=sess.IST)), {})
+
+    def test_tape_records_extra_symbols_once(self):
+        import tape
+        syms = tape.symbols()
+        self.assertIn("TCS", syms)
+        self.assertEqual(syms.count("RELIANCE"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -234,6 +234,11 @@ def symbols() -> list:
     for s in ("NIFTYBEES", "BANKBEES"):
         if s not in syms:
             syms.append(s)
+    # extra symbols recorded for the paper bench and research only (never traded by the AI)
+    for s in common.setting("TRADER_TAPE_EXTRA", "").split(","):
+        s = s.strip().upper()
+        if s and s not in syms:
+            syms.append(s)
     return syms
 
 

@@ -188,6 +188,7 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
         "no_entry_window": daymode.no_entry_window(now),
         "leaders": playbook.rank(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
         "lessons": _lessons(),
+        "paper_bench": _paper_bench(now),
         "allowed_setups": sorted(allowed) if allowed else "any",
         "today_trades": _today_trades(placements, orders),
         "direction": {"market": direction["market"],
@@ -279,6 +280,12 @@ margin. If a better setup needs margin that stale resting entries hold, cancel t
 (action cancel) in the same response, then enter.
 STATE.internals: NSE's Nifty 50 advances/declines and every sector index's move. A green index
 with most stocks falling is a weak rally; read sectors to see where money is going.
+
+PAPER BENCH (STATE.paper_bench): rule models trading today's live prices with paper money
+("_inv" = the same signal taken the other way). It is a read of the day's character, not an
+order: breakout models losing while fades win means a choppy, range day (breakouts fail; prefer
+failed_break and levels that hold, or stand aside); breakouts winning means a trending day.
+Mention it in your reason when it changes your mind.
 
 LESSONS (STATE.lessons): rules you wrote yourself after reviewing past trades, strongest first
 ("seen" = days that confirmed it, "failed" = days that contradicted it). Apply every one that fits
@@ -470,6 +477,26 @@ def _breaking(now) -> list:
         return realtime.breaking(now)
     except Exception:                                   # noqa: BLE001
         return []
+
+
+def _paper_bench(now) -> dict:
+    """Today's paper bench (paper.py): which rule models are winning on live prices
+    right now, and whether breakouts or fades are working: a read of the day's character."""
+    try:
+        import paper
+        d = json.loads((paper.PAPER_DIR / f"{now.strftime('%Y-%m-%d')}-summary.json").read_text())
+    except Exception:                                   # noqa: BLE001
+        return {}
+    rows = sorted(((m, float(r["net"]), r["trades"], r["wins"]) for m, r in d.get("models", {}).items()
+                   if r.get("trades")), key=lambda x: -x[1])
+    if not rows:
+        return {}
+    brk = [n for m, n, *_ in rows if m.split("_inv")[0] in ("orb5", "orb15", "orb30", "squeeze_break", "vwap_trend",
+                                                             "ema_9_21", "volume_burst") and not m.endswith("_inv")]
+    fade = [n for m, n, *_ in rows if m.endswith("_inv") or m in ("vwap_revert", "bollinger_fade", "rsi2", "opening_drive_fade")]
+    return {"best": [{"model": m, "net": round(n), "trades": t, "wins": w} for m, n, t, w in rows[:4]],
+            "worst": [{"model": m, "net": round(n), "trades": t, "wins": w} for m, n, t, w in rows[-3:]],
+            "breakout_models_net": round(sum(brk)), "fade_models_net": round(sum(fade))}
 
 
 def _lessons():
