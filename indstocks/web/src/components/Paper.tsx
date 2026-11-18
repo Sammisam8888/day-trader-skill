@@ -45,6 +45,18 @@ export default function Paper() {
             </tr>))}</tbody>
         </table></div>
       </Card>
+      <Card title="The AI's knob settings for the @ai models" right={d.ai?.at && <span className="text-xs text-faint">set {d.ai.at.slice(11, 16)}</span>}>
+        {!d.ai ? <Empty>The AI sets the knobs from 09:22, then every 30 minutes.</Empty> : (
+          <div className="grid gap-2 text-sm">
+            {d.ai.day_read && <p className="text-dim">{d.ai.day_read}</p>}
+            {Object.entries(d.ai.models).map(([r, kv]) => (
+              <div key={r} className="border-t border-line pt-1.5">
+                <span className="font-semibold">{r}@ai</span>{" "}
+                <span className="num text-dim">{Object.entries(kv).filter(([k]) => k !== "why").map(([k, v]) => `${k}=${v}`).join("  ")}</span>
+                {kv.why && <div className="text-xs text-faint">{String(kv.why)}</div>}
+              </div>))}
+          </div>)}
+      </Card>
       <Card title={only ? `Paper trades: ${only}` : "Paper trades (newest first)"} right={only && <button className="text-xs text-info" onClick={() => setOnly(null)}>show all</button>}>
         {trades.length === 0 ? <Empty>no paper trades yet</Empty> : (
           <div className="overflow-x-auto"><table className="num w-full text-sm">

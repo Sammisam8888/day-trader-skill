@@ -1,0 +1,11 @@
+[Unit]
+Description=Paper bench tuning by the AI: 09:22, then every 30 minutes to 14:22, weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:22:00 Asia/Kolkata
+OnCalendar=Mon..Fri *-*-* 09,10,11,12,13:52:00 Asia/Kolkata
+OnCalendar=Mon..Fri *-*-* 10,11,12,13,14:22:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -136,88 +136,99 @@ def _hm(epoch: float):
 
 
 # ------------------------------------------------------------------ models
-# A signal: ("B" | "S", stop_price, target_price) or None. Called on each
-# closed 1-minute bar with the day's closed bars so far.
+# Every model is a fixed recipe with knobs. A signal is ("B" | "S", stop,
+# target) or None; models are asked on each closed 1-minute bar with the
+# day's closed bars so far and their knob values `p`.
+#
+# KNOBS[model] = {knob: (default, low, high, kind)}. The AI (tuner.py) may set
+# a knob only inside [low, high]; anything else is clamped. Every model also
+# has the shared knobs: enabled (0/1), invert (0/1: take the other side, the
+# owner's 'fade it' idea), side (0 both, 1 long only, 2 short only).
 
 Signal = Optional[tuple]
 
+COMMON = {"enabled": (1, 0, 1, "int"), "invert": (0, 0, 1, "int"), "side": (0, 0, 2, "int")}
 
-def _orb(minutes: int):
-    def f(bars: List[Bar], state: dict) -> Signal:
-        if state.get("done"):
-            return None
-        rng = [b for b in bars if _hm(b.start) < (9, 15 + minutes)]
-        if len(rng) < minutes * 0.6 or _hm(bars[-1].start) < (9, 15 + minutes):
-            return None
-        hi, lo = max(b.h for b in rng), min(b.l for b in rng)
-        c = bars[-1].c
-        width = hi - lo
-        if width <= 0 or width / c > 0.012:
-            return None
-        if c > hi:
-            state["done"] = True
-            return ("B", lo + width / 2, c + 2 * width)
-        if c < lo:
-            state["done"] = True
-            return ("S", hi - width / 2, c - 2 * width)
+
+def m_orb(bars: List[Bar], state: dict, p: dict) -> Signal:
+    minutes = int(p["minutes"])
+    if state.get("done"):
         return None
-    return f
+    rng = [b for b in bars if _hm(b.start) < (9, 15 + minutes)]
+    if len(rng) < minutes * 0.6 or _hm(bars[-1].start) < (9, 15 + minutes):
+        return None
+    hi, lo = max(b.h for b in rng), min(b.l for b in rng)
+    c = bars[-1].c
+    width = hi - lo
+    if width <= 0 or width / c * 100 > p["max_width_pct"]:
+        return None
+    if c > hi:
+        state["done"] = True
+        return ("B", hi - width * p["stop_frac"], c + p["target_x"] * width)
+    if c < lo:
+        state["done"] = True
+        return ("S", lo + width * p["stop_frac"], c - p["target_x"] * width)
+    return None
 
 
-def vwap_revert(bars, state) -> Signal:
+def m_vwap_revert(bars, state, p) -> Signal:
     if len(bars) < 30:
         return None
     vw, sd = vwap_sd(bars)
     if not vw or not sd:
         return None
     c = bars[-1].c
-    if c < vw - 2 * sd:
-        return ("B", c - 1.0 * sd, vw)
-    if c > vw + 2 * sd:
-        return ("S", c + 1.0 * sd, vw)
+    if c < vw - p["band_sd"] * sd:
+        return ("B", c - p["stop_sd"] * sd, vw)
+    if c > vw + p["band_sd"] * sd:
+        return ("S", c + p["stop_sd"] * sd, vw)
     return None
 
 
-def vwap_trend(bars, state) -> Signal:
-    if len(bars) < 30:
+def m_vwap_trend(bars, state, p) -> Signal:
+    k = int(p["confirm"])
+    if len(bars) < 30 + k:
         return None
     vw, sd = vwap_sd(bars)
     a = atr1(bars)
     if not vw or not a:
         return None
-    last3 = bars[-3:]
+    lastk = bars[-k:]
     c = bars[-1].c
-    if all(b.c > vw for b in last3) and bars[-4].c <= vw:
-        return ("B", c - 3 * a, c + 6 * a)
-    if all(b.c < vw for b in last3) and bars[-4].c >= vw:
-        return ("S", c + 3 * a, c - 6 * a)
+    if all(b.c > vw for b in lastk) and bars[-k - 1].c <= vw:
+        return ("B", c - p["stop_atr"] * a, c + p["target_atr"] * a)
+    if all(b.c < vw for b in lastk) and bars[-k - 1].c >= vw:
+        return ("S", c + p["stop_atr"] * a, c - p["target_atr"] * a)
     return None
 
 
-def ema_cross(bars, state) -> Signal:
+def m_ema_cross(bars, state, p) -> Signal:
+    fast, slow = int(p["fast"]), int(p["slow"])
+    if fast >= slow or len(bars) % 5:
+        return None
     b5 = resample(bars, 5)
     closes = [b.c for b in b5]
-    if len(closes) < 23:
+    if len(closes) < slow + 2:
         return None
-    f0, s0 = ema(closes[:-1], 9), ema(closes[:-1], 21)
-    f1, s1 = ema(closes, 9), ema(closes, 21)
-    if None in (f0, s0, f1, s1) or len(bars) % 5:
-        return None
+    f0, s0 = ema(closes[:-1], fast), ema(closes[:-1], slow)
+    f1, s1 = ema(closes, fast), ema(closes, slow)
     a = atr1(b5, 10)
-    if not a:
+    if None in (f0, s0, f1, s1) or not a:
         return None
     c = closes[-1]
     if f0 <= s0 and f1 > s1:
-        return ("B", c - 1.5 * a, c + 3 * a)
+        return ("B", c - p["stop_atr"] * a, c + p["target_atr"] * a)
     if f0 >= s0 and f1 < s1:
-        return ("S", c + 1.5 * a, c - 3 * a)
+        return ("S", c + p["stop_atr"] * a, c - p["target_atr"] * a)
     return None
 
 
-def rsi2(bars, state) -> Signal:
+def m_rsi2(bars, state, p) -> Signal:
+    if len(bars) % 5:
+        return None
     b5 = resample(bars, 5)
     closes = [b.c for b in b5]
-    if len(closes) < 22 or len(bars) % 5:
+    if len(closes) < 22:
         return None
     r = rsi(closes, 2)
     trend = ema(closes, 20)
@@ -225,17 +236,19 @@ def rsi2(bars, state) -> Signal:
     if r is None or trend is None or not a:
         return None
     c = closes[-1]
-    if r < 10 and c > trend:
-        return ("B", c - 1.5 * a, c + 1.5 * a)
-    if r > 90 and c < trend:
-        return ("S", c + 1.5 * a, c - 1.5 * a)
+    if r < p["low"] and c > trend:
+        return ("B", c - p["stop_atr"] * a, c + p["target_atr"] * a)
+    if r > p["high"] and c < trend:
+        return ("S", c + p["stop_atr"] * a, c - p["target_atr"] * a)
     return None
 
 
-def bollinger_fade(bars, state) -> Signal:
+def m_bollinger_fade(bars, state, p) -> Signal:
+    if len(bars) % 5:
+        return None
     b5 = resample(bars, 5)
     closes = [b.c for b in b5]
-    if len(closes) < 21 or len(bars) % 5:
+    if len(closes) < 21:
         return None
     w = closes[-20:]
     m = sum(w) / 20
@@ -243,16 +256,18 @@ def bollinger_fade(bars, state) -> Signal:
     if sd <= 0:
         return None
     c = closes[-1]
-    if c < m - 2 * sd:
-        return ("B", c - sd, m)
-    if c > m + 2 * sd:
-        return ("S", c + sd, m)
+    if c < m - p["sd"] * sd:
+        return ("B", c - p["stop_sd"] * sd, m)
+    if c > m + p["sd"] * sd:
+        return ("S", c + p["stop_sd"] * sd, m)
     return None
 
 
-def squeeze_break(bars, state) -> Signal:
+def m_squeeze_break(bars, state, p) -> Signal:
+    if len(bars) % 5:
+        return None
     b5 = resample(bars, 5)
-    if len(b5) < 22 or len(bars) % 5:
+    if len(b5) < 22:
         return None
     closes = [b.c for b in b5]
     w = closes[-21:-1]
@@ -261,33 +276,33 @@ def squeeze_break(bars, state) -> Signal:
     a = atr1(b5[:-1], 20)
     if not a or sd <= 0:
         return None
-    squeezed = 2 * sd < 1.5 * a                         # Bollinger inside Keltner
+    squeezed = 2 * sd < p["squeeze"] * a                 # Bollinger inside Keltner
     c = closes[-1]
     if squeezed and c > m + 2 * sd:
-        return ("B", c - 1.5 * a, c + 3 * a)
+        return ("B", c - p["stop_atr"] * a, c + p["target_atr"] * a)
     if squeezed and c < m - 2 * sd:
-        return ("S", c + 1.5 * a, c - 3 * a)
+        return ("S", c + p["stop_atr"] * a, c - p["target_atr"] * a)
     return None
 
 
-def volume_burst(bars, state) -> Signal:
+def m_volume_burst(bars, state, p) -> Signal:
     if len(bars) < 30:
         return None
     avg = sum(b.v for b in bars[-31:-1]) / 30
     b = bars[-1]
     a = atr1(bars)
-    if not a or avg <= 0 or b.v < 3 * avg:
+    if not a or avg <= 0 or b.v < p["vol_x"] * avg:
         return None
     body = b.c - b.o
-    if abs(body) < 1.5 * a:
+    if abs(body) < p["body_atr"] * a:
         return None
     if body > 0:
-        return ("B", b.l, b.c + 2 * (b.c - b.l))
-    return ("S", b.h, b.c - 2 * (b.h - b.c))
+        return ("B", b.l, b.c + p["target_x"] * (b.c - b.l))
+    return ("S", b.h, b.c - p["target_x"] * (b.h - b.c))
 
 
-def opening_drive_fade(bars, state) -> Signal:
-    """The first 30 minutes moved hard one way; fade the first bar that closes back inside."""
+def m_opening_drive_fade(bars, state, p) -> Signal:
+    """The first 30 minutes moved hard one way; fade it once price gives back `retrace` of the move."""
     if state.get("done") or _hm(bars[-1].start) < (9, 45):
         return None
     first = [b for b in bars if _hm(b.start) < (9, 45)]
@@ -296,18 +311,127 @@ def opening_drive_fade(bars, state) -> Signal:
     o = first[0].o
     hi, lo = max(b.h for b in first), min(b.l for b in first)
     c = bars[-1].c
-    if (hi - o) / o > 0.008 and c < hi - 0.5 * (hi - o):
+    mv = p["move_pct"] / 100
+    if (hi - o) / o > mv and c < hi - p["retrace"] * (hi - o):
         state["done"] = True
         return ("S", hi, o)
-    if (o - lo) / o > 0.008 and c > lo + 0.5 * (o - lo):
+    if (o - lo) / o > mv and c > lo + p["retrace"] * (o - lo):
         state["done"] = True
         return ("B", lo, o)
     return None
 
 
+RECIPES: Dict[str, Callable] = {
+    "orb": m_orb, "vwap_revert": m_vwap_revert, "vwap_trend": m_vwap_trend, "ema_cross": m_ema_cross,
+    "rsi2": m_rsi2, "bollinger_fade": m_bollinger_fade, "squeeze_break": m_squeeze_break,
+    "volume_burst": m_volume_burst, "opening_drive_fade": m_opening_drive_fade,
+}
+KNOBS: Dict[str, Dict[str, tuple]] = {
+    "orb": {"minutes": (15, 5, 30, "int"), "max_width_pct": (1.2, 0.4, 2.0, "f"),
+            "target_x": (2.0, 1.0, 4.0, "f"), "stop_frac": (0.5, 0.25, 1.0, "f")},
+    "vwap_revert": {"band_sd": (2.0, 1.5, 3.0, "f"), "stop_sd": (1.0, 0.5, 2.0, "f")},
+    "vwap_trend": {"confirm": (3, 2, 6, "int"), "stop_atr": (3.0, 1.5, 5.0, "f"), "target_atr": (6.0, 3.0, 12.0, "f")},
+    "ema_cross": {"fast": (9, 5, 13, "int"), "slow": (21, 15, 34, "int"),
+                  "stop_atr": (1.5, 1.0, 3.0, "f"), "target_atr": (3.0, 1.5, 6.0, "f")},
+    "rsi2": {"low": (10.0, 3.0, 25.0, "f"), "high": (90.0, 75.0, 97.0, "f"),
+             "stop_atr": (1.5, 1.0, 3.0, "f"), "target_atr": (1.5, 1.0, 4.0, "f")},
+    "bollinger_fade": {"sd": (2.0, 1.5, 3.0, "f"), "stop_sd": (1.0, 0.5, 2.0, "f")},
+    "squeeze_break": {"squeeze": (1.5, 1.0, 2.5, "f"), "stop_atr": (1.5, 1.0, 3.0, "f"), "target_atr": (3.0, 1.5, 6.0, "f")},
+    "volume_burst": {"vol_x": (3.0, 2.0, 6.0, "f"), "body_atr": (1.5, 0.8, 3.0, "f"), "target_x": (2.0, 1.0, 4.0, "f")},
+    "opening_drive_fade": {"move_pct": (0.8, 0.4, 1.6, "f"), "retrace": (0.5, 0.3, 0.8, "f")},
+}
+
+
+def knobs_for(recipe: str) -> Dict[str, tuple]:
+    return {**KNOBS[recipe], **COMMON}
+
+
+def defaults(recipe: str) -> dict:
+    return {k: v[0] for k, v in knobs_for(recipe).items()}
+
+
+def clamp(recipe: str, values: dict) -> dict:
+    """The recipe's knobs with `values` applied inside their tested ranges."""
+    out = defaults(recipe)
+    for k, (dflt, lo, hi, kind) in knobs_for(recipe).items():
+        if k not in (values or {}):
+            continue
+        try:
+            v = float(values[k])
+        except (TypeError, ValueError):
+            continue
+        if v != v:                                     # NaN
+            continue
+        v = min(hi, max(lo, v))
+        out[k] = int(round(v)) if kind == "int" else round(v, 3)
+    return out
+
+
+def apply(recipe: str, bars, state, p) -> Signal:
+    """Run one recipe with knobs p, then the shared knobs."""
+    if not p.get("enabled", 1):
+        return None
+    sig = RECIPES[recipe](bars, state, p)
+    if not sig:
+        return None
+    side, stop, target = sig
+    if p.get("invert"):
+        side, stop, target = ("S" if side == "B" else "B"), target, stop
+    if p.get("side") == 1 and side != "B" or p.get("side") == 2 and side != "S":
+        return None
+    return (side, stop, target)
+
+
+def fixed(recipe: str, **over) -> Callable:
+    p = clamp(recipe, over)
+    return lambda bars, state: apply(recipe, bars, state, p)
+
+
+# The AI's knob settings for today, written by tuner.py; re-read when the file changes.
+_AI = {"mtime": None, "day": None, "params": {}}
+
+
+def ai_params(recipe: str) -> dict:
+    day = sess.now().strftime("%Y-%m-%d")
+    f = PAPER_DIR / f"params-{day}.json"
+    try:
+        mt = f.stat().st_mtime
+    except OSError:
+        mt = None
+    if mt != _AI["mtime"] or day != _AI["day"]:
+        _AI.update(mtime=mt, day=day, params={})
+        if mt is not None:
+            try:
+                _AI["params"] = (json.loads(f.read_text()).get("models") or {})
+            except (OSError, ValueError):
+                pass
+    return clamp(recipe, _AI["params"].get(recipe) or {})
+
+
+def tuned(recipe: str) -> Callable:
+    return lambda bars, state: apply(recipe, bars, state, ai_params(recipe))
+
+
+# Fixed defaults (names kept from the first bench day), their inverted twins,
+# and one AI-tuned copy per recipe ("@ai"): fixed vs AI-tuned is the test of
+# whether the AI's settings add anything.
+MODELS: Dict[str, Callable] = {
+    "orb5": fixed("orb", minutes=5), "orb15": fixed("orb", minutes=15), "orb30": fixed("orb", minutes=30),
+    "vwap_revert": fixed("vwap_revert"), "vwap_trend": fixed("vwap_trend"), "ema_9_21": fixed("ema_cross"),
+    "rsi2": fixed("rsi2"), "bollinger_fade": fixed("bollinger_fade"), "squeeze_break": fixed("squeeze_break"),
+    "volume_burst": fixed("volume_burst"), "opening_drive_fade": fixed("opening_drive_fade"),
+}
+MODELS.update({
+    "orb5_inv": fixed("orb", minutes=5, invert=1), "orb15_inv": fixed("orb", minutes=15, invert=1),
+    "orb30_inv": fixed("orb", minutes=30, invert=1), "ema_9_21_inv": fixed("ema_cross", invert=1),
+    **{f"{r}_inv": fixed(r, invert=1) for r in ("vwap_revert", "vwap_trend", "rsi2", "bollinger_fade",
+                                                 "squeeze_break", "volume_burst", "opening_drive_fade")},
+})
+MODELS.update({f"{r}@ai": tuned(r) for r in RECIPES})
+
+
 def inverted(fn: Callable) -> Callable:
-    """The same model taking the opposite side: its target becomes the stop and
-    its stop the target (the owner's 'fade every model' idea, 18 Nov)."""
+    """Any signal function taken the other way (kept for research scripts)."""
     def g(bars, state) -> Signal:
         sig = fn(bars, state)
         if not sig:
@@ -315,16 +439,6 @@ def inverted(fn: Callable) -> Callable:
         side, stop, target = sig
         return ("S" if side == "B" else "B", target, stop)
     return g
-
-
-MODELS: Dict[str, Callable] = {
-    "orb5": _orb(5), "orb15": _orb(15), "orb30": _orb(30),
-    "vwap_revert": vwap_revert, "vwap_trend": vwap_trend,
-    "ema_9_21": ema_cross, "rsi2": rsi2, "bollinger_fade": bollinger_fade,
-    "squeeze_break": squeeze_break, "volume_burst": volume_burst,
-    "opening_drive_fade": opening_drive_fade,
-}
-MODELS.update({f"{k}_inv": inverted(v) for k, v in list(MODELS.items())})
 
 
 # ------------------------------------------------------------------ the book

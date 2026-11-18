@@ -155,3 +155,66 @@ class ForTheAI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Knobs(unittest.TestCase):
+    def setUp(self):
+        reset()
+
+    def test_clamp_keeps_knobs_inside_tested_ranges(self):
+        p = paper.clamp("orb", {"minutes": 90, "target_x": "x", "invert": 1, "bogus": 5, "stop_frac": float("nan")})
+        self.assertEqual(p["minutes"], 30)
+        self.assertEqual(p["target_x"], 2.0)
+        self.assertEqual(p["invert"], 1)
+        self.assertNotIn("bogus", p)
+        self.assertEqual(p["stop_frac"], 0.5)
+
+    def test_side_and_enabled_knobs(self):
+        sig = lambda bars, st, p: ("B", 99.0, 103.0)
+        paper.RECIPES["_t"] = sig
+        paper.KNOBS["_t"] = {}
+        try:
+            self.assertIsNone(paper.apply("_t", [], {}, {"enabled": 0}))
+            self.assertIsNone(paper.apply("_t", [], {}, {"enabled": 1, "side": 2}))
+            self.assertEqual(paper.apply("_t", [], {}, {"enabled": 1, "invert": 1}), ("S", 103.0, 99.0))
+        finally:
+            del paper.RECIPES["_t"], paper.KNOBS["_t"]
+
+    def test_ai_copy_reads_the_tuner_file(self):
+        import json
+        import session as s2
+        s2.now = lambda clock=None: datetime(2026, 11, 19, 10, 0, tzinfo=sess.IST)
+        paper.PAPER_DIR.mkdir(parents=True, exist_ok=True)
+        (paper.PAPER_DIR / "params-2026-11-19.json").write_text(json.dumps({"models": {"orb": {"minutes": 5, "invert": 1}}}))
+        p = paper.ai_params("orb")
+        self.assertEqual((p["minutes"], p["invert"]), (5, 1))
+        self.assertEqual(paper.ai_params("rsi2"), paper.defaults("rsi2"))
+        self.assertIn("orb@ai", paper.MODELS)
+
+
+class Tuner(unittest.TestCase):
+    def setUp(self):
+        reset()
+
+    def test_tuner_writes_clamped_settings_and_survives_garbage(self):
+        import json
+        import tuner
+        now = datetime(2026, 11, 19, 9, 22, tzinfo=sess.IST)
+        reply = json.dumps({"day_read": "choppy", "models": {"orb": {"minutes": 99, "invert": 1, "why": "breakouts failing"},
+                                                             "nope": {"x": 1}, "rsi2": {"enabled": 0}}})
+        out = tuner.run(now, ask=lambda p: reply)
+        self.assertEqual(out["models"]["orb"]["minutes"], 30)
+        self.assertEqual(out["models"]["rsi2"]["enabled"], 0)
+        self.assertNotIn("nope", out["models"])
+        self.assertEqual(tuner.current("2026-11-19")["day_read"], "choppy")
+        again = tuner.run(now, ask=lambda p: "not json at all")
+        self.assertEqual(again["models"]["orb"]["minutes"], 30, "a bad reply keeps the previous settings")
+        later = tuner.run(now, ask=lambda p: json.dumps({"models": {"rsi2": {"enabled": 1}}}))
+        self.assertEqual(later["models"]["orb"]["invert"], 1, "untouched recipes keep their settings")
+
+    def test_prompt_lists_every_recipe_and_range(self):
+        import tuner
+        t = tuner.knob_table()
+        for r in paper.RECIPES:
+            self.assertIn(r, t)
+        self.assertIn("minutes 5..30", t)

@@ -148,7 +148,8 @@ export async function getControl(): Promise<ControlState> {
 
 export interface PaperModel { net: string; realised: string; open: string; trades: number; wins: number; open_trades: number; killed: boolean; would_kill?: { t: number; net: string } | null }
 export interface PaperTrade { ev: string; t: number; model: string; symbol: string; side: string; qty: number; entry: number; exit?: number; net?: string; why?: string; stop?: number; target?: number; opened?: number }
-export interface PaperResp { day: string; summary: { total: string; at: number; models: Record<string, PaperModel> } | null; trades: PaperTrade[] }
+export interface PaperAI { at?: string; day_read?: string; models: Record<string, Record<string, number | string>> }
+export interface PaperResp { day: string; ai?: PaperAI | null; summary: { total: string; at: number; models: Record<string, PaperModel> } | null; trades: PaperTrade[] }
 export async function getPaper(): Promise<PaperResp> {
   return (await fetch("/api/paper", { cache: "no-store" })).json();
 }

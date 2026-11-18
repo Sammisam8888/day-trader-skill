@@ -1081,6 +1081,10 @@ def api_paper(day: str) -> dict:
         out["trades"].append({**o, "ev": "open"})
     out["trades"].sort(key=lambda x: x.get("t") or 0, reverse=True)
     out["trades"] = out["trades"][:400]
+    try:
+        out["ai"] = json.loads((paper.PAPER_DIR / f"params-{day}.json").read_text())
+    except (OSError, ValueError):
+        out["ai"] = None
     return out
 
 

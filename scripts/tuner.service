@@ -1,0 +1,11 @@
+[Unit]
+Description=The AI sets the knobs of the paper bench's @ai models (paper only, no orders)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/tuner.py
+TimeoutStartSec=300
+User=root
+Nice=10

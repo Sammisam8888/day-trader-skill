@@ -220,12 +220,12 @@ jobs:
           for u in auto.service auto.timer flatten.service flatten.timer watch.service \
                    watch.timer fillmonitor.service dashboard.service login.service login.timer \
                    sentiment.service sentiment.timer ops.service ops.timer book.service book.timer newswatch.service \
-                   learning.service learning.timer tape.service paper.service; do
+                   learning.service learning.timer tape.service paper.service tuner.service tuner.timer; do
             sudo cp "scripts/$u" "/etc/systemd/system/$u"
           done
           sudo rm -rf /etc/systemd/system/auto.timer.d
           sudo systemctl daemon-reload
-          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer >/dev/null
+          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer tuner.timer >/dev/null
           for unit in dashboard fillmonitor newswatch tape paper; do
             sudo systemctl enable "$unit" >/dev/null
             sudo systemctl restart "$unit"
