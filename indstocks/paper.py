@@ -353,6 +353,7 @@ class Bench:
     write: bool = True
     last: Dict[str, float] = field(default_factory=dict)
     would_kill: Dict[str, dict] = field(default_factory=dict)
+    kill_checked: float = 0.0
 
     def risk_rs(self) -> D:
         try:
@@ -471,7 +472,9 @@ class Bench:
         s = self.series.setdefault(sym, Series())
         self.last[sym] = px
         self.on_price(sym, px, at)
-        self.check_kills(self.last, at)
+        if at - self.kill_checked >= 1.0:                  # once a second is plenty
+            self.kill_checked = at
+            self.check_kills(self.last, at)
         if s.add(at, px, cum):
             self.on_bar(sym, at)
 
