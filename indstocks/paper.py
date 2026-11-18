@@ -5,7 +5,9 @@ from the tape (tape.py's live.json and its per-symbol recordings), fills are
 simulated with a tick of slippage, and every round trip pays Shoonya's real
 intraday charges (charges.py).
 
-  models    each has its own Rs 10,000 at 5x (Rs 50,000 a trade), one open
+  models    each has its own Rs 10,000 at 5x (at most Rs 50,000 a trade),
+            sized so the stop loses TRADER_PAPER_RISK (Rs 40), a target that
+            pays its charges twice over, at most 6 trades a day, one open
             trade per symbol, its own daily kill (TRADER_PAPER_KILL, Rs 75),
             entries 09:30-14:35, everything flat at 14:50.
   bars      1-minute bars built from the tape; on a restart the day's bars
@@ -38,6 +40,7 @@ PAPER_DIR = common.STATE_DIR / "paper"
 CAPITAL = D("10000")
 LEVERAGE = D("5")
 ENTRY_FROM, ENTRY_UNTIL, FLAT_AT = (9, 30), (14, 35), (14, 50)
+MAX_TRADES = 6          # per model per day: charges punish churn
 
 
 # ------------------------------------------------------------------ bars
@@ -348,6 +351,13 @@ class Bench:
     killed: set = field(default_factory=set)
     mstate: Dict[tuple, dict] = field(default_factory=dict)
     write: bool = True
+    last: Dict[str, float] = field(default_factory=dict)
+
+    def risk_rs(self) -> D:
+        try:
+            return D(common.setting("TRADER_PAPER_RISK", "40"))
+        except ArithmeticError:
+            return D("40")
 
     def kill_rs(self) -> D:
         try:
@@ -427,10 +437,20 @@ class Bench:
             side, stop, target = sig
             if (side == "B" and not (stop < px < target)) or (side == "S" and not (target < px < stop)):
                 continue
+            if self.trades.get(m, 0) + sum(1 for k in self.open if k[0] == m) >= MAX_TRADES:
+                continue
             slip = tick_of(px)
             entry = px + slip if side == "B" else px - slip
-            qty = int(float(CAPITAL * LEVERAGE) // entry)
+            per_share = abs(entry - stop)
+            if per_share <= 0:
+                continue
+            qty = int(min(float(CAPITAL * LEVERAGE) // entry, float(self.risk_rs()) / per_share))
             if qty < 1:
+                continue
+            # the target must pay the round trip's charges at least twice over
+            gross_t = abs(target - entry) * qty
+            cost = float(charges_mod.round_trip(D(str(round(entry * qty, 2))), D(str(round(target * qty, 2)))).total)
+            if gross_t < 2 * cost:
                 continue
             self.open[(m, sym)] = Trade(m, sym, side, qty, round(entry, 2), round(stop, 2), round(target, 2), at)
             self._ledger({"ev": "open", "t": round(at, 1), "model": m, "symbol": sym, "side": side, "qty": qty,
@@ -438,7 +458,9 @@ class Bench:
 
     def feed(self, sym: str, at: float, px: float, cum: Optional[float]) -> None:
         s = self.series.setdefault(sym, Series())
+        self.last[sym] = px
         self.on_price(sym, px, at)
+        self.check_kills(self.last, at)
         if s.add(at, px, cum):
             self.on_bar(sym, at)
 

@@ -78,6 +78,13 @@ class Trading(unittest.TestCase):
         feed_path(b, "AAA", [100 + i * 0.5 for i in range(10)], start=late)
         self.assertEqual(b.open, {})
 
+    def test_kill_holds_during_replay_and_sizes_cap_the_loss(self):
+        b = paper.Bench("2026-11-18", write=False)
+        b.open[("rsi2", "AAA")] = paper.Trade("rsi2", "AAA", "B", 500, 100.0, 90.0, 120.0, T0)
+        b.feed("AAA", T0 + 3000, 99.5, None)
+        self.assertIn("rsi2", b.killed)
+        self.assertGreaterEqual(b.realised["rsi2"], D("-400"))
+
     def test_charges_make_a_flat_trade_a_loss(self):
         self.assertLess(paper.round_trip_net("B", 100.0, 100.0, 500), 0)
 
