@@ -192,7 +192,7 @@ class Book:
         chg_1m = (lp - p1) / p1 * 100 if p1 else 0.0
         chg_5m = (lp - p5) / p5 * 100 if p5 else 0.0
         vol_x = vol_1m / avg_min if avg_min else None
-        return {"ltp": lp, "chg_1m": round(chg_1m, 3), "chg_5m": round(chg_5m, 3),
+        return {"ltp": lp, "vol_cum": vol_now, "chg_1m": round(chg_1m, 3), "chg_5m": round(chg_5m, 3),
                 "vol_1m": int(vol_1m), "vol_x": round(vol_x, 2) if vol_x is not None else None,
                 "upticks": round(upticks, 2), "imbalance": round(imb, 3) if imb is not None else None,
                 "spread_bps": round(spread, 1) if spread is not None else None,

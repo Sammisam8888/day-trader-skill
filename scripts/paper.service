@@ -1,0 +1,15 @@
+[Unit]
+Description=Paper bench: rule-based models on live tape prices with paper money (no broker calls)
+After=network-online.target tape.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/paper.py
+Restart=always
+RestartSec=20
+User=root
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
