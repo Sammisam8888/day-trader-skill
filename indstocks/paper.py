@@ -352,12 +352,17 @@ class Bench:
     mstate: Dict[tuple, dict] = field(default_factory=dict)
     write: bool = True
     last: Dict[str, float] = field(default_factory=dict)
+    would_kill: Dict[str, dict] = field(default_factory=dict)
 
     def risk_rs(self) -> D:
         try:
             return D(common.setting("TRADER_PAPER_RISK", "40"))
         except ArithmeticError:
             return D("40")
+
+    def observe_only(self) -> bool:
+        """TRADER_PAPER_UNCAPPED (default true): no kill and no trade cap on paper."""
+        return common.setting("TRADER_PAPER_UNCAPPED", "true").lower() in ("1", "true", "yes")
 
     def kill_rs(self) -> D:
         try:
@@ -408,6 +413,12 @@ class Bench:
             if m in self.killed:
                 continue
             day = self.realised.get(m, D(0)) + self.model_open_net(m, prices)
+            if self.observe_only():
+                # Paper runs uncapped; remember where the kill WOULD have fired, to learn from.
+                if m not in self.would_kill and day <= -D(common.setting("TRADER_PAPER_KILL_STUDY", "75")):
+                    self.would_kill[m] = {"t": round(at, 1), "net": str(day.quantize(D("0.01")))}
+                    self._ledger({"ev": "would_kill", "t": round(at, 1), "model": m, "day": str(day)})
+                continue
             if day <= -self.kill_rs():
                 for key in [k for k in self.open if k[0] == m]:
                     s = key[1]
@@ -437,7 +448,7 @@ class Bench:
             side, stop, target = sig
             if (side == "B" and not (stop < px < target)) or (side == "S" and not (target < px < stop)):
                 continue
-            if self.trades.get(m, 0) + sum(1 for k in self.open if k[0] == m) >= MAX_TRADES:
+            if not self.observe_only() and self.trades.get(m, 0) + sum(1 for k in self.open if k[0] == m) >= MAX_TRADES:
                 continue
             slip = tick_of(px)
             entry = px + slip if side == "B" else px - slip
@@ -471,7 +482,8 @@ class Bench:
             rows[m] = {"net": str((self.realised.get(m, D(0)) + op).quantize(D("0.01"))),
                        "realised": str(self.realised.get(m, D(0))), "open": str(op.quantize(D("0.01"))),
                        "trades": self.trades.get(m, 0), "wins": self.wins.get(m, 0),
-                       "open_trades": sum(1 for k in self.open if k[0] == m), "killed": m in self.killed}
+                       "open_trades": sum(1 for k in self.open if k[0] == m), "killed": m in self.killed,
+                       "would_kill": self.would_kill.get(m)}
         total = sum((D(r["net"]) for r in rows.values()), D(0))
         return {"day": self.day, "at": time.time(), "total": str(total), "models": rows}
 

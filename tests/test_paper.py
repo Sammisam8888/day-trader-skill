@@ -63,7 +63,16 @@ class Trading(unittest.TestCase):
         self.assertEqual(b.open, {})
         self.assertEqual(b.trades["orb5"], 1)
 
+    def test_uncapped_paper_only_records_where_the_kill_would_fire(self):
+        b = paper.Bench("2026-11-18", write=False)
+        b.open[("rsi2", "AAA")] = paper.Trade("rsi2", "AAA", "B", 500, 100.0, 90.0, 120.0, T0)
+        b.check_kills({"AAA": 99.8}, T0 + 3600)
+        self.assertNotIn("rsi2", b.killed)
+        self.assertIn(("rsi2", "AAA"), b.open)
+        self.assertIn("rsi2", b.would_kill)
+
     def test_model_kill_closes_and_stops_that_model_only(self):
+        reset(TRADER_PAPER_UNCAPPED="false")
         b = paper.Bench("2026-11-18", write=False)
         b.open[("rsi2", "AAA")] = paper.Trade("rsi2", "AAA", "B", 500, 100.0, 90.0, 120.0, T0)
         b.open[("orb5", "BBB")] = paper.Trade("orb5", "BBB", "B", 500, 100.0, 90.0, 120.0, T0)
@@ -79,6 +88,7 @@ class Trading(unittest.TestCase):
         self.assertEqual(b.open, {})
 
     def test_kill_holds_during_replay_and_sizes_cap_the_loss(self):
+        reset(TRADER_PAPER_UNCAPPED="false")
         b = paper.Bench("2026-11-18", write=False)
         b.open[("rsi2", "AAA")] = paper.Trade("rsi2", "AAA", "B", 500, 100.0, 90.0, 120.0, T0)
         b.feed("AAA", T0 + 3000, 99.5, None)
