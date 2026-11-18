@@ -1,9 +1,10 @@
-import { Activity as ActivityIcon, Bot, Gauge, LayoutDashboard, ListOrdered, LogIn, MessageSquare, Pause, Play, Settings2 } from "lucide-react";
+import { Activity as ActivityIcon, Bot, FlaskConical, Gauge, LayoutDashboard, ListOrdered, LogIn, MessageSquare, Pause, Play, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { act, getState, type Order, type Position, type State } from "./api";
 import Activity from "./components/Activity";
 import Brain from "./components/Brain";
 import Market from "./components/Market";
+import Paper from "./components/Paper";
 import Notify from "./components/Notify";
 import TradeDrawer from "./components/TradeDrawer";
 import Blotter, { ConfirmCancel } from "./components/Blotter";
@@ -16,11 +17,12 @@ import { ClosedTrades, Positions } from "./components/Positions";
 import { clsx, price } from "./fmt";
 import { Badge, Btn, Card, Dot, Flash } from "./ui";
 
-type Tab = "overview" | "market" | "ai" | "orders" | "activity" | "chat";
+type Tab = "overview" | "market" | "ai" | "paper" | "orders" | "activity" | "chat";
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <LayoutDashboard size={18} /> },
   { id: "market", label: "Market", icon: <Gauge size={18} /> },
   { id: "ai", label: "AI", icon: <Bot size={18} /> },
+  { id: "paper", label: "Paper", icon: <FlaskConical size={18} /> },
   { id: "orders", label: "Orders", icon: <ListOrdered size={18} /> },
   { id: "activity", label: "Activity", icon: <ActivityIcon size={18} /> },
   { id: "chat", label: "Chat", icon: <MessageSquare size={18} /> },
@@ -191,6 +193,7 @@ export default function App() {
           )}
           {tab === "market" && <Market />}
           {tab === "ai" && <Brain focus={focusCall} onTrade={(day, id) => setTrade({ day, id })} />}
+          {tab === "paper" && <Paper />}
           {tab === "orders" && <Blotter orders={s.orders} onCancel={setConfirm} />}
           {tab === "activity" && <Activity items={s.decisions} />}
           {tab === "chat" && <Chat msgs={s.chat} mode={s.chat_mode} send={async (t) => { const r = await act("chat", { text: t }); if (!r.ok) toast(r.message, false); await load(); }} />}

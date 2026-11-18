@@ -105,5 +105,29 @@ class Trading(unittest.TestCase):
         self.assertEqual(D(s["total"]), 0)
 
 
+class Inverted(unittest.TestCase):
+    def test_inverted_swaps_side_stop_and_target(self):
+        f = paper.inverted(lambda bars, st: ("B", 99.0, 103.0))
+        self.assertEqual(f([], {}), ("S", 103.0, 99.0))
+        self.assertIn("orb5_inv", paper.MODELS)
+
+
+class Api(unittest.TestCase):
+    def setUp(self):
+        reset()
+
+    def test_paper_endpoint_pairs_opens_and_closes(self):
+        import json
+        import dashboard
+        paper.PAPER_DIR.mkdir(parents=True, exist_ok=True)
+        (paper.PAPER_DIR / "2026-11-18.jsonl").write_text("\n".join(json.dumps(r) for r in [
+            {"ev": "open", "t": 1, "model": "orb5", "symbol": "A", "side": "B", "qty": 5, "entry": 10, "stop": 9, "target": 12},
+            {"ev": "close", "t": 2, "model": "orb5", "symbol": "A", "side": "B", "qty": 5, "entry": 10, "exit": 12, "net": "8", "why": "target"},
+            {"ev": "open", "t": 3, "model": "rsi2", "symbol": "B", "side": "S", "qty": 5, "entry": 10, "stop": 11, "target": 9}]))
+        r = dashboard.api_paper("2026-11-18")
+        self.assertEqual([t["ev"] for t in r["trades"]], ["open", "close"])
+        self.assertEqual(r["trades"][1]["stop"], 9)
+
+
 if __name__ == "__main__":
     unittest.main()

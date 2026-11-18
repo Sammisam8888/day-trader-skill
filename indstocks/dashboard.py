@@ -1054,6 +1054,36 @@ def api_trade(day: str, order_id: str) -> dict:
     })
 
 
+def api_paper(day: str) -> dict:
+    """The paper bench: per-model summary and the day's paper trades."""
+    import paper
+    out = {"day": day, "summary": None, "trades": []}
+    try:
+        out["summary"] = json.loads((paper.PAPER_DIR / f"{day}-summary.json").read_text())
+    except (OSError, ValueError):
+        pass
+    try:
+        lines = (paper.PAPER_DIR / f"{day}.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    opens = {}
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("ev") == "open":
+            opens[(r["model"], r["symbol"])] = r
+        elif r.get("ev") == "close":
+            o = opens.pop((r["model"], r["symbol"]), {})
+            out["trades"].append({**r, "opened": o.get("t"), "stop": o.get("stop"), "target": o.get("target")})
+    for (m, sym), o in opens.items():
+        out["trades"].append({**o, "ev": "open"})
+    out["trades"].sort(key=lambda x: x.get("t") or 0, reverse=True)
+    out["trades"] = out["trades"][:400]
+    return out
+
+
 def api_sentiment(day: str) -> dict:
     """The latest sentiment snapshot, today's bias over time, and the
     scorecard: closed trades with vs against the sentiment and direction."""
@@ -1256,6 +1286,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 import control
                 return self._json(_j(control.state_view()))
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"error": f"{type(exc).__name__}: {exc}"[:300]}, 500)
+        if path == "/api/paper":
+            try:
+                day = (q.get("day") or [sess.now().strftime("%Y-%m-%d")])[0]
+                datetime.strptime(day, "%Y-%m-%d")
+                return self._json(api_paper(day))
             except Exception as exc:                    # noqa: BLE001
                 return self._json({"error": f"{type(exc).__name__}: {exc}"[:300]}, 500)
         if path == "/api/sentiment":

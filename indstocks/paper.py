@@ -305,6 +305,18 @@ def opening_drive_fade(bars, state) -> Signal:
     return None
 
 
+def inverted(fn: Callable) -> Callable:
+    """The same model taking the opposite side: its target becomes the stop and
+    its stop the target (the owner's 'fade every model' idea, 18 Nov)."""
+    def g(bars, state) -> Signal:
+        sig = fn(bars, state)
+        if not sig:
+            return None
+        side, stop, target = sig
+        return ("S" if side == "B" else "B", target, stop)
+    return g
+
+
 MODELS: Dict[str, Callable] = {
     "orb5": _orb(5), "orb15": _orb(15), "orb30": _orb(30),
     "vwap_revert": vwap_revert, "vwap_trend": vwap_trend,
@@ -312,6 +324,7 @@ MODELS: Dict[str, Callable] = {
     "squeeze_break": squeeze_break, "volume_burst": volume_burst,
     "opening_drive_fade": opening_drive_fade,
 }
+MODELS.update({f"{k}_inv": inverted(v) for k, v in list(MODELS.items())})
 
 
 # ------------------------------------------------------------------ the book
