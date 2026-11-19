@@ -1,7 +1,7 @@
 // Shapes returned by indstocks/dashboard.py. Numbers arrive as JSON
 // numbers (Decimals converted server-side); missing values are null.
 
-export type Status = "live" | "shadow" | "halted" | "login";
+export type Status = "live" | "paper" | "shadow" | "halted" | "login";
 
 export interface Session {
   phase: string; open: string; or_end: string; last_entry: string;
@@ -35,6 +35,7 @@ export interface ChatMsg { ts: string; role: string; text: string }
 
 export interface State {
   now: string; day: string; session: Session | null; status: Status; halt_reason: string;
+  pip?: { streak: number; needed: number; min: string; days: Record<string, string> } | null;
   login: { ok: boolean; since: string | null; uid: string | null; configured: boolean; auto: boolean };
   data: { source: string; age: number | null; error: string };
   cash: number | null;

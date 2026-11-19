@@ -184,6 +184,17 @@ jobs:
             echo 'TRADER_LIVE=false' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo touch /var/lib/indstocks/.profile-pip-paper-2026-11-20
           fi
+          # The PIP (owner, 19 Nov 17:05): the whole pipeline runs on the PAPER BROKER (real prices,
+          # simulated fills, real charges); real orders refuse. TRADER_BROKER=paper goes in FIRST,
+          # then the pipeline is switched on. One time (sentinel).
+          if [ ! -f /var/lib/indstocks/.profile-pip-paperbroker-v1 ]; then
+            sudo sed -i '/^TRADER_BROKER=/d' /etc/indstocks.env
+            echo 'TRADER_BROKER=paper' | sudo tee -a /etc/indstocks.env >/dev/null
+            for kv in TRADER_PAPER_CAPITAL=60000 TRADER_PIP_DAILY_MIN=400 TRADER_PIP_DAYS=14 TRADER_LIVE=true; do
+              k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
+            done
+            sudo touch /var/lib/indstocks/.profile-pip-paperbroker-v1
+          fi
           # Ratchet day lock (owner, 17 Nov 14:25): the kept share of the day's best rises
           # as the day gets better, and +1000 net banks the day. Replaces the 600/60 step.
           if [ ! -f /var/lib/indstocks/.profile-ratchet-v1 ]; then

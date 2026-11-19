@@ -86,10 +86,11 @@ class Store(unittest.TestCase):
         learning.save(les)
         self.assertEqual([x["id"] for x in learning.for_prompt()], ["L002", "L001"])
 
-    def test_at_most_four_new_lessons_a_day(self):
+    def test_new_lessons_a_day_are_capped(self):
         les = {}
-        learning.merge(les, {"lessons": [{"action": "new", "rule": f"r{i}"} for i in range(9)]}, "d1")
-        self.assertEqual(len(les), 4)
+        learning.merge(les, {"lessons": [{"action": "new", "rule": f"r{i}"} for i in range(20)]}, "d1")
+        self.assertEqual(len(les), learning.MAX_NEW_PER_DAY)
+        self.assertEqual(learning.MAX_NEW_PER_DAY, 8, "the PIP gives the AI room for more rules")
 
 
 class NightlyReview(unittest.TestCase):

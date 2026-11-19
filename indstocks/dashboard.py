@@ -901,7 +901,15 @@ def api_state() -> dict:
 
     import chat as chat_mod
     status = ("halted" if halted else "login" if (not tok or v["login"]) else
+              "paper" if sh.paper_mode() else
               "live" if lim.get("TRADER_LIVE", "").lower() == "true" else "shadow")
+    try:
+        import pip as pip_mod
+        rec = pip_mod.load()
+        pip_view = {"streak": pip_mod.streak(rec), "needed": pip_mod.days_needed(), "min": str(pip_mod.daily_min()),
+                    "days": rec}
+    except Exception:                                   # noqa: BLE001
+        pip_view = None
     tickers = []
     for sym in common.symbols():
         c = sh._load_cache().get(f"NSE:{sym}")
@@ -913,7 +921,7 @@ def api_state() -> dict:
         "session": ({"phase": session.phase(now), "open": _hm(session.open), "or_end": _hm(session.opening_range_end),
                      "last_entry": _hm(session.last_entry), "flat_by": _hm(session.flat_by),
                      "close": _hm(session.close), "special": bool(session.special)} if session else None),
-        "status": status, "halt_reason": halt_reason,
+        "status": status, "halt_reason": halt_reason, "pip": pip_view,
         "login": {"ok": bool(tok) and not v["login"], "since": tok and tok["at"][11:16],
                   "uid": tok and tok.get("uid"), "configured": bool(lim.get("SHOONYA_CLIENT_ID")),
                   "auto": __import__("autologin").configured()},

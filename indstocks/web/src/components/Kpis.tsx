@@ -18,6 +18,7 @@ function Tile({ label, icon, children, foot, accent }:
 
 export const STATUS = {
   live: { label: "LIVE", tone: "up", hint: "placing real orders" },
+  paper: { label: "PAPER (PIP)", tone: "info", hint: "real prices, simulated fills, real charges" },
   shadow: { label: "SHADOW", tone: "warn", hint: "deciding and logging only" },
   halted: { label: "HALTED", tone: "down", hint: "no new entries" },
   login: { label: "LOGIN NEEDED", tone: "info", hint: "tap Log in to Shoonya" },
@@ -50,7 +51,9 @@ export default function Kpis({ s }: { s: State }) {
         <span className="num">{wr == null ? "—" : pct(wr, 0).replace("+", "")}</span>
       </Tile>
       <Tile label="Agent" icon={<Bot size={14} />}
-        foot={s.status === "halted" && s.halt_reason ? s.halt_reason : `${st.hint}${s.session ? ` · ${s.session.phase.replace(/_/g, " ")}` : ""}`}>
+        foot={s.status === "halted" && s.halt_reason ? s.halt_reason
+          : s.pip && s.status === "paper" ? `PIP streak ${s.pip.streak}/${s.pip.needed} days of Rs ${s.pip.min}+ · ${Object.keys(s.pip.days).length} days run`
+          : `${st.hint}${s.session ? ` · ${s.session.phase.replace(/_/g, " ")}` : ""}`}>
         <span className="inline-flex items-center gap-2.5">
           <Dot tone={st.tone} live={s.status === "live"} />
           <Badge tone={st.tone} className="px-2 py-1 text-sm">{st.label}</Badge>

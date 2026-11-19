@@ -43,8 +43,9 @@ import common                                            # noqa: E402
 import session as sess                                   # noqa: E402
 
 JOB = "learning"
-MAX_ACTIVE = 20
-MAX_NEW_PER_DAY = 4
+# The owner's PIP (19 Nov): the server AI writes its own rules freely; more room for them.
+MAX_ACTIVE = int(common.setting("TRADER_LESSONS_MAX", "40"))
+MAX_NEW_PER_DAY = int(common.setting("TRADER_LESSONS_NEW_PER_DAY", "8"))
 
 EXIT_KIND = {"stop/": "stop", "tgt/": "target", "lock/": "profit lock", "exit/": "the AI exit",
              "flat/": "flatten", "brk/": "stop breached", "man/": "manual guard", "ctl/": "control",

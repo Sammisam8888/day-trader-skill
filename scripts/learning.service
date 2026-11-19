@@ -5,6 +5,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/pip.py
 ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/learning.py
 TimeoutStartSec=900
 User=root

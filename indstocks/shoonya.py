@@ -290,13 +290,35 @@ def parse_candles(rows, interval: int) -> List[Candle]:
     return out
 
 
+def paper_mode() -> bool:
+    """TRADER_BROKER=paper: every order is simulated (paperbroker.py); nothing reaches the exchange."""
+    v = os.environ.get("TRADER_BROKER", "")
+    if not v:
+        try:
+            for line in Path(os.environ.get("TRADER_ENV_FILE", "/etc/indstocks.env")).read_text().splitlines():
+                if line.startswith("TRADER_BROKER="):
+                    v = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+    return v.lower() == "paper"
+
+
 class Shoonya:
-    """One logged-in session. Raises LoginRequired when there is none."""
+    """One logged-in session. Raises LoginRequired when there is none.
+
+    In paper mode Shoonya() is the paper broker; Shoonya(data_only=True) is a
+    real session for market data only, and its order calls refuse."""
 
     MIN_GAP = {"order": 0.12, "data": 0.35}
 
+    def __new__(cls, *args, data_only: bool = False, **kwargs):
+        if cls is Shoonya and not data_only and paper_mode():
+            import paperbroker
+            return paperbroker.PaperBroker()
+        return super().__new__(cls)
+
     def __init__(self, *, token: Optional[dict] = None, http: Callable = _http,
-                 sleep: Callable = time.sleep):
+                 sleep: Callable = time.sleep, data_only: bool = False):
         self._tok = token
         self._http = http
         self._sleep = sleep
@@ -443,6 +465,8 @@ class Shoonya:
 
     def place(self, inst: Instrument, *, side: str, qty: int, price: Decimal,
               trigger: Optional[Decimal] = None, remarks: str = "") -> str:
+        if paper_mode():
+            raise ShoonyaError("paper mode (TRADER_BROKER=paper): real orders are disabled")
         if side not in ("B", "S"):
             raise ShoonyaError(f"side must be B or S, not {side!r}")
         if qty <= 0:
@@ -491,6 +515,8 @@ class Shoonya:
 
     def modify(self, order: dict, inst: Instrument, *, qty: int, price: Decimal,
                trigger: Optional[Decimal] = None) -> str:
+        if paper_mode():
+            raise ShoonyaError("paper mode (TRADER_BROKER=paper): real orders are disabled")
         payload = {"norenordno": order["id"], "exch": inst.exch, "tsym": inst.tsym,
                    "qty": str(qty), "prc": str(to_tick(price, inst.tick)),
                    "prctyp": "SL-LMT" if trigger is not None else "LMT",
@@ -501,6 +527,8 @@ class Shoonya:
         return str(resp.get("result") or order["id"])
 
     def cancel(self, order_id: str) -> None:
+        if paper_mode():
+            raise ShoonyaError("paper mode (TRADER_BROKER=paper): real orders are disabled")
         self.call("CancelOrder", {"norenordno": str(order_id), "ordersource": "API"},
                   kind="order")
 
