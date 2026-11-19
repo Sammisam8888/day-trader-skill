@@ -158,12 +158,7 @@ jobs:
           fi
           # Owner, 19 Nov 10:00: undo the AI's 09:45 cut of max loss per trade (300 -> 80). One time.
           if [ ! -f /var/lib/indstocks/.profile-undo-risk-2026-11-19 ]; then
-            (cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "
-import control
-h = control.history('2026-11-19')
-idx = [i for i, x in enumerate(h) if x['command'] == 'set_risk_today' and x['by'] == 'ai' and x['outcome'] in ('applied', 'partly')]
-print([control.undo('2026-11-19', i) for i in idx])
-") || true
+            (cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import control; h = control.history('2026-11-19'); print([control.undo('2026-11-19', i) for i, x in enumerate(h) if x['command'] == 'set_risk_today' and x['by'] == 'ai' and x['outcome'] in ('applied', 'partly')])") || true
             sudo touch /var/lib/indstocks/.profile-undo-risk-2026-11-19
           fi
           # Trailing per-trade lock (owner, 19 Nov 07:44): arm at 0.5R, stop to breakeven, then
