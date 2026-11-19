@@ -156,6 +156,14 @@ jobs:
             echo 'TRADER_TAPE_EXTRA=TCS,KOTAKBANK,ITC,HINDUNILVR,BAJFINANCE,MARUTI,SUNPHARMA,TATASTEEL,M&M,TITAN,ULTRACEMCO,NTPC,POWERGRID,ONGC,ADANIENT,ADANIPORTS,WIPRO,HCLTECH,TECHM,JSWSTEEL,HINDALCO,COALINDIA,BEL,TRENT' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo touch /var/lib/indstocks/.profile-tape-extra-v1
           fi
+          # Owner, 19 Nov 11:27: the AI stood aside because a full-size slot (size floor 1.0)
+          # cannot fit the loss room left today. Allow smaller entries (0.25-1.0 of a slot)
+          # so it can trade inside the Rs 300 kill. One time (sentinel).
+          if [ ! -f /var/lib/indstocks/.profile-size-floor-2026-11-19 ]; then
+            sudo sed -i '/^TRADER_SIZE_FLOOR=/d' /etc/indstocks.env
+            echo 'TRADER_SIZE_FLOOR=0.25' | sudo tee -a /etc/indstocks.env >/dev/null
+            sudo touch /var/lib/indstocks/.profile-size-floor-2026-11-19
+          fi
           # Owner, 19 Nov 10:00: undo the AI's 09:45 cut of max loss per trade (300 -> 80). One time.
           if [ ! -f /var/lib/indstocks/.profile-undo-risk-2026-11-19 ]; then
             (cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "import control; h = control.history('2026-11-19'); print([control.undo('2026-11-19', i) for i, x in enumerate(h) if x['command'] == 'set_risk_today' and x['by'] == 'ai' and x['outcome'] in ('applied', 'partly')])") || true
