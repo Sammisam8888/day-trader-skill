@@ -156,6 +156,16 @@ jobs:
             echo 'TRADER_TAPE_EXTRA=TCS,KOTAKBANK,ITC,HINDUNILVR,BAJFINANCE,MARUTI,SUNPHARMA,TATASTEEL,M&M,TITAN,ULTRACEMCO,NTPC,POWERGRID,ONGC,ADANIENT,ADANIPORTS,WIPRO,HCLTECH,TECHM,JSWSTEEL,HINDALCO,COALINDIA,BEL,TRENT' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo touch /var/lib/indstocks/.profile-tape-extra-v1
           fi
+          # Owner, 19 Nov 10:00: undo the AI's 09:45 cut of max loss per trade (300 -> 80). One time.
+          if [ ! -f /var/lib/indstocks/.profile-undo-risk-2026-11-19 ]; then
+            (cd /opt/indstocks/day-trader-skill/indstocks && sudo python3 -c "
+import control
+h = control.history('2026-11-19')
+idx = [i for i, x in enumerate(h) if x['command'] == 'set_risk_today' and x['by'] == 'ai' and x['outcome'] in ('applied', 'partly')]
+print([control.undo('2026-11-19', i) for i in idx])
+") || true
+            sudo touch /var/lib/indstocks/.profile-undo-risk-2026-11-19
+          fi
           # Trailing per-trade lock (owner, 19 Nov 07:44): arm at 0.5R, stop to breakeven, then
           # trail a rising share of the trade's best. One time (sentinel).
           if [ ! -f /var/lib/indstocks/.profile-trail-v1 ]; then
