@@ -177,6 +177,13 @@ jobs:
             done
             sudo touch /var/lib/indstocks/.profile-trail-v1
           fi
+          # Owner, 19 Nov 16:59: funds withdrawn; paper only from 20 Nov (the PIP). The AI keeps
+          # deciding and logging ("would_place"); nothing goes to the exchange. One time (sentinel).
+          if [ ! -f /var/lib/indstocks/.profile-pip-paper-2026-11-20 ]; then
+            sudo sed -i '/^TRADER_LIVE=/d' /etc/indstocks.env
+            echo 'TRADER_LIVE=false' | sudo tee -a /etc/indstocks.env >/dev/null
+            sudo touch /var/lib/indstocks/.profile-pip-paper-2026-11-20
+          fi
           # Ratchet day lock (owner, 17 Nov 14:25): the kept share of the day's best rises
           # as the day gets better, and +1000 net banks the day. Replaces the 600/60 step.
           if [ ! -f /var/lib/indstocks/.profile-ratchet-v1 ]; then
