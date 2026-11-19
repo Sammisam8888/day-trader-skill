@@ -205,6 +205,10 @@ def adjust(broker, d: dict, held: list, orders: list, placements: list, limits, 
                 problems.append(f"stop {new_stop} risks {loss:.0f}, more than the {room:.0f} of loss room left today")
             if stop_order is None:
                 problems.append("no stop order at the exchange to move (the fill monitor is placing one)")
+            elif stop_order["trigger"] > 0 and ((long_ and new_stop < stop_order["trigger"])
+                                                 or (not long_ and new_stop > stop_order["trigger"])):
+                problems.append(f"stop {new_stop} is looser than the current {stop_order['trigger']}: "
+                                "stops only tighten (the trailing lock may have locked profit there)")
     elif manual and stop_order is None and d.get("target") is not None:
         problems.append("a manual position needs a stop when the AI takes it over")
     if d.get("target") is not None:

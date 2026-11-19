@@ -85,16 +85,52 @@ def breakeven_price(side: str, avg: Decimal, qty: int, tick: Decimal) -> Decimal
     return to_tick(avg - per_share, tick, mode="down")
 
 
-def floor(best: Decimal) -> Decimal:
-    return max(min_rs(), best * keep())
+def lock_steps():
+    """The trailing ladder from TRADER_LOCK_STEPS, "0.5:40,1:60,2:75,3:85": once the
+    trade's best net profit reaches R x its planned risk, keep at least pct% of that
+    best. The kept share rises as the trade runs (owner, 19 Nov: real-time trailing,
+    book the profit, don't give it back)."""
+    out = []
+    for part in common.setting("TRADER_LOCK_STEPS", "").split(","):
+        try:
+            r, k = part.split(":")
+            out.append((Decimal(r.strip()), Decimal(k.strip()) / 100))
+        except (ValueError, ArithmeticError):
+            continue
+    return sorted(out)
 
 
-def check(best: Optional[Decimal], net: Decimal, arm: Optional[Decimal] = None):
+def keep_for(best: Decimal, risk_rs: Optional[Decimal] = None) -> Decimal:
+    steps = lock_steps()
+    if not steps or not risk_rs or risk_rs <= 0:
+        return keep()
+    k = None
+    for r, kf in steps:
+        if best >= r * risk_rs:
+            k = kf
+    return k if k is not None else steps[0][1]
+
+
+def floor(best: Decimal, risk_rs: Optional[Decimal] = None) -> Decimal:
+    return max(min_rs(), best * keep_for(best, risk_rs))
+
+
+def stop_for_net(side: str, avg: Decimal, qty: int, net_floor: Decimal, tick: Decimal) -> Decimal:
+    """The exit price that still nets `net_floor` after the round trip's charges,
+    rounded so the stop never promises more than the floor."""
+    per_share = charges_mod.round_trip(avg * qty, avg * qty).total / qty
+    if side == "B":
+        return to_tick(avg + per_share + net_floor / qty, tick, mode="up")
+    return to_tick(avg - per_share - net_floor / qty, tick, mode="down")
+
+
+def check(best: Optional[Decimal], net: Decimal, arm: Optional[Decimal] = None,
+          risk_rs: Optional[Decimal] = None):
     """(new_best, armed, exit_reason or None) for one trade at this tick."""
     if best is None and net < (arm_rs() if arm is None else arm):
         return None, False, None
     best = net if best is None else max(best, net)
-    f = floor(best)
+    f = floor(best, risk_rs)
     if net <= f:
         return best, True, f"profit lock: net {net:.0f} fell to the floor {f:.0f} (best {best:.0f})"
     return best, True, None

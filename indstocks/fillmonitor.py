@@ -458,24 +458,37 @@ def tick(broker, now: datetime, state: dict) -> dict:
                 risk_rs = D(p.get("risk")) * open_q / max(int(p.get("qty") or open_q), 1)
             except (ArithmeticError, TypeError, ValueError):
                 risk_rs = None
-            best, armed, lock_why = profitlock.check(lock_best.get(pid), net, profitlock.arm_for(risk_rs))
+            best, armed, lock_why = profitlock.check(lock_best.get(pid), net, profitlock.arm_for(risk_rs), risk_rs)
             if best is not None and best != lock_best.get(pid):
                 if pid not in lock_best:
                     log({"event": "profit_lock_armed", "parent": pid, "symbol": p["symbol"], "net": str(round(net, 2)),
-                         "floor": str(round(profitlock.floor(best), 2))})
+                         "floor": str(round(profitlock.floor(best, risk_rs), 2))})
                 lock_best[pid] = best
                 lock_dirty[0] = True
             if armed and not lock_why:
-                # protect at the exchange too: stop to breakeven after charges
+                # Protect at the exchange too, so the profit holds even if this server dies:
+                # the stop goes to breakeven after charges, then trails the locked floor
+                # (keep_for: a rising share of the trade's best) as the trade runs. Stops
+                # only ever tighten.
                 be = profitlock.breakeven_price(side, entry, open_q, inst.tick)
-                better = be > so["trigger"] if side == "B" else (so["trigger"] <= 0 or be < so["trigger"])
-                room = (ltp - be) if side == "B" else (be - ltp)
-                if better and room >= inst.tick * 2:
+                trail = profitlock.stop_for_net(side, entry, open_q, profitlock.floor(best, risk_rs), inst.tick)
+                lock_stop = max(be, trail) if side == "B" else min(be, trail)
+                gap = inst.tick * 2
+                if side == "B" and lock_stop > ltp - gap:
+                    lock_stop = to_tick(ltp - gap, inst.tick, mode="down")
+                elif side == "S" and lock_stop < ltp + gap:
+                    lock_stop = to_tick(ltp + gap, inst.tick, mode="up")
+                step = max(inst.tick * 2, ltp * D("0.0003"))
+                cur = so["trigger"]
+                better = (lock_stop >= cur + step) if side == "B" else (cur <= 0 or lock_stop <= cur - step)
+                if better:
                     try:
-                        broker.modify(so, inst, qty=so["qty"], price=stop_limit(be, inst.tick, opp(side)), trigger=be)
+                        broker.modify(so, inst, qty=so["qty"], price=stop_limit(lock_stop, inst.tick, opp(side)),
+                                      trigger=lock_stop)
                         log({"event": "stop_moved", "parent": pid, "order_id": so["id"], "symbol": p["symbol"],
-                             "from": str(so["trigger"]), "to": str(be), "ltp": str(ltp),
-                             "reason": "profit lock: breakeven after charges"})
+                             "from": str(cur), "to": str(lock_stop), "ltp": str(ltp),
+                             "reason": f"profit lock: trailing, locks net {profitlock.floor(best, risk_rs):.0f} "
+                                       f"of best {best:.0f}"})
                         out["moved"] += 1
                     except ShoonyaError as exc:
                         log({"event": "modify_failed", "order_id": so["id"], "reason": str(exc)[:200]})

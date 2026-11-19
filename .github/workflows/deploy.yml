@@ -156,6 +156,14 @@ jobs:
             echo 'TRADER_TAPE_EXTRA=TCS,KOTAKBANK,ITC,HINDUNILVR,BAJFINANCE,MARUTI,SUNPHARMA,TATASTEEL,M&M,TITAN,ULTRACEMCO,NTPC,POWERGRID,ONGC,ADANIENT,ADANIPORTS,WIPRO,HCLTECH,TECHM,JSWSTEEL,HINDALCO,COALINDIA,BEL,TRENT' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo touch /var/lib/indstocks/.profile-tape-extra-v1
           fi
+          # Trailing per-trade lock (owner, 19 Nov 07:44): arm at 0.5R, stop to breakeven, then
+          # trail a rising share of the trade's best. One time (sentinel).
+          if [ ! -f /var/lib/indstocks/.profile-trail-v1 ]; then
+            for kv in TRADER_LOCK_ARM_R=0.5 TRADER_LOCK_ARM_RS=60 TRADER_LOCK_STEPS=0.5:40,1:60,2:75,3:85; do
+              k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
+            done
+            sudo touch /var/lib/indstocks/.profile-trail-v1
+          fi
           # Ratchet day lock (owner, 17 Nov 14:25): the kept share of the day's best rises
           # as the day gets better, and +1000 net banks the day. Replaces the 600/60 step.
           if [ ! -f /var/lib/indstocks/.profile-ratchet-v1 ]; then

@@ -265,11 +265,12 @@ may be why you are being asked now. React to them: material bad news plus price 
 news shock without a clear reversal. A shock with no headline still counts: price moves first.
 A stock-specific shock or alert in the last 30 minutes WAIVES the market-direction gate for that
 symbol in the same direction (a short on bad news is allowed on an up day, and the reverse).
-PROFIT LOCK (code, every few seconds, you cannot override it): once a trade is up 3R after charges
-its stop goes to breakeven after charges, and if it then gives back 30% of its best it is closed at
-market. Below 3R, winners must be allowed to run: back-tested, cutting them early lost money
-because the few 4R winners pay for all the small losers. Do not micro-manage a trade that is
-working; move a stop only on a real change (a failed level, a reversal), not on every wiggle.
+PROFIT LOCK (code, every few seconds, you cannot override it): once a trade is up half its risk
+(0.5R) after charges, its exchange stop goes to breakeven after charges and then TRAILS: it keeps a
+rising share of the trade's best net profit (40% from 0.5R, 60% from 1R, 75% from 2R, 85% from 3R),
+moving with the price, so a winner that turns is closed with most of its profit. You do not need to
+chase a winner or nudge its target: the trailing stop books it. Stops only tighten; a looser stop is
+refused. Do not micro-manage a trade that is working.
 Targets may only be moved CLOSER, never further away.
 DAY LOCK (code): once the day reaches Rs 600 net after charges, falling to 60% of its best closes
 everything and halts the day. Protect a good day: once it is well green, take only A-grade setups.

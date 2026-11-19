@@ -388,13 +388,15 @@ class ProfitLock(unittest.TestCase):
         self.assertEqual((b.placed, b.modified), ([], []))
         self.assertEqual(ev("profit_lock_armed"), [])
 
-    def test_arming_moves_the_exchange_stop_to_breakeven_after_charges(self):
+    def test_arming_moves_the_exchange_stop_to_lock_the_floor(self):
+        import profitlock
         b = self.tick("282.40")                          # about +55 gross, +45 net
         self.assertEqual(len(ev("profit_lock_armed")), 1)
         m = b.modified[-1]
         self.assertEqual(m["id"], "S1")
-        self.assertGreater(m["trigger"], D("281.02"), "above entry: costs covered")
-        self.assertLess(m["trigger"], D("281.40"))
+        be = profitlock.breakeven_price("B", D("281.02"), 40, D("0.01"))
+        self.assertGreater(m["trigger"], be, "past breakeven: part of the profit is locked at the exchange")
+        self.assertLess(m["trigger"], D("282.40"), "still under the price")
         self.assertEqual(b.placed, [], "no exit while profit holds")
 
     def test_giving_back_half_books_the_profit_at_market(self):
@@ -410,6 +412,15 @@ class ProfitLock(unittest.TestCase):
         self.tick("283.00")
         b = self.tick("281.90", state={})               # a fresh process: best comes from disk
         self.assertEqual(b.placed[-1]["remarks"], "lock/NIFTYBEES")
+
+    def test_the_stop_trails_up_and_never_down(self):
+        self.tick("282.40")
+        first = self.state_stop = None
+        b = self.tick("283.40")                           # a new best: the stop follows
+        ups = [m["trigger"] for m in b.modified if m["id"] == "S1"]
+        self.assertTrue(ups and ups[-1] > D("282.00"), ups)
+        b2 = self.tick("283.20")                          # a small pullback: no loosening
+        self.assertFalse([m for m in b2.modified if m["id"] == "S1" and m["trigger"] < ups[-1]])
 
     def test_an_armed_trade_never_ends_below_five_rupees(self):
         import profitlock
@@ -460,6 +471,32 @@ class DayLock(unittest.TestCase):
         outcome = control.apply({"command": "resume_today", "reason": "x"}, by="ai", now=AT)
         self.assertNotEqual(outcome[0], "applied")
         self.assertIn("day lock", common.halted())
+
+
+class TrailingLadder(unittest.TestCase):
+    """19 Nov: arm at 0.5R, then keep a rising share of the best. HDFCBANK, 18 Nov:
+    short 65 at 810.40, stop 813.50 (risk about Rs 231); at 808.00 the trade was
+    +156 gross and nothing protected it."""
+    def setUp(self):
+        reset(TRADER_LOCK_ARM_R="0.5", TRADER_LOCK_ARM_RS="60", TRADER_LOCK_STEPS="0.5:40,1:60,2:75,3:85")
+
+    def test_ladder(self):
+        import profitlock as pl
+        r = D("230")
+        self.assertEqual(pl.arm_for(r), D("115"))
+        self.assertEqual(pl.keep_for(D("120"), r), D("0.4"))
+        self.assertEqual(pl.keep_for(D("240"), r), D("0.6"))
+        self.assertEqual(pl.keep_for(D("700"), r), D("0.85"))
+
+    def test_the_hdfc_trade_would_have_locked_profit(self):
+        import profitlock as pl
+        net = pl.net_open("S", D("810.40"), 65, D("808.00"))
+        best, armed, why = pl.check(None, net, pl.arm_for(D("230.75")), D("230.75"))
+        self.assertTrue(armed and why is None)
+        stop = pl.stop_for_net("S", D("810.40"), 65, pl.floor(best, D("230.75")), D("0.05"))
+        self.assertLess(stop, D("810.40"), "the buy-back stop sits below the short's entry: profit locked")
+        self.assertGreater(stop, D("808.00"))
+        self.assertGreaterEqual(pl.net_open("S", D("810.40"), 65, stop), pl.floor(best, D("230.75")) - 1)
 
 
 class DayRatchet(unittest.TestCase):

@@ -301,6 +301,12 @@ class Adjust(unittest.TestCase):
         self.assertEqual(ev("plan_adjusted"), [])
         self.assertIn("may only move closer", ev("refused")[-1]["reason"])
 
+    def test_a_looser_stop_is_refused(self):
+        b = self.book()
+        autotrader.run(b, now=AT, decide=ai({"action": "adjust", "symbol": "NIFTYBEES", "stop": 280.10}))
+        self.assertEqual(b.modified, [])
+        self.assertIn("stops only tighten", ev("refused")[-1]["reason"])
+
     def test_a_closer_target_is_recorded_for_the_monitor(self):
         b = self.book()
         autotrader.run(b, now=AT, decide=ai({"action": "adjust", "symbol": "NIFTYBEES", "target": 282.00}))
