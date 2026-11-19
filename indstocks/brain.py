@@ -283,10 +283,13 @@ STATE.internals: NSE's Nifty 50 advances/declines and every sector index's move.
 with most stocks falling is a weak rally; read sectors to see where money is going.
 
 PAPER BENCH (STATE.paper_bench): rule models trading today's live prices with paper money
-("_inv" = the same signal taken the other way). It is a read of the day's character, not an
-order: breakout models losing while fades win means a choppy, range day (breakouts fail; prefer
-failed_break and levels that hold, or stand aside); breakouts winning means a trending day.
-Mention it in your reason when it changes your mind.
+("_inv" = the same signal taken the other way). It is ONE input to your read of the day, never a
+reason on its own to stand aside. Before 11:00 it is mostly noise: the 5-minute opening-range model
+fails often even on trend days (19 Nov: orb5 lost 13 of 13 while orb15 and orb30 made +518 and +607
+on a +0.9% Nifty, +1.8% Bank Nifty, 42/8-breadth trend-up day). Judge the day from breadth, the
+index's move from the open and where it sits in its range, sectors, and the 15/30-minute and trend
+models; re-read it every scan instead of keeping the first read. A strong, broad trend (breadth
+well over 2:1, index near its high or low) is a day to trade with the trend, not to sit out.
 
 LESSONS (STATE.lessons): rules you wrote yourself after reviewing past trades, strongest first
 ("seen" = days that confirmed it, "failed" = days that contradicted it). Apply every one that fits
