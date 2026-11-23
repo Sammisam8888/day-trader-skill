@@ -350,6 +350,17 @@ def tick(broker, now: datetime, state: dict) -> dict:
             lock_dirty[0] = True
             close_all_and_halt(f"daily loss stop: day net {day_net:.0f} reached -{limit_:.0f}", "daily_loss",
                                "daily_loss_stop", "DAILY LOSS STOP", {"net": str(round(day_net, 2))})
+    #     Study (owner, 23 Nov: kill removed on paper): log once where the old Rs 300 stop
+    #     would have fired, so its value can be measured afterwards.
+    if day_net is not None and not lock_best.get("_would_stop"):
+        try:
+            study = Decimal(common.setting("TRADER_DAILY_LOSS_STUDY", "300"))
+        except ArithmeticError:
+            study = Decimal(0)
+        if study > 0 and day_net <= -study:
+            lock_best["_would_stop"] = Decimal(1)
+            lock_dirty[0] = True
+            log({"event": "daily_loss_would_stop", "net": str(round(day_net, 2)), "study": str(study)})
     # (ii) the day lock: a big day may not give back more than half
     if profitlock.day_enabled() and not lock_best.get("_day_locked") and not lock_best.get("_loss_stopped") \
             and day_net is not None:

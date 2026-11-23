@@ -754,3 +754,22 @@ class HaltButtonExitsEverything(unittest.TestCase):
         self.assertTrue(dashboard.HALT_FILE.exists())
         self.assertEqual([(p["side"], p["qty"]) for p in b.placed], [("S", 40)], "the open long is sold")
         dashboard.HALT_FILE.unlink()
+
+
+class NoDailyKillOnPaper(unittest.TestCase):
+    """23 Nov: the owner removed the Rs 300 day stop for the paper PIP; it is only recorded."""
+    def setUp(self):
+        reset(TRADER_DAILY_LOSS="100000", TRADER_DAILY_LOSS_STUDY="300")
+        sess.now = lambda clock=None: AT
+        self.state = {}
+
+    def test_a_minus_400_day_keeps_trading_and_records_the_old_stop(self):
+        closed = position(SENSEX_, 0, "900", realised="-400", buy_qty=20, sell_qty=20, sell_avg="880")
+        b = FakeBroker(positions=[closed, position(NIFTY, 40, "281.02", ltp="281.00")],
+                       quotes={NIFTY.token: {"ltp": "281.00"}})
+        fm.tick(b, AT, self.state)
+        self.assertIsNone(common.halted())
+        self.assertEqual(ev("daily_loss_stop"), [])
+        self.assertEqual(len(ev("daily_loss_would_stop")), 1)
+        fm.tick(b, AT, self.state)
+        self.assertEqual(len(ev("daily_loss_would_stop")), 1, "recorded once")

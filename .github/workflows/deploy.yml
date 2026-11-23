@@ -153,7 +153,7 @@ jobs:
           # research; the AI does not trade them. One time (sentinel).
           if [ ! -f /var/lib/indstocks/.profile-tape-extra-v1 ]; then
             sudo sed -i '/^TRADER_TAPE_EXTRA=/d' /etc/indstocks.env
-            echo 'TRADER_TAPE_EXTRA=TCS,KOTAKBANK,ITC,HINDUNILVR,BAJFINANCE,MARUTI,SUNPHARMA,TATASTEEL,M&M,TITAN,ULTRACEMCO,NTPC,POWERGRID,ONGC,ADANIENT,ADANIPORTS,WIPRO,HCLTECH,TECHM,JSWSTEEL,HINDALCO,COALINDIA,BEL,TRENT' | sudo tee -a /etc/indstocks.env >/dev/null
+            echo 'TRADER_TAPE_EXTRA=TCS,KOTAKBANK,ITC,HINDUNILVR,BAJFINANCE,MARUTI,SUNPHARMA,TATASTEEL,TITAN,ULTRACEMCO,NTPC,POWERGRID,ONGC,ADANIENT,ADANIPORTS,WIPRO,HCLTECH,TECHM,JSWSTEEL,HINDALCO,COALINDIA,BEL,TRENT' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo touch /var/lib/indstocks/.profile-tape-extra-v1
           fi
           # Owner, 19 Nov 11:27: the AI stood aside because a full-size slot (size floor 1.0)
@@ -183,6 +183,15 @@ jobs:
             sudo sed -i '/^TRADER_LIVE=/d' /etc/indstocks.env
             echo 'TRADER_LIVE=false' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo touch /var/lib/indstocks/.profile-pip-paper-2026-11-20
+          fi
+          # Owner, 23 Nov 10:44: no daily loss stop during the paper PIP (each trade keeps its own
+          # exchange stop). TRADER_DAILY_LOSS large = off; the fill monitor logs where Rs 300 would
+          # have fired. Also drop M&M from the tape list: its "&" breaks shell sourcing. One time.
+          if [ ! -f /var/lib/indstocks/.profile-no-daily-kill-2026-11-23 ]; then
+            sudo sed -i '/^TRADER_DAILY_LOSS=/d' /etc/indstocks.env
+            echo 'TRADER_DAILY_LOSS=100000' | sudo tee -a /etc/indstocks.env >/dev/null
+            sudo sed -i 's/,M&M,/,/' /etc/indstocks.env
+            sudo touch /var/lib/indstocks/.profile-no-daily-kill-2026-11-23
           fi
           # The PIP (owner, 19 Nov 17:05): the whole pipeline runs on the PAPER BROKER (real prices,
           # simulated fills, real charges); real orders refuse. TRADER_BROKER=paper goes in FIRST,
