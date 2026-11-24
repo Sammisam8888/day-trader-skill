@@ -116,6 +116,20 @@ export default function Desk() {
                   <span className="col-span-2">BOOK {cur.imbalance == null ? "--" : `${Math.round(cur.imbalance * 100)}% buyers waiting`} <Bar v={cur.imbalance} /></span>
                   <span className="col-span-2">INDEX {cur.index} <span className={tone(d?.internals?.sectors?.[cur.index])}>{f(d?.internals?.sectors?.[cur.index])}%</span></span>
                 </div>
+                {(() => {
+                  const c = d?.company?.[cur.symbol];
+                  if (!c || (!c.holding && !c.results && !c.deals)) return null;
+                  return (
+                    <div className="grid gap-0.5 border-t border-[#1f1910] pt-1">
+                      <div className="text-[11px] uppercase tracking-widest text-[#9a875f]">Company (NSE filings)</div>
+                      {c.results && <span>RESULTS {c.results.relating_to ?? ""} filed {c.results.filed}
+                        <span className={c.results.days_ago <= 10 ? "text-[#f5b942]" : "text-[#7a6a4a]"}> ({c.results.days_ago}d ago)</span></span>}
+                      {c.holding && <span>PROMOTERS {c.holding.promoter_pct.toFixed(2)}%
+                        {c.holding.promoter_change != null && <span className={tone(c.holding.promoter_change, 0.5)}> ({f(c.holding.promoter_change)} pts q/q)</span>}
+                        <span className="text-[#7a6a4a]"> as of {c.holding.as_of}</span></span>}
+                      {(c.deals ?? []).map((x, i) => <span key={i} className="text-[#f5b942]">{x.kind.toUpperCase()} {x.side} {x.value_cr} cr by {x.client}</span>)}
+                    </div>);
+                })()}
                 <div>
                   <div className="mb-1 text-[11px] uppercase tracking-widest text-[#9a875f]">Peers ({cur.sector})</div>
                   {peers.length === 0 ? <span className="text-[#7a6a4a]">none on the tape</span> : peers.map((p) => (
@@ -154,6 +168,19 @@ export default function Desk() {
                 {n.source && <span className="ml-1 text-[#7a6a4a]">{n.source}</span>}
               </div>))}
           </div>
+        </Panel>
+
+        <Panel title="Bulk and block deals" right={<span className="normal-case tracking-normal text-[#7a6a4a]">{d?.deals?.as_on ?? ""}</span>}>
+          {(d?.deals?.biggest ?? []).length === 0 ? <span className="text-[#7a6a4a]">refreshes 08:40 and 16:30</span> : (
+            <table className="w-full">
+              <tbody>{d!.deals!.biggest!.map((x, i) => (
+                <tr key={i} className="border-t border-[#1f1910] first:border-0">
+                  <td className="py-[3px] text-[#f5b942]">{x.symbol}</td>
+                  <td className={x.side === "BUY" ? "text-[#4ade80]" : "text-[#f87171]"}>{x.kind} {x.side}</td>
+                  <td className="max-w-[160px] truncate font-sans text-[11px]">{x.client}</td>
+                  <td className="text-right">{x.value_cr} cr</td>
+                </tr>))}</tbody>
+            </table>)}
         </Panel>
 
         <Panel title="Paper bench leaders">

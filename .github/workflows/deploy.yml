@@ -184,6 +184,11 @@ jobs:
             echo 'TRADER_LIVE=false' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo touch /var/lib/indstocks/.profile-pip-paper-2026-11-20
           fi
+          # Company data (24 Nov): fill it once now so the AI and the Desk have it before the 16:30 run.
+          if [ ! -f /var/lib/indstocks/.profile-company-first-run ]; then
+            sudo systemctl start company.service || true
+            sudo touch /var/lib/indstocks/.profile-company-first-run
+          fi
           # Owner, 23 Nov 10:44: no daily loss stop during the paper PIP (each trade keeps its own
           # exchange stop). TRADER_DAILY_LOSS large = off; the fill monitor logs where Rs 300 would
           # have fired. Also drop M&M from the tape list: its "&" breaks shell sourcing. One time.
@@ -268,12 +273,12 @@ jobs:
           for u in auto.service auto.timer flatten.service flatten.timer watch.service \
                    watch.timer fillmonitor.service dashboard.service login.service login.timer \
                    sentiment.service sentiment.timer ops.service ops.timer book.service book.timer newswatch.service \
-                   learning.service learning.timer tape.service paper.service tuner.service tuner.timer; do
+                   learning.service learning.timer tape.service paper.service tuner.service tuner.timer company.service company.timer; do
             sudo cp "scripts/$u" "/etc/systemd/system/$u"
           done
           sudo rm -rf /etc/systemd/system/auto.timer.d
           sudo systemctl daemon-reload
-          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer tuner.timer >/dev/null
+          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer tuner.timer company.timer >/dev/null
           for unit in dashboard fillmonitor newswatch tape paper; do
             sudo systemctl enable "$unit" >/dev/null
             sudo systemctl restart "$unit"

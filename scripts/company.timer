@@ -1,0 +1,10 @@
+[Unit]
+Description=Company data refresh, weekdays 08:40 and 16:30
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:40:00 Asia/Kolkata
+OnCalendar=Mon..Fri *-*-* 16:30:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target

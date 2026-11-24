@@ -1107,6 +1107,13 @@ def api_terminal(day: str) -> dict:
                             for h in json.loads((common.STATE_DIR / "news" / f"recent-{day}.json").read_text())[:15]]
         except (OSError, ValueError):
             pass
+    try:
+        import companydata
+        cd = companydata.load()
+        out["company"] = {sym: companydata.for_symbol(sym, cd) for sym in DESK_SECTOR}
+        out["deals"] = (cd.get("deals") or {}) if cd else {}
+    except Exception:                                   # noqa: BLE001
+        out["company"], out["deals"] = {}, {}
     views = [r for r in rows if r.get("event") == "brain_view"]
     if views:
         out["ai"] = {"ts": views[-1].get("ts"), "view": views[-1].get("view")}

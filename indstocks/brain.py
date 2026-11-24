@@ -189,6 +189,7 @@ def build(broker, session, now, *, cash, positions, orders, placements, limits) 
         "leaders": playbook.rank(trends, common.setting("TRADER_INDEX", "NIFTYBEES").upper()),
         "lessons": _lessons(),
         "paper_bench": _paper_bench(now),
+        "company": _company(),
         "allowed_setups": sorted(allowed) if allowed else "any",
         "today_trades": _today_trades(placements, orders),
         "direction": {"market": direction["market"],
@@ -290,6 +291,12 @@ on a +0.9% Nifty, +1.8% Bank Nifty, 42/8-breadth trend-up day). Judge the day fr
 index's move from the open and where it sits in its range, sectors, and the 15/30-minute and trend
 models; re-read it every scan instead of keeping the first read. A strong, broad trend (breadth
 well over 2:1, index near its high or low) is a day to trade with the trend, not to sit out.
+
+COMPANY (STATE.company): from NSE's own filings, refreshed twice a day. results_filed = quarterly
+results filed in the last 10 days (expect bigger, news-driven moves); promoter_change_pts = the
+promoters' holding moved by a point or more last quarter (a buying or selling signal over weeks,
+not minutes); big_deals = yesterday's bulk/block deals in the stock (a large buyer or seller may
+still be working). Context for your read, not a setup on its own.
 
 LESSONS (STATE.lessons): rules you wrote yourself after reviewing past trades, strongest first
 ("seen" = days that confirmed it, "failed" = days that contradicted it). Apply every one that fits
@@ -501,6 +508,16 @@ def _paper_bench(now) -> dict:
     return {"best": [{"model": m, "net": round(n), "trades": t, "wins": w} for m, n, t, w in rows[:4]],
             "worst": [{"model": m, "net": round(n), "trades": t, "wins": w} for m, n, t, w in rows[-3:]],
             "breakout_models_net": round(sum(brk)), "fade_models_net": round(sum(fade))}
+
+
+def _company() -> dict:
+    """Free exchange data (companydata.py): recent results, promoter-holding changes,
+    bulk/block deals in our stocks."""
+    try:
+        import companydata
+        return companydata.for_prompt()
+    except Exception:                                   # noqa: BLE001
+        return {}
 
 
 def _lessons():

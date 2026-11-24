@@ -1,0 +1,11 @@
+[Unit]
+Description=Company data from NSE's public filings: bulk/block deals, results dates, shareholding (read-only)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/companydata.py
+TimeoutStartSec=300
+User=root
+Nice=10

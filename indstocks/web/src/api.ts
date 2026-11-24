@@ -159,7 +159,11 @@ export interface DeskRow { symbol: string; sector: string; index: string; traded
   vol_x: number | null; upticks: number | null; imbalance: number | null; spread_bps: number | null; momentum: number | null; updated: number | null }
 export interface DeskResp { day: string; monitor: DeskRow[]; internals: { advances?: number; declines?: number; unchanged?: number; sectors?: Record<string, number> } | null;
   news: { ts?: string; event?: string; symbol?: string; score?: number; headline?: string; source?: string; move_pct?: number }[];
-  ai: { ts?: string; view?: string } | null; bench: { model: string; net: number; trades: number; wins: number }[] }
+  ai: { ts?: string; view?: string } | null; bench: { model: string; net: number; trades: number; wins: number }[];
+  company?: Record<string, { holding?: { as_of: string; promoter_pct: number; public_pct: number | null; promoter_change: number | null };
+    results?: { filed: string; relating_to?: string; quarter_to?: string; days_ago: number }; deals?: DeskDeal[] }>;
+  deals?: { as_on?: string; ours?: DeskDeal[]; biggest?: DeskDeal[] } }
+export interface DeskDeal { kind: string; symbol: string; side?: string; client: string; qty: number | null; price: number | null; value_cr: number | null }
 export async function getDesk(): Promise<DeskResp> {
   return (await fetch("/api/terminal", { cache: "no-store" })).json();
 }
