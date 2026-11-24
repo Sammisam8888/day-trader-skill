@@ -1062,6 +1062,64 @@ def api_trade(day: str, order_id: str) -> dict:
     })
 
 
+# Sector of every stock on the tape, and the NSE sector index it moves with (Desk tab).
+DESK_SECTOR = {
+    "NIFTYBEES": ("Index ETF", "NIFTY 50"), "BANKBEES": ("Index ETF", "NIFTY BANK"),
+    "HDFCBANK": ("Banks", "NIFTY BANK"), "ICICIBANK": ("Banks", "NIFTY BANK"), "SBIN": ("Banks", "NIFTY PSU BANK"),
+    "AXISBANK": ("Banks", "NIFTY BANK"), "KOTAKBANK": ("Banks", "NIFTY BANK"),
+    "BAJFINANCE": ("Financials", "NIFTY FINANCIAL SERVICES"),
+    "INFY": ("IT", "NIFTY IT"), "TCS": ("IT", "NIFTY IT"), "WIPRO": ("IT", "NIFTY IT"),
+    "HCLTECH": ("IT", "NIFTY IT"), "TECHM": ("IT", "NIFTY IT"),
+    "RELIANCE": ("Energy", "NIFTY ENERGY"), "ONGC": ("Energy", "NIFTY ENERGY"), "NTPC": ("Power", "NIFTY ENERGY"),
+    "POWERGRID": ("Power", "NIFTY ENERGY"), "COALINDIA": ("Mining", "NIFTY METAL"),
+    "TATASTEEL": ("Metals", "NIFTY METAL"), "JSWSTEEL": ("Metals", "NIFTY METAL"), "HINDALCO": ("Metals", "NIFTY METAL"),
+    "ADANIENT": ("Metals", "NIFTY METAL"), "ITC": ("FMCG", "NIFTY FMCG"), "HINDUNILVR": ("FMCG", "NIFTY FMCG"),
+    "MARUTI": ("Auto", "NIFTY AUTO"), "SUNPHARMA": ("Pharma", "NIFTY PHARMA"), "BHARTIARTL": ("Telecom", "NIFTY 50"),
+    "LT": ("Infrastructure", "NIFTY INFRASTRUCTURE"), "ULTRACEMCO": ("Cement", "NIFTY INFRASTRUCTURE"),
+    "ADANIPORTS": ("Infrastructure", "NIFTY INFRASTRUCTURE"), "BEL": ("Defence", "NIFTY 50"),
+    "TITAN": ("Consumer", "NIFTY 50"), "TRENT": ("Retail", "NIFTY 50"),
+}
+
+
+def api_terminal(day: str) -> dict:
+    """The Desk: one live screen from the system's own feeds (the tape, NSE internals,
+    the news watcher, the AI's last read, the paper bench). Market data only."""
+    import tape
+    out = {"day": day, "monitor": [], "internals": None, "news": [], "ai": None, "bench": []}
+    live = tape.read_live(max_age_s=120)
+    for sym, f in live.items():
+        sec, idx = DESK_SECTOR.get(sym, ("Other", "NIFTY 50"))
+        out["monitor"].append({"symbol": sym, "sector": sec, "index": idx, "traded": sym in common.symbols(),
+                               **{k: f.get(k) for k in ("ltp", "chg_1m", "chg_5m", "vol_x", "upticks",
+                                                        "imbalance", "spread_bps", "momentum", "updated")}})
+    try:
+        import realtime
+        out["internals"] = realtime.internals()
+    except Exception:                                   # noqa: BLE001
+        pass
+    rows = read_log(day)
+    out["news"] = [{k: r.get(k) for k in ("ts", "event", "symbol", "score", "headline", "source", "move_pct")}
+                   for r in rows if r.get("event") in ("news_alert", "price_shock")][-25:][::-1]
+    if len(out["news"]) < 10:
+        try:
+            out["news"] += [{"ts": h.get("ts") or h.get("published"), "event": "headline", "symbol": h.get("symbol"),
+                             "headline": h.get("title") or h.get("headline"), "source": h.get("source")}
+                            for h in json.loads((common.STATE_DIR / "news" / f"recent-{day}.json").read_text())[:15]]
+        except (OSError, ValueError):
+            pass
+    views = [r for r in rows if r.get("event") == "brain_view"]
+    if views:
+        out["ai"] = {"ts": views[-1].get("ts"), "view": views[-1].get("view")}
+    try:
+        import paper
+        d = json.loads((paper.PAPER_DIR / f"{day}-summary.json").read_text())
+        out["bench"] = sorted(({"model": m, "net": float(r["net"]), "trades": r["trades"], "wins": r["wins"]}
+                               for m, r in d["models"].items() if r.get("trades")), key=lambda x: -x["net"])[:6]
+    except Exception:                                   # noqa: BLE001
+        pass
+    return _j(out)
+
+
 def api_paper(day: str) -> dict:
     """The paper bench: per-model summary and the day's paper trades."""
     import paper
@@ -1298,6 +1356,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 import control
                 return self._json(_j(control.state_view()))
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"error": f"{type(exc).__name__}: {exc}"[:300]}, 500)
+        if path == "/api/terminal":
+            try:
+                return self._json(api_terminal(sess.now().strftime("%Y-%m-%d")))
             except Exception as exc:                    # noqa: BLE001
                 return self._json({"error": f"{type(exc).__name__}: {exc}"[:300]}, 500)
         if path == "/api/paper":

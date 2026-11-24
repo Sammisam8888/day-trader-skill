@@ -154,3 +154,12 @@ export interface PaperResp { day: string; ai?: PaperAI | null; summary: { total:
 export async function getPaper(): Promise<PaperResp> {
   return (await fetch("/api/paper", { cache: "no-store" })).json();
 }
+
+export interface DeskRow { symbol: string; sector: string; index: string; traded: boolean; ltp: number | null; chg_1m: number | null; chg_5m: number | null;
+  vol_x: number | null; upticks: number | null; imbalance: number | null; spread_bps: number | null; momentum: number | null; updated: number | null }
+export interface DeskResp { day: string; monitor: DeskRow[]; internals: { advances?: number; declines?: number; unchanged?: number; sectors?: Record<string, number> } | null;
+  news: { ts?: string; event?: string; symbol?: string; score?: number; headline?: string; source?: string; move_pct?: number }[];
+  ai: { ts?: string; view?: string } | null; bench: { model: string; net: number; trades: number; wins: number }[] }
+export async function getDesk(): Promise<DeskResp> {
+  return (await fetch("/api/terminal", { cache: "no-store" })).json();
+}

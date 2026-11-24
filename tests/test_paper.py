@@ -153,6 +153,26 @@ class ForTheAI(unittest.TestCase):
         self.assertEqual(syms.count("RELIANCE"), 1)
 
 
+class Desk(unittest.TestCase):
+    def setUp(self):
+        reset(TRADER_SYMBOLS="NIFTYBEES,HDFCBANK", TRADER_INTERNALS="false")
+
+    def test_desk_combines_the_tape_sectors_and_the_bench(self):
+        import json
+        import time
+        import dashboard
+        import tape
+        tape.TAPE_DIR.mkdir(parents=True, exist_ok=True)
+        tape.LIVE_FILE.write_text(json.dumps({"symbols": {
+            "HDFCBANK": {"ltp": 808.1, "chg_5m": -0.2, "momentum": -0.3, "imbalance": 0.4, "updated": time.time()},
+            "TCS": {"ltp": 4100.0, "chg_5m": 0.5, "updated": time.time()}}}))
+        r = dashboard.api_terminal("2026-11-24")
+        rows = {m["symbol"]: m for m in r["monitor"]}
+        self.assertEqual((rows["HDFCBANK"]["sector"], rows["HDFCBANK"]["traded"]), ("Banks", True))
+        self.assertEqual((rows["TCS"]["sector"], rows["TCS"]["traded"]), ("IT", False))
+        self.assertEqual(r["bench"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
 
