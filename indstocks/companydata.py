@@ -37,7 +37,9 @@ def probe() -> None:
             print("  row:", json.dumps(v[0])[:600] if v else json.dumps(d)[:600])
         elif isinstance(d, list):
             print(api, "list", len(d))
-            print("  row:", json.dumps(d[0])[:600] if d else "empty")
+            print("  keys:", sorted(d[0]) if d else "empty")
+            hit = [x for x in d if str(x.get("symbol", "")).upper() in ("HDFCBANK", "RELIANCE", "TCS")][:2]
+            print("  ours:", json.dumps(hit)[:700])
 
 
 if __name__ == "__main__":
