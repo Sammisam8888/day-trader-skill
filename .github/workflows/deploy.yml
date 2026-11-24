@@ -279,6 +279,10 @@ jobs:
           sudo rm -rf /etc/systemd/system/auto.timer.d
           sudo systemctl daemon-reload
           sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer tuner.timer company.timer >/dev/null
+          if [ ! -f /var/lib/indstocks/.profile-company-first-run-v2 ]; then
+            sudo timeout 200 systemctl start company.service || true
+            sudo touch /var/lib/indstocks/.profile-company-first-run-v2
+          fi
           for unit in dashboard fillmonitor newswatch tape paper; do
             sudo systemctl enable "$unit" >/dev/null
             sudo systemctl restart "$unit"
