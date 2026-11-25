@@ -184,6 +184,20 @@ jobs:
             echo 'TRADER_LIVE=false' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo touch /var/lib/indstocks/.profile-pip-paper-2026-11-20
           fi
+          # Owner, 26 Nov: every strategy gets a Rs 1 lakh paper wallet and a Rs 1,000 day target, with no
+          # daily loss limit, no loser stop, no flip and no day lock (only the target banks a day). Every
+          # strategy journals its trades to /var/lib/indstocks/strategies/<strategy>/logs (data disk, never
+          # overwritten by a deploy); the AI writes each strategy's learnings nightly. One time (sentinel).
+          if [ ! -f /var/lib/indstocks/.profile-strategies-v1 ]; then
+            sudo sed -i '/^TRADER_DAYLOCK_STEPS=/d' /etc/indstocks.env
+            for kv in TRADER_STRATEGY_DIR=/var/lib/indstocks/strategies TRADER_BENCH_CAPITAL=100000 TRADER_PAPER_RISK=500 \
+                      TRADER_BENCH_TARGET=1000 TRADER_PAPER_UNCAPPED=true TRADER_PAPER_CAPITAL=100000 TRADER_MAX_LOSS=1000 \
+                      TRADER_STOP_AFTER_LOSSES=0 TRADER_FLIP=false TRADER_DAY_TARGET=1000 TRADER_DAYLOCK_ARM_RS=10000000; do
+              k=${kv%%=*}; sudo sed -i "/^$k=/d" /etc/indstocks.env; echo "$kv" | sudo tee -a /etc/indstocks.env >/dev/null
+            done
+            sudo mkdir -p /var/lib/indstocks/strategies
+            sudo touch /var/lib/indstocks/.profile-strategies-v1
+          fi
           # Company data (24 Nov): fill it once now so the AI and the Desk have it before the 16:30 run.
           if [ ! -f /var/lib/indstocks/.profile-company-first-run ]; then
             sudo systemctl start company.service || true
@@ -273,12 +287,12 @@ jobs:
           for u in auto.service auto.timer flatten.service flatten.timer watch.service \
                    watch.timer fillmonitor.service dashboard.service login.service login.timer \
                    sentiment.service sentiment.timer ops.service ops.timer book.service book.timer newswatch.service \
-                   learning.service learning.timer tape.service paper.service tuner.service tuner.timer company.service company.timer; do
+                   learning.service learning.timer tape.service paper.service tuner.service tuner.timer company.service company.timer strategylearn.service strategylearn.timer; do
             sudo cp "scripts/$u" "/etc/systemd/system/$u"
           done
           sudo rm -rf /etc/systemd/system/auto.timer.d
           sudo systemctl daemon-reload
-          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer tuner.timer company.timer >/dev/null
+          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer tuner.timer company.timer strategylearn.timer >/dev/null
           if [ ! -f /var/lib/indstocks/.profile-company-first-run-v2 ]; then
             sudo timeout 200 systemctl start company.service || true
             sudo touch /var/lib/indstocks/.profile-company-first-run-v2

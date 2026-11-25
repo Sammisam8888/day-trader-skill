@@ -31,7 +31,7 @@ import paper  # noqa: E402
 import session as sess  # noqa: E402
 
 PROMPT = """You manage a bench of rule-based intraday trading models on NSE stocks (paper money;
-Rs 10,000 each at 5x, real charges, flat by 14:50). You do not trade. You set the KNOBS of each
+Rs 1,00,000 each at 5x, real charges, flat by 14:50). You do not trade. You set the KNOBS of each
 model's "@ai" copy for the rest of today, so that it fits the market you see. Fixed copies with
 default knobs, and their inverted twins ("_inv"), run beside yours: your settings are judged by
 whether "@ai" beats them after charges.
@@ -46,6 +46,9 @@ Models (recipe: what it does):
   squeeze_break      break out of a Bollinger-inside-Keltner squeeze
   volume_burst       follow a 1-minute bar with vol_x times normal volume and a big body
   opening_drive_fade fade a first-30-minute move larger than move_pct once it retraces
+  liq_sweep          smart-money liquidity sweep: price runs through a pool of `touches` equal lows/highs
+                     by sweep_pct (taking the stops there) and closes back inside within reclaim_bars: reverse
+  liq_run            the same pools, but the break HOLDS for hold_bars: ride the stop-run, stop back inside
 
 Every recipe also has: enabled (0 = off for the day), invert (1 = take the opposite side of every
 signal), side (0 both, 1 long only, 2 short only).

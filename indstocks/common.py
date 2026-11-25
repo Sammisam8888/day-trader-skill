@@ -120,6 +120,12 @@ def log(job: str, record: dict) -> dict:
     except OSError:
         pass
     print(json.dumps(rec, default=str), flush=True)
+    try:                                                # the AI trader's journal (strategies/ai_trader/logs)
+        import journal
+        if job in ("auto", "fill", "flatten", "daymode"):
+            journal.on_event(rec)
+    except Exception:                                   # noqa: BLE001
+        pass
     if record.get("event") == "placed":                 # a phone alert for every order the scan places
         try:
             import push

@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly learning per strategy: the AI reviews each strategy's trade log and writes its learnings
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/strategylearn.py
+TimeoutStartSec=5400
+User=root
+Nice=10

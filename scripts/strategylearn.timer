@@ -1,0 +1,9 @@
+[Unit]
+Description=Per-strategy learnings after the close, weekdays 16:10
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:10:00 Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target

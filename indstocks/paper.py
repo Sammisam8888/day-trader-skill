@@ -37,8 +37,23 @@ import common  # noqa: E402
 import session as sess  # noqa: E402
 
 PAPER_DIR = common.STATE_DIR / "paper"
-CAPITAL = D("10000")
+CAPITAL = D("10000")          # default wallet per model; TRADER_BENCH_CAPITAL overrides (owner, 26 Nov: Rs 1 lakh)
 LEVERAGE = D("5")
+
+
+def capital() -> D:
+    try:
+        return D(common.setting("TRADER_BENCH_CAPITAL", str(CAPITAL)))
+    except ArithmeticError:
+        return CAPITAL
+
+
+def day_target() -> D:
+    """TRADER_BENCH_TARGET: a model that reaches this day net is closed and done for the day (0 = none)."""
+    try:
+        return D(common.setting("TRADER_BENCH_TARGET", "0"))
+    except ArithmeticError:
+        return D(0)
 ENTRY_FROM, ENTRY_UNTIL, FLAT_AT = (9, 30), (14, 35), (14, 50)
 MAX_TRADES = 6          # per model per day: charges punish churn
 
@@ -321,10 +336,99 @@ def m_opening_drive_fade(bars, state, p) -> Signal:
     return None
 
 
+def _swings(seg: List[Bar], kind: str, k: int = 2) -> List[float]:
+    out = []
+    # strictly beyond the bars before it, at least as far as the bars after: a flat
+    # stretch of identical bars is one swing, not a "pool" of equal lows
+    for i in range(k, len(seg) - k):
+        if kind == "low" and all(seg[i].l < seg[j].l for j in range(i - k, i)) \
+                and all(seg[i].l <= seg[j].l for j in range(i + 1, i + k + 1)):
+            out.append(seg[i].l)
+        if kind == "high" and all(seg[i].h > seg[j].h for j in range(i - k, i)) \
+                and all(seg[i].h >= seg[j].h for j in range(i + 1, i + k + 1)):
+            out.append(seg[i].h)
+    return out
+
+
+def pools(seg: List[Bar], kind: str, touches: int, tol_pct: float) -> List[float]:
+    """Liquidity pools: price levels where `touches` or more swing lows (or highs)
+    sit within tol_pct of each other: equal lows / support, where the stop-losses
+    of everyone who bought the support cluster (or sold the resistance)."""
+    pts = _swings(seg, kind)
+    levels: List[float] = []
+    for p in pts:
+        near = [q for q in pts if abs(q - p) / p * 100 <= tol_pct]
+        if len(near) >= touches:
+            lv = sum(near) / len(near)
+            if all(abs(lv - x) / x * 100 > tol_pct for x in levels):
+                levels.append(lv)
+    return levels
+
+
+def m_liq_sweep(bars, state, p) -> Signal:
+    """Smart-money liquidity sweep (owner's videos, 26 Nov): price runs through a
+    pool of equal lows/highs, takes the stops resting there, and snaps back inside
+    within `reclaim_bars`: trade the reversal, stop beyond the sweep's extreme."""
+    lb, r = int(p["lookback"]), int(p["reclaim_bars"])
+    if len(bars) < lb + r + 6:
+        return None
+    hist, recent = bars[-(lb + r + 1):-(r + 1)], bars[-(r + 1):]
+    used = state.setdefault("used", set())
+    last = bars[-1]
+    c, sw = last.c, p["sweep_pct"] / 100
+    for lv in pools(hist, "low", int(p["touches"]), p["tol_pct"]):
+        lo = min(b.l for b in recent)
+        if round(lv, 2) in used or not (lo < lv * (1 - sw) and c > lv and last.c > last.o):
+            continue
+        stop = lo * (1 - 0.0005)
+        if c - stop <= 0:
+            continue
+        used.add(round(lv, 2))
+        return ("B", stop, c + p["target_r"] * (c - stop))
+    for lv in pools(hist, "high", int(p["touches"]), p["tol_pct"]):
+        hi = max(b.h for b in recent)
+        if round(lv, 2) in used or not (hi > lv * (1 + sw) and c < lv and last.c < last.o):
+            continue
+        stop = hi * (1 + 0.0005)
+        if stop - c <= 0:
+            continue
+        used.add(round(lv, 2))
+        return ("S", stop, c - p["target_r"] * (stop - c))
+    return None
+
+
+def m_liq_run(bars, state, p) -> Signal:
+    """The other side of the same trap: when a pool breaks and price HOLDS beyond it
+    for `hold_bars`, the stops have fuelled a real move: ride the hunt, stop back
+    inside the pool."""
+    lb, h = int(p["lookback"]), int(p["hold_bars"])
+    if len(bars) < lb + h + 6:
+        return None
+    hist, recent = bars[-(lb + h + 1):-(h + 1)], bars[-(h + 1):]
+    used = state.setdefault("used", set())
+    c, br = bars[-1].c, p["break_pct"] / 100
+    for lv in pools(hist, "high", int(p["touches"]), p["tol_pct"]):
+        if round(lv, 2) in used:
+            continue
+        if recent[0].c <= lv * (1 + br) and all(b.c > lv * (1 + br) for b in recent[1:]):
+            stop = lv * (1 - br)
+            used.add(round(lv, 2))
+            return ("B", stop, c + p["target_r"] * (c - stop))
+    for lv in pools(hist, "low", int(p["touches"]), p["tol_pct"]):
+        if round(lv, 2) in used:
+            continue
+        if recent[0].c >= lv * (1 - br) and all(b.c < lv * (1 - br) for b in recent[1:]):
+            stop = lv * (1 + br)
+            used.add(round(lv, 2))
+            return ("S", stop, c - p["target_r"] * (stop - c))
+    return None
+
+
 RECIPES: Dict[str, Callable] = {
     "orb": m_orb, "vwap_revert": m_vwap_revert, "vwap_trend": m_vwap_trend, "ema_cross": m_ema_cross,
     "rsi2": m_rsi2, "bollinger_fade": m_bollinger_fade, "squeeze_break": m_squeeze_break,
     "volume_burst": m_volume_burst, "opening_drive_fade": m_opening_drive_fade,
+    "liq_sweep": m_liq_sweep, "liq_run": m_liq_run,
 }
 KNOBS: Dict[str, Dict[str, tuple]] = {
     "orb": {"minutes": (15, 5, 30, "int"), "max_width_pct": (1.2, 0.4, 2.0, "f"),
@@ -339,6 +443,10 @@ KNOBS: Dict[str, Dict[str, tuple]] = {
     "squeeze_break": {"squeeze": (1.5, 1.0, 2.5, "f"), "stop_atr": (1.5, 1.0, 3.0, "f"), "target_atr": (3.0, 1.5, 6.0, "f")},
     "volume_burst": {"vol_x": (3.0, 2.0, 6.0, "f"), "body_atr": (1.5, 0.8, 3.0, "f"), "target_x": (2.0, 1.0, 4.0, "f")},
     "opening_drive_fade": {"move_pct": (0.8, 0.4, 1.6, "f"), "retrace": (0.5, 0.3, 0.8, "f")},
+    "liq_sweep": {"lookback": (60, 30, 150, "int"), "touches": (3, 2, 5, "int"), "tol_pct": (0.12, 0.04, 0.3, "f"),
+                  "sweep_pct": (0.08, 0.02, 0.4, "f"), "reclaim_bars": (3, 1, 8, "int"), "target_r": (2.0, 1.0, 4.0, "f")},
+    "liq_run": {"lookback": (60, 30, 150, "int"), "touches": (3, 2, 5, "int"), "tol_pct": (0.12, 0.04, 0.3, "f"),
+                "break_pct": (0.1, 0.03, 0.5, "f"), "hold_bars": (2, 1, 6, "int"), "target_r": (2.0, 1.0, 4.0, "f")},
 }
 
 
@@ -420,6 +528,7 @@ MODELS: Dict[str, Callable] = {
     "vwap_revert": fixed("vwap_revert"), "vwap_trend": fixed("vwap_trend"), "ema_9_21": fixed("ema_cross"),
     "rsi2": fixed("rsi2"), "bollinger_fade": fixed("bollinger_fade"), "squeeze_break": fixed("squeeze_break"),
     "volume_burst": fixed("volume_burst"), "opening_drive_fade": fixed("opening_drive_fade"),
+    "liq_sweep": fixed("liq_sweep"), "liq_run": fixed("liq_run"),
 }
 MODELS.update({
     "orb5_inv": fixed("orb", minutes=5, invert=1), "orb15_inv": fixed("orb", minutes=15, invert=1),
@@ -481,6 +590,7 @@ class Bench:
     last: Dict[str, float] = field(default_factory=dict)
     would_kill: Dict[str, dict] = field(default_factory=dict)
     kill_checked: float = 0.0
+    target_hit: Dict[str, float] = field(default_factory=dict)
 
     def risk_rs(self) -> D:
         try:
@@ -523,6 +633,16 @@ class Bench:
             self.wins[t.model] = self.wins.get(t.model, 0) + 1
         self._ledger({"ev": "close", "t": round(at, 1), "model": t.model, "symbol": t.symbol, "side": t.side,
                       "qty": t.qty, "entry": t.entry, "exit": round(x, 2), "net": str(net), "why": why})
+        self._journal(t.model, at, "close", t.symbol, t.side, t.qty, round(x, 2), t.stop, t.target, net,
+                      f"{why}; entry {t.entry}; day so far {self.realised[t.model]:.0f}")
+
+    def _journal(self, model, at, event, sym, side, qty, price, stop, target, net=None, note="") -> None:
+        if not self.write:
+            return
+        import journal
+        journal.row(model, self.day, time=datetime.fromtimestamp(at, sess.IST).strftime("%H:%M:%S"), event=event,
+                    stock=sym, side={"B": "BUY", "S": "SELL"}.get(side, side), qty=qty, price=price, stop=stop,
+                    target=target, net=net, note=note)
 
     def on_price(self, sym: str, px: float, at: float) -> None:
         """Stops, targets and the day's flat time, checked on every price."""
@@ -537,10 +657,23 @@ class Bench:
                 self.close(key, px, "target", at)
 
     def check_kills(self, prices: Dict[str, float], at: float) -> None:
+        tgt = day_target()
         for m in MODELS:
             if m in self.killed:
                 continue
             day = self.realised.get(m, D(0)) + self.model_open_net(m, prices)
+            if tgt > 0 and day >= tgt:
+                for key in [k for k in self.open if k[0] == m]:
+                    self.close(key, prices.get(key[1], self.open[key].entry), "day target", at)
+                self.killed.add(m)
+                self.target_hit[m] = round(at, 1)
+                final = self.realised.get(m, D(0))
+                self._ledger({"ev": "target", "t": round(at, 1), "model": m, "day": str(final)})
+                if self.write:
+                    import journal
+                    journal.note(m, self.day, f"DAY TARGET reached at "
+                                 f"{datetime.fromtimestamp(at, sess.IST):%H:%M}: net {final:.0f}. Done for the day.")
+                continue
             if self.observe_only():
                 # Paper runs uncapped; remember where the kill WOULD have fired, to learn from.
                 if m not in self.would_kill and day <= -D(common.setting("TRADER_PAPER_KILL_STUDY", "75")):
@@ -583,7 +716,8 @@ class Bench:
             per_share = abs(entry - stop)
             if per_share <= 0:
                 continue
-            qty = int(min(float(CAPITAL * LEVERAGE) // entry, float(self.risk_rs()) / per_share))
+            room = float(capital() * LEVERAGE) - sum(t.entry * t.qty for k, t in self.open.items() if k[0] == m)
+            qty = int(min(room // entry, float(self.risk_rs()) / per_share))
             if qty < 1:
                 continue
             # the target must pay the round trip's charges at least twice over
@@ -594,6 +728,7 @@ class Bench:
             self.open[(m, sym)] = Trade(m, sym, side, qty, round(entry, 2), round(stop, 2), round(target, 2), at)
             self._ledger({"ev": "open", "t": round(at, 1), "model": m, "symbol": sym, "side": side, "qty": qty,
                           "entry": round(entry, 2), "stop": round(stop, 2), "target": round(target, 2)})
+            self._journal(m, at, "open", sym, side, qty, round(entry, 2), round(stop, 2), round(target, 2))
 
     def feed(self, sym: str, at: float, px: float, cum: Optional[float]) -> None:
         s = self.series.setdefault(sym, Series())
@@ -613,7 +748,7 @@ class Bench:
                        "realised": str(self.realised.get(m, D(0))), "open": str(op.quantize(D("0.01"))),
                        "trades": self.trades.get(m, 0), "wins": self.wins.get(m, 0),
                        "open_trades": sum(1 for k in self.open if k[0] == m), "killed": m in self.killed,
-                       "would_kill": self.would_kill.get(m)}
+                       "would_kill": self.would_kill.get(m), "target_hit": self.target_hit.get(m)}
         total = sum((D(r["net"]) for r in rows.values()), D(0))
         return {"day": self.day, "at": time.time(), "total": str(total), "models": rows}
 
@@ -654,6 +789,8 @@ def main() -> None:
         bench = Bench(day)
         PAPER_DIR.mkdir(parents=True, exist_ok=True)
         (PAPER_DIR / f"{day}.jsonl").write_text("")     # the replay rewrites the whole day's ledger
+        import journal
+        journal.reset_bench_day(day)                     # ... and the strategies' trade logs
         last = replay_day(bench, day)
         bench._ledger({"ev": "start", "t": time.time(), "replayed_symbols": len(last)})
         seen: Dict[str, float] = {}

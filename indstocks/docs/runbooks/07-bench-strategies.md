@@ -1,0 +1,47 @@
+# 07 Bench, tuner and strategies
+
+## The paper bench (`paper.py`)
+
+Rule-based models trading the tape's live prices with paper money, beside the AI
+trader. No broker access at all (a test enforces it).
+
+- **Wallet:** `TRADER_BENCH_CAPITAL` = Rs 1,00,000 per model (26 Nov), 5x; each trade
+  sized so its stop loses `TRADER_PAPER_RISK` (Rs 500), capped by the model's free
+  wallet (open notional <= wallet x 5).
+- **Day target:** `TRADER_BENCH_TARGET` = Rs 1,000: the model's trades are closed and it
+  is done for the day. No loss limit, no trade cap (`TRADER_PAPER_UNCAPPED=true`);
+  where a Rs 75 kill would have fired is recorded for study.
+- Entries 09:30-14:35, flat 14:50; a restart replays the day from the tape recording.
+
+## Models: recipes with knobs (`paper.RECIPES`, `paper.KNOBS`)
+
+| Recipe | Idea |
+|---|---|
+| orb | Opening-range breakout (`minutes` 5-30) |
+| vwap_revert / vwap_trend | Fade a VWAP stretch / ride closes beyond VWAP |
+| ema_cross | 5-minute EMA fast/slow cross |
+| rsi2 | RSI(2) extremes with the 20-EMA |
+| bollinger_fade, squeeze_break | Band fade / Bollinger-in-Keltner breakout |
+| volume_burst | Follow a big-volume, big-body minute |
+| opening_drive_fade | Fade a large first-30-minute move |
+| **liq_sweep** (26 Nov) | Smart-money liquidity sweep: price runs through a pool of equal lows/highs (where retail stops sit) and snaps back inside: trade the reversal |
+| **liq_run** (26 Nov) | Same pools; the break holds: ride the stop-run |
+
+Every recipe also has `enabled`, `invert`, `side`. Copies that run every day: fixed
+defaults (`orb5`, `orb15`, `orb30`, `vwap_revert`, ...), inverted twins (`*_inv`), and
+the AI-tuned copy of each recipe (`*@ai`). Knob values are clamped to tested ranges.
+
+## The tuner (`tuner.py`)
+
+At 09:22 and every 30 min to 14:22 the AI reads the tape, breadth, sectors, sentiment
+and the bench, and sets the @ai knobs (writes `auto/paper/params-DAY.json`, history in
+`.jsonl`). A bad reply keeps the previous settings. The scorecard of the idea is @ai vs
+fixed on the bench.
+
+## Adding a strategy
+
+1. Write `m_<name>(bars, state, p) -> ("B"|"S", stop, target) | None` in `paper.py`.
+2. Add it to `RECIPES`, its knobs with ranges to `KNOBS`, a fixed copy to `MODELS`
+   (the @ai copy is automatic), one line to the tuner's model list.
+3. Test it in `tests/test_strategies.py`, run the 20-day replay, deploy. Its journal
+   folder appears on the first trade.

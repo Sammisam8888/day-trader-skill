@@ -1,0 +1,69 @@
+name: data-sync
+
+# Nightly at 00:00 IST: copy the server's paper-trading data set back into this
+# repository, on the data-sync branch (never main: a data commit must not deploy).
+# Read-only on the server. This repository is PUBLIC, so only the paper strategy
+# data goes: strategy logs and learnings, the paper bench ledgers, the paper
+# broker's simulated orders, the PIP scorecard, company data and the AI's lessons.
+# Never: the env file, login tokens, push subscriptions, the main event logs, the
+# tape. The account ID is scrubbed from everything before the commit.
+
+on:
+  schedule:
+    - cron: "30 18 * * *"          # 00:00 IST
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: data-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Write deploy key and pinned host key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Fetch the whitelisted data
+        run: |
+          ssh -o BatchMode=yes -o ServerAliveInterval=30 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "sudo tar -czf - -C /var/lib/indstocks --ignore-failed-read --warning=no-file-changed \
+               strategies auto/paper auto/paperbroker auto/pip.json auto/company \
+               learning/lessons.json learning/journal-*.json 2>/dev/null" > data.tgz || true
+          ls -la data.tgz
+          gzip -t data.tgz
+      - name: Publish to the data-sync branch
+        run: |
+          git clone -q --depth 1 --branch data-sync "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" out || \
+            (git init -q out && cd out && git checkout -q -b data-sync)
+          cd out
+          mkdir -p data && tar -xzf ../data.tgz -C data
+          # scrub anything that identifies the trading account
+          grep -rlE "FN[0-9]{6}" data | xargs -r sed -i -E 's/FN[0-9]{6}/ACCOUNT/g'
+          find data -name "*.tmp" -delete
+          cat > README.md <<'EOF'
+          # data-sync
+          The paper-trading data set, copied nightly from the server (00:00 IST) by
+          .github/workflows/datasync.yml. Paper money only; the account ID is scrubbed.
+          - data/strategies/<strategy>/logs/YYYY-MM-DD.md: every trade, as it happened
+          - data/strategies/<strategy>/learnings/YYYY-MM-DD.md: the AI's review of the day
+          - data/auto/paper: the bench's ledgers and daily summaries
+          - data/auto/paperbroker: the AI trader's simulated orders and fills
+          - data/auto/pip.json: the PIP scorecard
+          - data/auto/company: company data from NSE filings
+          - data/learning: the AI trader's lessons and nightly journals
+          EOF
+          sed -i 's/^          //' README.md
+          git config user.name "data-sync-bot" && git config user.email "data-sync-bot@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "nothing new"; exit 0; }
+          git commit -q -m "data $(TZ=Asia/Kolkata date +%F)"
+          git push -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:data-sync
