@@ -1,0 +1,53 @@
+{
+ "day_read": "A thin, low-volume grind higher. NIFTY and BANKNIFTY sit near the top of the day's range (0.89 to 0.91 of range) on about a quarter to a third of normal volume, while price keeps whipsawing around VWAP and has hurt both VWAP models. Breadth is split, with a sharp IT-versus-Metal/Energy rotation, and VIX is up 5.5%: this is not a clean trend day, and churn is the enemy.",
+ "models": {
+  "orb": {
+   "minutes": 30,
+   "why": "Keep. The range is set, and the indices are pressing their highs, so a late clean break of the 30-minute range is the one breakout worth allowing."
+  },
+  "vwap_revert": {
+   "band_sd": 2.5,
+   "enabled": 0,
+   "why": "0 wins in 9 trades across the fixed and @ai copies today; stretches from VWAP keep extending. Inverting would flip its small stop and far target into an unfavourable payoff, so it is switched off inst"
+  },
+  "bollinger_fade": {
+   "enabled": 1,
+   "sd": 2.5,
+   "stop_sd": 1.0,
+   "why": "It is the only fixed fader that is positive today (2 of 2, Rs +141) in a thin tape that is churning near the highs. A wide 2.5 sd band allows only rare, extreme stretches and avoids the overtrading th"
+  },
+  "rsi2": {
+   "low": 5.0,
+   "high": 95.0,
+   "why": "Keep the strict extremes. The 20-EMA filter will lean long while the indices sit at their highs, and the low thresholds limit churn in a thin tape."
+  },
+  "volume_burst": {
+   "vol_x": 4.5,
+   "body_atr": 2.0,
+   "enabled": 0,
+   "why": "Lost on both past days and today in every copy (fixed -154 on 12 trades, inv -79, @ai -63). Low tape volume makes bursts rare and unreliable, so neither side has an edge after charges."
+  },
+  "vwap_trend": {
+   "confirm": 3,
+   "stop_atr": 3.5,
+   "enabled": 0,
+   "why": "0 wins in 18 trades across the fixed and @ai copies (-515 and -457) as price keeps crossing back over VWAP. The inverted copy won 10/10 but netted only Rs 6 after charges, so inverting adds no edge; s"
+  },
+  "opening_drive_fade": {
+   "move_pct": 1.2,
+   "enabled": 0,
+   "why": "The opening window is long gone and the @ai copy is down Rs 149 on 2 trades. The inverted copy's Rs 22 is no edge, so stop it adding late, low-quality fades."
+  },
+  "ema_cross": {
+   "fast": 9,
+   "slow": 30,
+   "stop_atr": 2.0,
+   "why": "Crossovers whipsaw in a flat chop like this one. A slower slow EMA and a wider stop mean fewer, stronger signals and less lost to charges."
+  },
+  "squeeze_break": {
+   "target_atr": 2.0,
+   "why": "Keep the nearer target. With volume at about half of normal, midday breakouts are unlikely to run 3 ATR."
+  }
+ },
+ "at": "2026-11-20T11:22:24+05:30"
+}

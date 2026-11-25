@@ -1,0 +1,65 @@
+{
+ "day_read": "This is a broad trend-up day. Nifty is +0.91% from the open and sits at 99% of its range, Bank Nifty is +1.83% at 96%, and breadth is 42/8 with FII and PCR support. Fades have been run over all day (vwap_revert -2240, bollinger_fade -2601). With 28 minutes to the 14:50 flat and Nifty tape thin (0.54x volume), new entries have little time to work.",
+ "models": {
+  "orb": {
+   "minutes": 30,
+   "max_width_pct": 0.8,
+   "invert": 0,
+   "side": 1,
+   "enabled": 0,
+   "why": "@ai is -201 on 3 trades, and any 30-minute break would have triggered hours ago. A late long near the high has too little time to reach target, so save the charges."
+  },
+  "bollinger_fade": {
+   "sd": 2.5,
+   "stop_sd": 1.0,
+   "enabled": 0,
+   "why": "Same stretch-fade logic as vwap_revert, which is being run over today; it also lost Rs 1201 yesterday with its inverted twin negative too. Stay out and save charges."
+  },
+  "rsi2": {
+   "low": 5.0,
+   "high": 95.0,
+   "enabled": 0,
+   "why": "Both the default (-171) and the inverted twin (-215) lose, and @ai is -177 on 4 trades, so there is no edge on either side. Stay out and save charges."
+  },
+  "volume_burst": {
+   "vol_x": 4.5,
+   "body_atr": 2.0,
+   "invert": 1,
+   "side": 0,
+   "enabled": 0,
+   "why": "@ai fading bursts is 6/8 but still -66 net, and its twin is -45, so the small wins do not cover charges. Fading upside bursts while Bank Nifty breaks out on 1.39x volume is also risky. Switch off and "
+  },
+  "vwap_revert": {
+   "band_sd": 2.5,
+   "enabled": 0,
+   "why": "1 win in 18 for -900. The inverted twin wins but still nets negative after charges, so there is no edge on either side."
+  },
+  "ema_cross": {
+   "fast": 9,
+   "slow": 26,
+   "side": 1,
+   "enabled": 0,
+   "why": "The default lost 134 on 2 trades and the inverted twin made only +16, so crossovers are noise in a low-volume range. Avoid the charges."
+  },
+  "vwap_trend": {
+   "confirm": 5,
+   "side": 1,
+   "enabled": 0,
+   "stop_atr": 3.0,
+   "target_atr": 8.0,
+   "invert": 0,
+   "why": "Keep it off. @ai has banked +188, and fresh crossovers this late in thin tape would mostly be noise and charges."
+  },
+  "squeeze_break": {
+   "enabled": 1,
+   "side": 1,
+   "target_atr": 1.5,
+   "why": "This is the best @ai copy today (+241, 8 of 11 wins), and it trades with the up-trend. Cut the target to 1.5 ATR so any late release can finish before the 14:50 flat."
+  },
+  "opening_drive_fade": {
+   "enabled": 0,
+   "why": "The opening window is long past and @ai is -57. Nothing left to gain, so save charges."
+  }
+ },
+ "at": "2026-11-19T14:22:10+05:30"
+}

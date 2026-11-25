@@ -1,0 +1,60 @@
+{
+ "day_read": "This is a broad, one-way down day: NIFTY is -1.75%, BANK -3.17%, METAL -3.68%, breadth is 11/39 and VIX is up 3%, with only IT (+1.69) bucking the trend. With 28 minutes left before the 14:50 flat, any new trade has little time to work, so targets should be reachable and trade count kept low.",
+ "models": {
+  "orb": {
+   "minutes": 15,
+   "max_width_pct": 1.6,
+   "target_x": 2.0,
+   "stop_frac": 0.5,
+   "enabled": 1,
+   "invert": 0,
+   "side": 2,
+   "why": "Any opening-range break this late would come from the trend side; short-only avoids late long fakeouts, and the default target is more reachable in under 30 minutes."
+  },
+  "vwap_trend": {
+   "confirm": 3,
+   "stop_atr": 3.0,
+   "target_atr": 4.0,
+   "enabled": 1,
+   "invert": 0,
+   "side": 0,
+   "why": "Still the right recipe for a trend day, but a 5 ATR target is unlikely in 28 minutes; 4 ATR lets winners close before the flat. Both sides stay on so it can ride IT strength."
+  },
+  "ema_cross": {
+   "stop_atr": 1.5,
+   "target_atr": 2.5,
+   "enabled": 1,
+   "invert": 0,
+   "side": 2,
+   "why": "Kept short-only with the trend; the target is trimmed so the few late signals can actually hit before the flat."
+  },
+  "squeeze_break": {
+   "enabled": 1,
+   "invert": 0,
+   "side": 0,
+   "target_atr": 2.5,
+   "why": "Late squeezes should break with the trend, but there is limited time left to reach 3 ATR."
+  },
+  "vwap_revert": {
+   "enabled": 0,
+   "why": "Fades lose on a one-way day, and it was among the worst models in recent sessions."
+  },
+  "bollinger_fade": {
+   "enabled": 0,
+   "why": "It was the worst model on each of the last four days, and fades fail on a day this directional."
+  },
+  "rsi2": {
+   "enabled": 0,
+   "why": "Both the normal and inverted copies bleed charges through overtrading."
+  },
+  "volume_burst": {
+   "enabled": 0,
+   "why": "Heavy overtrading and large losses on recent days, and volume spikes will be frequent today."
+  },
+  "opening_drive_fade": {
+   "enabled": 0,
+   "why": "Fading the opening drive on a broad trend day is dangerous. It only helped on the choppy day."
+  }
+ },
+ "at": "2026-11-24T14:22:01+05:30"
+}

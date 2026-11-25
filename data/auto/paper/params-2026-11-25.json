@@ -1,0 +1,72 @@
+{
+ "day_read": "Gap-up bullish day (38/12 breadth, Nifty +1.6%) that has faded from its highs into a quiet afternoon range with very thin volume (0.04x to 0.15x). With 28 minutes to the 14:50 flat, few new trades can cover charges, so protect the vwap_trend@ai gain.",
+ "models": {
+  "orb": {
+   "enabled": 0,
+   "invert": 0,
+   "minutes": 30,
+   "max_width_pct": 1.2,
+   "target_x": 1.5,
+   "stop_frac": 0.5,
+   "side": 1,
+   "why": "Fixed copies are 1 win in 11 and inverses only +11 to +12 at best; too late for range breaks"
+  },
+  "vwap_revert": {
+   "enabled": 0,
+   "why": "Base -305 and inverse -478; no edge either way after charges"
+  },
+  "vwap_trend": {
+   "enabled": 0,
+   "invert": 0,
+   "confirm": 6,
+   "stop_atr": 2.5,
+   "target_atr": 4.0,
+   "side": 1,
+   "why": "@ai is +191 over 41 trades and ahead of base at +99; with 28 minutes left, flat 5-minute tape and almost no volume, a new entry is unlikely to reach a 4 ATR target and cover charges, so lock in the le"
+  },
+  "ema_cross": {
+   "enabled": 0,
+   "invert": 0,
+   "fast": 9,
+   "slow": 21,
+   "stop_atr": 1.5,
+   "target_atr": 3.0,
+   "side": 1,
+   "why": "@ai 0 wins in 5, base -295 and inverse -175; crossovers are whipsawing"
+  },
+  "rsi2": {
+   "enabled": 0,
+   "invert": 0,
+   "low": 5.0,
+   "side": 1,
+   "why": "Base -2487 and inverse -1201; loses both ways"
+  },
+  "bollinger_fade": {
+   "enabled": 0,
+   "why": "Base -1736, and inverse -158 despite 32 wins in 39; charges exceed the edge"
+  },
+  "squeeze_break": {
+   "enabled": 0,
+   "invert": 0,
+   "squeeze": 1.5,
+   "stop_atr": 1.5,
+   "target_atr": 3.0,
+   "side": 1,
+   "why": "@ai -350, base -91, inverse -251; no volume to carry a breakout"
+  },
+  "volume_burst": {
+   "enabled": 0,
+   "invert": 0,
+   "vol_x": 4.0,
+   "body_atr": 1.8,
+   "target_x": 2.0,
+   "side": 1,
+   "why": "Base -705 and inverse -483; volume has dried up"
+  },
+  "opening_drive_fade": {
+   "enabled": 0,
+   "why": "Base only +3 over 10 trades and the opening signal is stale"
+  }
+ },
+ "at": "2026-11-25T14:22:02+05:30"
+}

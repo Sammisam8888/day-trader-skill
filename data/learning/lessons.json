@@ -1,0 +1,357 @@
+{
+ "L001": {
+  "rule": "When an ORB or day-break entry would fill more than 0.5% away from VWAP (or within 0.2% of the current day low/high in the trade direction) and market direction is MIXED, do not take the break. Wait for a pullback toward VWAP and enter on its rejection instead.",
+  "scope": "entry",
+  "created": "2026-11-13",
+  "updated": "2026-11-25",
+  "support": 2,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-13: SBIN S 09:39 sold at 1075.05 with VWAP at 1082.38, near the 1074.15 day low. It had a best open profit of Rs 16 and lost Rs 124.",
+   "2026-11-25 (reinforce): ICICIBANK 09:53 filled at 1644.5, 0.57% above VWAP 1635.13, in a MIXED market. It took Rs 187 of heat, peaked at Rs 121 and netted Rs -26.82."
+  ]
+ },
+ "L002": {
+  "rule": "When a symbol has already produced a losing trade in one direction today, do not re-enter it in that direction unless market direction has turned to that side (e.g. MIXED to DOWN for shorts) and price has made a new extreme beyond the earlier loss. Never re-enter at more than the earlier quantity.",
+  "scope": "entry",
+  "created": "2026-11-13",
+  "updated": "2026-11-23",
+  "support": 2,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-13: SBIN S 11:14 re-shorted the same failed idea at 2x quantity (37 vs 18) in a still-MIXED tape and lost Rs 94, after SBIN S 09:39 had lost Rs 124.",
+   "2026-11-23 (reinforce): RELIANCE 11:03 re-entered short after the 09:37 short was stopped, using 26 shares versus the earlier 24, which L002 forbids. It lost Rs 69."
+  ]
+ },
+ "L003": {
+  "rule": "When a trade is pressing but has not yet closed a 5-minute bar beyond the day low (short) or day high (long), keep the stop above the last 15-minute swing high or VWAP (below for longs). Only trail onto 5-minute lower highs or higher lows after a 5-minute bar has closed through that level.",
+  "scope": "stop",
+  "created": "2026-11-13",
+  "updated": "2026-11-23",
+  "support": 4,
+  "against": 1,
+  "status": "active",
+  "evidence": [
+   "2026-11-13: HDFCBANK S 11:46, LT S 13:37 and INFY S 14:03 were all trailed to 1-2 points from price while pressing an unbroken day low and were stopped on the bounce, netting Rs -3, -19 and -61. BHARTIARTL B 09:58 and INFY S 11:27 trailed tight only after breaking the prior-day high or day low and netted Rs 142",
+   "2026-11-16 (reinforce): HDFCBANK 09:43: at 11:45 the stop was trailed only to the VWAP/higher-15m-low structure (807.70), not onto 5m bars, because no 5m bar had closed above the day high. The trade survived and hit its 811.90 target for +120.77 net.",
+   "2026-11-17 (reinforce): AXISBANK 09:51: trailing only after 5-minute closes through the day high, then onto the 15-minute higher low 1360.10, protected a winner that netted Rs 167. ICICIBANK 11:12: the L003 trail to 1601.90 after the 11:15/11:20 closes above the day high cut the loss from about -205 to -77.50 gross.",
+   "2026-11-19 (reinforce): NIFTYBEES 12:01: the stop stayed under the 11:30-11:45 base and survived a dip to Rs -28. It was only trailed to 289.12 at 12:40, after the 12:30 and 12:35 bars had closed above the 289.35 breakout. The trade then exited green.",
+   "2026-11-23 (contradict): BHARTIARTL 11:04 used L003 to widen the initial stop from 2139.7 to the 15m high of 2141.7 without cutting quantity. Price ran through both levels, adding about Rs 38 of loss. L003 is meant for managing a pressing trade, not for widening the initial stop."
+  ]
+ },
+ "L004": {
+  "rule": "Before moving a stop to 'lock profit', compute (entry - stop) x qty for shorts, or (stop - entry) x qty for longs, from THIS order's entry. If the locked gross is below the trade's charges plus Rs 20, leave the stop at structure. Never move a short's stop above entry, or a long's stop below entry, while calling it a lock.",
+  "scope": "exit",
+  "created": "2026-11-13",
+  "updated": "2026-11-25",
+  "support": 3,
+  "against": 1,
+  "status": "active",
+  "evidence": [
+   "2026-11-13: HDFCBANK S 11:46 locked about Rs 17 against Rs 22 of charges. LT S 13:37 locked about Rs 11 against Rs 21 of charges. INFY S 14:03 had its stop moved to 1138.60, above the 1137.10 entry, while the note claimed it locked Rs 52.",
+   "2026-11-17 (contradict): LT 11:16: the stop raised to 4193 locked only about Rs 35 gross, below charges plus Rs 20 (52.61). Strictly following L004 would have left it at 4177.80 and lost about Rs 210 instead of Rs 2.79. The rule should say: trail to the nearest valid structure above entry, and do not call it a lock if it is",
+   "2026-11-18 (reinforce): Two 'profit lock' exits at 12:48 broke L004. BHARTIARTL 12:32 was a short locked at 2128.10, above its 2126.70 entry, and lost Rs 61. NIFTYBEES 09:46 locked Rs 19.90 gross against Rs 32 of charges. Neither lock covered charges + Rs 20.",
+   "2026-11-25 (reinforce): LT 11:17: both automatic lock levels, 4174.60 and 4176.60, were above entry by more than charges plus Rs 20, and the trade netted Rs 66.41."
+  ]
+ },
+ "L005": {
+  "rule": "When one same-direction trade has already been cut or stopped in the last 30 minutes and another same-direction trade is currently red, take no new entry in that direction for 30 minutes. After that, re-enter at no more than the smallest open risk of the day.",
+  "scope": "timing",
+  "created": "2026-11-16",
+  "updated": "2026-11-16",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-16: AXISBANK 10:24 was entered 14 minutes after BHARTIARTL 10:03 was cut and while INFY 10:00 was red one minute before its own cut. All three were same-direction VWAP-pullback longs in one dip, and together they lost Rs 525 net."
+  ]
+ },
+ "L006": {
+  "rule": "When opening a trade while other trades are open or were opened in the last 60 minutes, cap planned risk at 1.5x the largest planned risk among them, and never above Rs 200. Size by quantity = cap / (entry - stop), not by notional.",
+  "scope": "sizing",
+  "created": "2026-11-16",
+  "updated": "2026-11-23",
+  "support": 4,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-16: AXISBANK 10:24 carried Rs 453.90 of planned risk (89 qty) while BHARTIARTL 10:03, INFY 10:00 and HDFCBANK 09:43 carried 63-103. It lost -392.31 net, 84% of the day's loss, and its -543 heat exceeded even its planned risk.",
+   "2026-11-17 (reinforce): LT 11:02 (214.20), ICICIBANK 11:12 (235), LT 11:16 (214.20) and BANKBEES 11:19 (218, cited L006 yet exceeded it) were all over the Rs 200 cap while other trades were open. The three still open lost Rs 359.89 net together at 13:06-13:11. Capping each at Rs 200 would have trimmed the loss, and the sta",
+   "2026-11-18 (reinforce): NIFTYBEES 09:46 (risk Rs 226.86, opened within 60 min of HDFCBANK) and BHARTIARTL 12:32 (Rs 234.60, NIFTYBEES open) both cited L006 but broke its Rs 200 cap. BHARTIARTL's Rs 61 loss and NIFTYBEES's Rs 219 heat were both larger than the cap allowed.",
+   "2026-11-23 (reinforce): BHARTIARTL 11:04 was sized at 0.6 while its companion trades HDFCBANK and RELIANCE 11:03 were at 0.35. That breached the Rs 200 ceiling while other trades were open."
+  ]
+ },
+ "L007": {
+  "rule": "When an adjustment's reasoning says the trade's structure is broken, exit at market in that same decision. Do not respond by tightening the stop to the edge of the bar that broke the structure. If the thesis is still intact, leave the original structural stop untouched.",
+  "scope": "exit",
+  "created": "2026-11-16",
+  "updated": "2026-11-16",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-16: RELIANCE 11:57 short: at 12:10 the decider called the lower-high ladder broken but moved the stop from 1343.60 to 1342.10. Price peaked near 1343.0, short of the original stop, and the tightened stop was hit at 13:42 for -202.30 net, after the trade had been +138."
+  ]
+ },
+ "L008": {
+  "rule": "When taking a day_break_flip long (or short) against an advisory that the stock's own trend opposes it, require that the day low (high) has already been tested and held at least once and that price has based above (below) it for 30+ minutes. Otherwise skip the flip.",
+  "scope": "entry",
+  "created": "2026-11-16",
+  "updated": "2026-11-23",
+  "support": 1,
+  "against": 1,
+  "status": "active",
+  "evidence": [
+   "2026-11-16: LT 14:14: the low had held at 11:00-11:15 and price had based at 4122-4127, and the trade made +330.83. ICICIBANK 13:33: a flush-buy at an untested low against a falling-stock advisory never got past +38 and lost -192.40.",
+   "2026-11-23 (contradict): SBIN 14:06 met L008 (day low tested 3 times and based 60+ minutes) yet lost Rs 37 against a 100%-down breadth advisory. L008's conditions alone are not enough when breadth is extreme."
+  ]
+ },
+ "L009": {
+  "rule": "When an open trade's open profit reaches 1R of its planned risk, move the stop to at least entry + (charges + Rs 50)/qty for longs (entry - that amount for shorts). When it reaches 1.5R, move the stop to lock at least 50% of the peak open profit, or to the latest 5-minute higher low (lower high for shorts) if that is tighter.",
+  "scope": "exit",
+  "created": "2026-11-17",
+  "updated": "2026-11-17",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-17: ICICIBANK 11:12 peaked at +228 (~1R) and finished at -103.49. LT 11:16 peaked at +327 (~1.5R) and finished at -2.79. Both were stopped in the same 13:06-13:11 pullback. This rule would have banked about Rs 75 and Rs 160 net instead."
+  ]
+ },
+ "L010": {
+  "rule": "When 2 same-direction trades are already open, or the candidate shares a sector with an open trade (bank stocks and BANKBEES count as one sector), take no new entry. Total open planned risk across all trades must never exceed Rs 500. If an entry's reasoning says it will skip a symbol, that symbol is blocked for 60 minutes.",
+  "scope": "sizing",
+  "created": "2026-11-17",
+  "updated": "2026-11-23",
+  "support": 2,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-17: Between 11:02 and 11:19, four long entries opened on top of AXISBANK, roughly Rs 900+ of open risk. BANKBEES 11:19 came 7 minutes after the ICICIBANK reasoning said to skip it, while AXISBANK and ICICIBANK were already open. ICICIBANK, BANKBEES and LT 11:16 were all stopped within 5 minutes (13:06-1",
+   "2026-11-23 (reinforce): At 11:03-11:04 three shorts (HDFCBANK, RELIANCE, BHARTIARTL) were opened together, with BHARTIARTL entered while 2 shorts were already open. Total planned risk was about Rs 568, over the Rs 500 cap, and all three lost (Rs -443 net)."
+  ]
+ },
+ "L011": {
+  "rule": "When exiting a winner by hand while its stop and structure are intact (no 5-minute close back below the breakout level), do not re-enter that symbol in the same direction for 30 minutes. Never hand-exit a trade within 15 minutes of entry unless a 5-minute bar has closed back through the entry trigger.",
+  "scope": "timing",
+  "created": "2026-11-17",
+  "updated": "2026-11-17",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-17: LT 10:37 was sold by hand at 4178 at 10:52 with the trade intact. It was re-bought at 4182.40 at 11:02 and hand-sold 4 minutes later for net Rs 21 (gross 53.90 vs charges 32.58). It was re-bought again at 4190.47 at 11:16, which ended at -2.79. Holding the first position at its 4159.90 trail would h"
+  ]
+ },
+ "L012": {
+  "rule": "When a breakout trade's valid_minutes has expired and open profit is below 0.5R, exit at market. If open profit is between 0.5R and 1R at expiry, move the stop to entry plus charges/qty (minus for shorts).",
+  "scope": "exit",
+  "created": "2026-11-17",
+  "updated": "2026-11-19",
+  "support": 2,
+  "against": 1,
+  "status": "active",
+  "evidence": [
+   "2026-11-17: BANKBEES 11:19 (valid 30 min) never reached 1R (best +141) and was held until 13:09, when it was stopped for -253.61. ICICIBANK 11:12 (valid 30 min) was held 114 minutes and stopped for -103.49. Enforcing validity would have closed both near breakeven before the 13:06 pullback.",
+   "2026-11-18 (reinforce): NIFTYBEES 09:46 had valid_minutes 30 and was below 0.5R at expiry, so L012 called for a market exit around 10:16. Instead it was held to 12:48, took Rs -219 heat and finished at -12 net.",
+   "2026-11-19 (contradict): NIFTYBEES 12:01: at expiry (12:31) open profit was about Rs 20, or 0.28R. L012 says exit at market there, which would have netted about Rs -2 after Rs 21.88 charges. Holding, because bars had closed above the breakout with rising lows, produced the Rs 10.46 net."
+  ]
+ },
+ "L013": {
+  "rule": "When a NIFTYBEES (or BANKBEES) trade is open, treat every Nifty top-10 heavyweight (HDFCBANK, ICICIBANK, RELIANCE, INFY, BHARTIARTL, TCS, LT, ITC, SBIN, AXISBANK) as the same sector for L010. Take no same-direction entry in them until the ETF trade is closed or its stop locks at least charges + Rs 20.",
+  "scope": "sizing",
+  "created": "2026-11-18",
+  "updated": "2026-11-18",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-18: BHARTIARTL 12:32 was shorted while the NIFTYBEES 09:46 short was open. Both were exited together at 12:48 on the same index bounce, which doubled the exposure to one move for a combined -73 net."
+  ]
+ },
+ "L014": {
+  "rule": "After 12:00, when the index proxy has not made a new day low (high) for 90+ minutes and the candidate's day low (high) has already held 2+ tests, skip day_break shorts (longs) at that level. Instead, wait for a 5-minute close through it plus a retest that fails from below (above).",
+  "scope": "timing",
+  "created": "2026-11-18",
+  "updated": "2026-11-18",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-18: BHARTIARTL 12:32 broke a day low that had held twice, in a market whose NIFTYBEES short had stalled near 287.25 since morning (it never earned more than Rs 30). The break peaked at Rs 74 and reversed within 16 minutes."
+  ]
+ },
+ "L015": {
+  "rule": "Before 09:45, when an ORB or day_break trigger sits within 0.1% of both the opening-range extreme and the prior-day high or low, and the signal bar closed at that extreme, do not use a stop-entry. Enter only after a 5-minute bar closes beyond the level, or on a failed retest of it from the other side.",
+  "scope": "entry",
+  "created": "2026-11-19",
+  "updated": "2026-11-19",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-19: RELIANCE 09:32: the short triggered at 1353.90, just under both the OR low of 1355.10 and the PDL of 1354.00. Best open profit was Rs 6 before a reversal to Rs -226 heat and a Rs -179 net."
+  ]
+ },
+ "L016": {
+  "rule": "Cap planned risk at Rs 200 on every trade, including the first trade of the day when nothing else is open. If the structural stop distance times the intended quantity exceeds Rs 200, set quantity = 200 / (entry - stop) for shorts, or 200 / (stop - entry) for longs.",
+  "scope": "sizing",
+  "created": "2026-11-19",
+  "updated": "2026-11-25",
+  "support": 3,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-19: RELIANCE 09:32: planned risk was Rs 240.70 because L006 only caps risk when other trades are open. The loss was Rs -179 net, about 20% more than it would have been at a Rs 200 cap.",
+   "2026-11-23 (reinforce): BHARTIARTL 11:04 planned Rs 238 of risk at size 0.6 and lost Rs 223, the largest loss of the day. Capping it at Rs 200 would have cut the loss.",
+   "2026-11-25 (reinforce): INFY 09:44 planned Rs 236 and ICICIBANK 09:53 planned Rs 248.60 while citing this rule. Both lost; INFY at 35 shares would have saved about Rs 27 gross."
+  ]
+ },
+ "L017": {
+  "rule": "When a trade's charges exceed 25% of its planned risk (typical for NIFTYBEES and BANKBEES), raise quantity until planned risk is at least 4x charges, within the Rs 200 cap. If that is not possible, skip the trade. Do not lower the target while the trade is flat or red with structure intact.",
+  "scope": "sizing",
+  "created": "2026-11-19",
+  "updated": "2026-11-19",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-19: NIFTYBEES 12:01: Rs 21.88 charges on Rs 70.56 risk (31%). Best open profit was Rs 37 and the trade netted Rs 10.46, below its charges. Targets cut at 12:05 and 12:20 were never close to being hit."
+  ]
+ },
+ "L018": {
+  "rule": "When valid_minutes expires with open profit below 0.5R, but at least two 5-minute bars have closed beyond the breakout level and the 5-minute lows are rising (highs falling for shorts), do not exit at market. Move the stop to the latest 5-minute higher low (lower high for shorts) and hold for 15 more minutes.",
+  "scope": "exit",
+  "created": "2026-11-19",
+  "updated": "2026-11-19",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-19: NIFTYBEES 12:01: at the 12:31 expiry the trade was at 0.28R, but the 12:30 and 12:35 bars closed above 289.35 with rising lows. Holding turned a roughly Rs -2 net into Rs +10.46."
+  ]
+ },
+ "L019": {
+  "rule": "When entering a 'failed retest' of a broken ORB or day level, do not rest a limit order at the level. Require a 5-minute bar that trades to within 0.1% of the level and closes back on the breakdown side, then enter with a stop-order beyond that bar's close-side extreme and place the stop beyond that bar's opposite extreme.",
+  "scope": "entry",
+  "created": "2026-11-23",
+  "updated": "2026-11-25",
+  "support": 2,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-23: RELIANCE 09:37 filled into a rally and was stopped 1 minute later (Rs -141). ICICIBANK 09:37 filled the same way and took Rs 120 of heat before working.",
+   "2026-11-25 (reinforce): INFY 09:44 bid the retest of 1146.8 without a rejection bar, filled at 1147.0 and was stopped at 1141.5 in 4 minutes with a best open profit of Rs 12."
+  ]
+ },
+ "L020": {
+  "rule": "When 2 or more same-direction orb or day_break triggers fire within the same 5 minutes, treat them as one market signal. Take only the single candidate whose level is not at prior-day-low or prior-day-high confluence, and keep its planned risk at Rs 200 or less.",
+  "scope": "market",
+  "created": "2026-11-23",
+  "updated": "2026-11-23",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-23: HDFCBANK, RELIANCE and BHARTIARTL triggered at 11:03-11:04 and all failed within 13 minutes on one bounce, for Rs -443 net."
+  ]
+ },
+ "L021": {
+  "rule": "Between 09:45 and 12:00, when a day_break trigger is within 0.15% of the prior-day low (or high for longs), do not use a stop-entry at the level. Enter only after a 5-minute bar closes beyond both levels, followed by a retest that fails.",
+  "scope": "entry",
+  "created": "2026-11-23",
+  "updated": "2026-11-23",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-23: BHARTIARTL 11:04 (day low 2132, prior-day low 2131) and RELIANCE 11:03 (1356.6 vs 1356.1) were never in profit and lost Rs 291 combined."
+  ]
+ },
+ "L022": {
+  "rule": "When open profit has reached 0.5R and a 5-minute bar then closes back beyond the entry price (above for shorts, below for longs), exit at market in that decision.",
+  "scope": "exit",
+  "created": "2026-11-23",
+  "updated": "2026-11-23",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-23: HDFCBANK 11:03 reached Rs 92 (0.53R), then rode back through entry to a full stop (Rs -152). SBIN 14:06 reached Rs 92 (0.59R) and finished Rs -37."
+  ]
+ },
+ "L023": {
+  "rule": "When the advisory reports 90% or more of stocks moving one way or says 'only shorts' or 'only longs', take no counter-direction trade of any setup, including day_break_flip, even if L008 is satisfied.",
+  "scope": "market",
+  "created": "2026-11-23",
+  "updated": "2026-11-23",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-23: SBIN 14:06 was a flip long against a 100%-down advisory and lost Rs 37 after charges."
+  ]
+ },
+ "L024": {
+  "rule": "After 14:00, open a trade only if its target is 2R or less and was reached by an intraday swing of the same size earlier that day. Set valid_minutes so the trade ends before the 14:50 flatten. Otherwise skip.",
+  "scope": "timing",
+  "created": "2026-11-23",
+  "updated": "2026-11-23",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-23: SBIN 14:06 planned a 4.2R, 16-point target with 44 minutes left, had to lower the target at 14:15, and was flattened at 14:50 for a loss."
+  ]
+ },
+ "L025": {
+  "rule": "When realized net P&L for the day reaches Rs -400, or 3 trades have hit their stops, take no new entries for the rest of the day.",
+  "scope": "sizing",
+  "created": "2026-11-23",
+  "updated": "2026-11-23",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-23: By 11:16 the day was Rs -559 after 4 losers (RELIANCE 09:37, HDFCBANK, BHARTIARTL, RELIANCE 11:03), yet SBIN 14:06 was still taken and added Rs -37."
+  ]
+ },
+ "L026": {
+  "rule": "When sizing a stop-entry or limit-entry, apply the Rs 200 cap (or lower L006 cap) to the worst permitted fill: quantity = floor(cap / |worst permitted fill - stop|). If the plan's risk field exceeds the cap, reduce quantity before sending the order.",
+  "scope": "sizing",
+  "created": "2026-11-25",
+  "updated": "2026-11-25",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-25: LT 11:17 reasoned Rs 188 of risk but its plan showed Rs 223. INFY 09:44 showed Rs 236 against Rs 228 at the fill, and ICICIBANK 09:53 showed Rs 248.60 against Rs 211 at the fill."
+  ]
+ },
+ "L027": {
+  "rule": "When a trade is at least 60 minutes past its valid_minutes, open gross profit exceeds charges and is below 0.5R, exit at market. Do not set a stop on the losing side of entry.",
+  "scope": "exit",
+  "created": "2026-11-25",
+  "updated": "2026-11-25",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-25: ICICIBANK 09:53: at 11:55, 92 minutes past expiry, it was about Rs 44 up against Rs 24.62 charges. The stop went to 1643.40, below the 1644.5 entry, and the 12:00 exit netted Rs -26.82, about Rs 46 worse than exiting at 11:55."
+  ]
+ },
+ "L028": {
+  "rule": "Between 09:45 and 12:00, when an orb long (short) trigger is within 0.2% of both the opening-range high (low) and the prior-day high (low) and market direction is MIXED, do not use a stop-entry. Enter only after a 5-minute bar closes beyond both levels and a later 5-minute bar retests and closes beyond them again.",
+  "scope": "entry",
+  "created": "2026-11-25",
+  "updated": "2026-11-25",
+  "support": 1,
+  "against": 0,
+  "status": "active",
+  "evidence": [
+   "2026-11-25: ICICIBANK 09:53 used trigger 1645.0 above the opening-range high 1642.40 and prior-day high 1644.80 in a MIXED market. It drew Rs 187 of heat and its 5-minute closes held above 1645 only from 11:35; L015 ends at 09:45 and L021 covers only day_break."
+  ]
+ }
+}

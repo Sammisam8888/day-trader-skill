@@ -1,0 +1,61 @@
+{
+ "day_read": "This is a down-trend day on monthly expiry. Nifty is -1.3% and BankNifty -2.3% from the open, both sitting at the bottom of their ranges (0.06 and 0.10), breadth is 13/37 and VIX is up. Price is now pinned near the 25400 put wall with a small short-covering uptick and 28 minutes left, so there is little room for new trend legs and late fades remain risky.",
+ "models": {
+  "bollinger_fade": {
+   "enabled": 0,
+   "why": "Fade model on a trend day, and worst three days running. Keep it off."
+  },
+  "vwap_revert": {
+   "enabled": 0,
+   "why": "Fading stretches on a trend day is losing (-424, 3/13). Keep it off."
+  },
+  "volume_burst": {
+   "vol_x": 4.5,
+   "body_atr": 2.0,
+   "side": 2,
+   "target_x": 1.5,
+   "enabled": 0,
+   "why": "Volume is back near normal (1.0-1.5x), but the default is -677 on 32 trades and @ai -87. It shows no edge and overtrades into charges. Stay off."
+  },
+  "rsi2": {
+   "low": 5.0,
+   "high": 95.0,
+   "stop_atr": 2.0,
+   "side": 2,
+   "enabled": 0,
+   "why": "Up +113 (10/12), but price is at the low by the put wall in thin volume, so more short pullback entries offer poor risk and reward. Bank the gain and stay off."
+  },
+  "orb": {
+   "minutes": 30,
+   "max_width_pct": 1.5,
+   "target_x": 1.5,
+   "side": 2,
+   "why": "+92 on 3 trades with the short-only 30-minute setup, which fits the day. No change; new triggers are unlikely this late."
+  },
+  "vwap_trend": {
+   "confirm": 4,
+   "stop_atr": 3.5,
+   "side": 2,
+   "target_atr": 3.0,
+   "why": "Best on the bench (+542, 20/27), so keep it short-only. With under 30 minutes left and the put wall pinning price, trim the target so a new short can actually hit it before the 14:50 flat."
+  },
+  "opening_drive_fade": {
+   "move_pct": 0.6,
+   "enabled": 0,
+   "why": "The first-30-minute window is over, and fading the down drive is counter-trend."
+  },
+  "ema_cross": {
+   "side": 2,
+   "enabled": 0,
+   "why": "The default is 0/6 (-269) and @ai 0/3 (-142). Crossovers whipsaw in this tape. Stay off."
+  },
+  "squeeze_break": {
+   "side": 2,
+   "target_atr": 2.5,
+   "squeeze": 1.2,
+   "enabled": 0,
+   "why": "The default is 0/5 (-281) and @ai -77. Fresh breakdowns at the day low against the 25500 put wall have little room. Stay off."
+  }
+ },
+ "at": "2026-11-23T14:22:16+05:30"
+}
