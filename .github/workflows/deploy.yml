@@ -198,6 +198,13 @@ jobs:
             sudo mkdir -p /var/lib/indstocks/strategies
             sudo touch /var/lib/indstocks/.profile-strategies-v1
           fi
+          # 26 Nov: the 17 Nov safety net that turned STOP_AFTER_LOSSES 0 back into 3 is removed (the owner
+          # wants no loser stop now); set 0 again once.
+          if [ ! -f /var/lib/indstocks/.profile-no-loser-stop-v2 ]; then
+            sudo sed -i '/^TRADER_STOP_AFTER_LOSSES=/d' /etc/indstocks.env
+            echo 'TRADER_STOP_AFTER_LOSSES=0' | sudo tee -a /etc/indstocks.env >/dev/null
+            sudo touch /var/lib/indstocks/.profile-no-loser-stop-v2
+          fi
           # Company data (24 Nov): fill it once now so the AI and the Desk have it before the 16:30 run.
           if [ ! -f /var/lib/indstocks/.profile-company-first-run ]; then
             sudo systemctl start company.service || true
@@ -239,10 +246,6 @@ jobs:
             sudo systemd-run --unit=indstocks-losers-restore --on-calendar="2026-11-17 10:00:00 UTC" \
               /bin/sh -c 'sed -i "/^TRADER_STOP_AFTER_LOSSES=/d" /etc/indstocks.env; echo TRADER_STOP_AFTER_LOSSES=3 >> /etc/indstocks.env' || true
             sudo touch /var/lib/indstocks/.profile-losers-override-2026-11-17
-          fi
-          # Safety net: on any later deploy, a stale override is put back to 3.
-          if [ "$(TZ=Asia/Kolkata date +%F)" != "2026-11-17" ] && sudo grep -q "^TRADER_STOP_AFTER_LOSSES=0$" /etc/indstocks.env; then
-            sudo sed -i "s/^TRADER_STOP_AFTER_LOSSES=0$/TRADER_STOP_AFTER_LOSSES=3/" /etc/indstocks.env
           fi
           # Day lock at Rs 600, keep 60% (owner, 17 Nov 13:15: a +895 day ended -30 on stops).
           # Today's peak was already given back: clear today's day-best so the lock protects
