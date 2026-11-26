@@ -31,6 +31,20 @@ Every recipe also has `enabled`, `invert`, `side`. Copies that run every day: fi
 defaults (`orb5`, `orb15`, `orb30`, `vwap_revert`, ...), inverted twins (`*_inv`), and
 the AI-tuned copy of each recipe (`*@ai`). Knob values are clamped to tested ranges.
 
+## F&O sleeves (`fno.py`, 26 Nov)
+
+Every model's stock signal is also traded, side by side, in two sleeves with their own
+Rs 1,00,000 paper wallets (`TRADER_FNO_CAPITAL`): `<model>~fut` (1 lot of the stock's
+near-month future, long or short) and `<model>~opt` (the at-the-money call bought on a BUY
+signal, the put on a SELL; up to `TRADER_FNO_OPT_BUDGET` Rs 20,000 of premium). They open
+and close with the stock trade, use live NFO quotes (bid/ask), Shoonya's daily NFO
+master for contracts (rolled when expiry is within 2 days), and F&O charges at the April
+2026 STT (0.05% futures sell, 0.15% option premium sold). A futures lot whose margin (20%
+of the lot value) exceeds the free wallet is skipped and logged: one lot of several large
+stocks (RELIANCE: about Rs 1.3 lakh) does not fit Rs 1 lakh. The book persists in
+`auto/fno/DAY.json`; F&O trades cannot be replayed from the equity tape, so after a
+restart the sleeves continue from that file.
+
 ## The tuner (`tuner.py`)
 
 At 09:22 and every 30 min to 14:22 the AI reads the tape, breadth, sectors, sentiment

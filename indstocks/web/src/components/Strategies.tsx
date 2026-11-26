@@ -13,6 +13,7 @@ const toneOf = (x: number | null | undefined) => (x == null ? "text-dim" : x > 0
 const KIND: Record<string, { label: string; tone: string }> = {
   fixed: { label: "fixed", tone: "dim" }, inverted: { label: "inverted", tone: "warn" },
   ai_tuned: { label: "AI-tuned", tone: "info" }, ai_trader: { label: "AI trader", tone: "up" },
+  futures: { label: "futures", tone: "warn" }, options: { label: "options", tone: "info" },
 };
 const ago = (s: number | null) => (s == null ? "never" : s < 90 ? `${Math.round(s)}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago`
   : s < 172800 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`);
@@ -146,7 +147,7 @@ function Detail({ name, onBack }: { name: string; onBack: () => void }) {
 
       {tab === "trades" && (
         <Card title={`Trades on ${d.day}`} right={closed.length > 0 && <span className={clsx("num text-sm", toneOf(closed.reduce((a, t) => a + (t.net ?? 0), 0)))}>{rs(closed.reduce((a, t) => a + (t.net ?? 0), 0))} booked</span>}>
-          {d.trades.length === 0 ? <Empty>No trades on {d.day}.</Empty> : d.kind === "ai_trader" ? (
+          {d.trades.length === 0 ? <Empty>No trades on {d.day}.</Empty> : ["ai_trader", "futures", "options"].includes(d.kind) ? (
             <div className="overflow-x-auto"><table className="num w-full text-sm">
               <thead><tr className="text-left text-[11px] text-faint">{["time", "event", "stock", "side", "qty", "price", "stop", "target", "net", "note"].map((h) => <th key={h} className="py-1 pr-2 font-normal">{h}</th>)}</tr></thead>
               <tbody>{d.trades.map((t, i) => (
@@ -232,7 +233,7 @@ export default function Strategies() {
 
       <Card title={`Every strategy, ${ov.day}`} right={<span className="text-xs text-faint">Rs {ov.wallet.toLocaleString("en-IN")} paper wallet each | tap one to open</span>}>
         <div className="mb-3 flex flex-wrap items-center gap-1.5">
-          {["all", "ai_trader", "ai_tuned", "fixed", "inverted"].map((k2) => (
+          {["all", "ai_trader", "ai_tuned", "fixed", "inverted", "futures", "options"].map((k2) => (
             <button key={k2} onClick={() => setKind(k2)} className={clsx("rounded-full border px-2.5 py-0.5 text-xs",
               kind === k2 ? "border-info text-fg" : "border-line text-dim")}>{k2 === "all" ? "all" : KIND[k2].label}</button>))}
           <label className="ml-auto flex items-center gap-1 rounded-lg border border-line bg-panel-2 px-2 py-1 text-xs">

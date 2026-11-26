@@ -14,7 +14,7 @@ Day by day: results (net after charges), what changed and why.
 | 20 Nov | -181 (paper) | First PIP day |
 | 23 Nov | -585 (paper) | Owner removed the daily kill on paper; it would have stopped near -300. 4 of 5 AI trades were shorts on a non-falling day. Bench: vwap_trend@ai +630, several @ai copies positive. Owner asked to trade opposite to the AI: the mirror lost more (-674), kept as a daily comparison |
 | 24 Nov | holiday | Desk tab (terminal-style live screen); company data from NSE filings (deals, results dates, shareholding) |
-| 26 Nov | | Owner: every strategy gets a Rs 1 lakh paper wallet and a Rs 1,000 day target, no daily loss limit, no blockers. Two smart-money liquidity models (liq_sweep, liq_run) from the owner's videos. Per-strategy journals and nightly AI learnings on the data disk; nightly data sync to GitHub; these runbooks |
+| 26 Nov | | Owner: every strategy gets a Rs 1 lakh paper wallet and a Rs 1,000 day target, no daily loss limit, no blockers. Two smart-money liquidity models (liq_sweep, liq_run) from the owner's videos. Per-strategy journals and nightly AI learnings on the data disk; nightly data sync to GitHub; these runbooks. Dashboard Strategies tab (pipeline health, every strategy, drill-down). F&O sleeves: a futures and an options copy of every model, Rs 1 lakh each |
 
 ## Decisions that stand
 

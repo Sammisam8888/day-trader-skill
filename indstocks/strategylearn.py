@@ -59,6 +59,14 @@ def about(name: str) -> tuple:
     if name == journal.AI:
         return ("The AI trader: an AI picks setups (orb, failed_break, day_break) on 5-minute scans; code manages "
                 "stops, a trailing profit lock and a Rs 1,000 day target.", "size, stop, target, setups, direction")
+    sleeve = ""
+    if name.endswith("~fut"):
+        sleeve = (" This is its FUTURES sleeve: every stock signal of the strategy is traded as 1 lot of the stock's "
+                  "near-month future (own Rs 1 lakh wallet).")
+    elif name.endswith("~opt"):
+        sleeve = (" This is its OPTIONS sleeve: every BUY signal buys the stock's at-the-money call, every SELL signal "
+                  "its at-the-money put (own Rs 1 lakh wallet); exits follow the stock trade's exits.")
+    name = name.split("~")[0]
     try:
         import paper
         base = name.split("@")[0]
@@ -69,7 +77,7 @@ def about(name: str) -> tuple:
                 doc = (paper.RECIPES[r].__doc__ or "").strip().split("\n")[0]
                 inv = " This copy takes the OPPOSITE side of every signal." if name.endswith("_inv") else ""
                 ai = " Its knobs are set by the AI during the day (tuner)." if name.endswith("@ai") else ""
-                return (f"A rule-based model, recipe '{r}'. {doc}{inv}{ai}", ks)
+                return (f"A rule-based model, recipe '{r}'. {doc}{inv}{ai}{sleeve}", ks)
     except Exception:                                    # noqa: BLE001
         pass
     return ("A rule-based model.", "its knobs")

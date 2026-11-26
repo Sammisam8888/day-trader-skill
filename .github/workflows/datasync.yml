@@ -36,7 +36,7 @@ jobs:
         run: |
           ssh -o BatchMode=yes -o ServerAliveInterval=30 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
             "sudo tar -czf - -C /var/lib/indstocks --ignore-failed-read --warning=no-file-changed \
-               strategies auto/paper auto/paperbroker auto/pip.json auto/company \
+               --exclude='auto/fno/master-*' strategies auto/paper auto/paperbroker auto/fno auto/pip.json auto/company \
                learning/lessons.json learning/journal-*.json 2>/dev/null" > data.tgz || true
           ls -la data.tgz
           gzip -t data.tgz

@@ -169,7 +169,7 @@ export async function getDesk(): Promise<DeskResp> {
 }
 
 export interface StratToday { net: number; trades: number; wins: number; open: number; target_hit: number | string | null }
-export interface StratRow { name: string; kind: "fixed" | "inverted" | "ai_tuned" | "ai_trader"; recipe: string; wallet: number; target: number;
+export interface StratRow { name: string; kind: "fixed" | "inverted" | "ai_tuned" | "ai_trader" | "futures" | "options"; recipe: string; wallet: number; target: number;
   today: StratToday; history: { day: string; net: number; trades: number | null }[]; learning: { day: string; text: string } | null;
   days: number; total: number; green_days: number; target_days: number }
 export interface StratOverview { day: string; wallet: number; target: number; total_today: number; strategies: StratRow[] }

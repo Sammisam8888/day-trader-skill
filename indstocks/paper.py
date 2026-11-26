@@ -591,6 +591,8 @@ class Bench:
     would_kill: Dict[str, dict] = field(default_factory=dict)
     kill_checked: float = 0.0
     target_hit: Dict[str, float] = field(default_factory=dict)
+    fno: Optional[object] = None          # fno.FnoBook: the F&O sleeves, driven by live trades only
+    live: bool = False                    # False while a day is replayed from the tape
 
     def risk_rs(self) -> D:
         try:
@@ -635,6 +637,11 @@ class Bench:
                       "qty": t.qty, "entry": t.entry, "exit": round(x, 2), "net": str(net), "why": why})
         self._journal(t.model, at, "close", t.symbol, t.side, t.qty, round(x, 2), t.stop, t.target, net,
                       f"{why}; entry {t.entry}; day so far {self.realised[t.model]:.0f}")
+        if self.fno is not None and self.live:
+            try:
+                self.fno.on_close(t.model, t.symbol, why, at)
+            except Exception as exc:                               # noqa: BLE001
+                common.log("paper", {"event": "fno_error", "where": "close", "error": str(exc)[:200]})
 
     def _journal(self, model, at, event, sym, side, qty, price, stop, target, net=None, note="") -> None:
         if not self.write:
@@ -729,6 +736,11 @@ class Bench:
             self._ledger({"ev": "open", "t": round(at, 1), "model": m, "symbol": sym, "side": side, "qty": qty,
                           "entry": round(entry, 2), "stop": round(stop, 2), "target": round(target, 2)})
             self._journal(m, at, "open", sym, side, qty, round(entry, 2), round(stop, 2), round(target, 2))
+            if self.fno is not None and self.live:
+                try:
+                    self.fno.on_open(m, sym, side, px, at)
+                except Exception as exc:                           # noqa: BLE001
+                    common.log("paper", {"event": "fno_error", "where": "open", "error": str(exc)[:200]})
 
     def feed(self, sym: str, at: float, px: float, cum: Optional[float]) -> None:
         s = self.series.setdefault(sym, Series())
@@ -793,6 +805,15 @@ def main() -> None:
         journal.reset_bench_day(day)                     # ... and the strategies' trade logs
         last = replay_day(bench, day)
         bench._ledger({"ev": "start", "t": time.time(), "replayed_symbols": len(last)})
+        try:
+            import fno
+            if fno.enabled():
+                bench.fno = fno.FnoBook(day, fno.live_quote(), fno.Contracts(fno.load_master(day), now.date()))
+        except Exception as exc:                                   # noqa: BLE001
+            common.log("paper", {"event": "fno_error", "where": "start", "error": str(exc)[:200]})
+        bench.live = True
+        marks: Dict[str, D] = {}
+        last_mark = 0.0
         seen: Dict[str, float] = {}
         while sess.now().strftime("%Y-%m-%d") == day and (sess.now().hour, sess.now().minute) < (15, 5):
             live = tape.read_live(max_age_s=15)
@@ -803,10 +824,20 @@ def main() -> None:
                 last[sym] = float(f["ltp"])
                 bench.feed(sym, float(f["updated"]), float(f["ltp"]), None if f.get("vol_cum") is None else float(f["vol_cum"]))
             bench.check_kills(last, time.time())
+            if bench.fno is not None and time.time() - last_mark >= 30:
+                last_mark = time.time()
+                try:
+                    marks = bench.fno.mark(time.time(), flat=(sess.now().hour, sess.now().minute) >= FLAT_AT)
+                except Exception as exc:                           # noqa: BLE001
+                    common.log("paper", {"event": "fno_error", "where": "mark", "error": str(exc)[:200]})
             try:
                 p = PAPER_DIR / f"{day}-summary.json"
                 tmp = p.with_suffix(".tmp")
-                tmp.write_text(json.dumps(bench.summary(last)))
+                summ = bench.summary(last)
+                if bench.fno is not None:
+                    for k, v in bench.fno.summary(marks).items():
+                        summ["models"][k] = {**v, "killed": bool(v.get("target_hit")), "would_kill": None}
+                tmp.write_text(json.dumps(summ))
                 tmp.replace(p)
             except OSError:
                 pass

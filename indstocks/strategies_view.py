@@ -46,6 +46,10 @@ def _json(path) -> Optional[dict]:
 def kind_of(name: str) -> str:
     if name == AI:
         return "ai_trader"
+    if name.endswith("~fut"):
+        return "futures"
+    if name.endswith("~opt"):
+        return "options"
     if name.endswith("@ai"):
         return "ai_tuned"
     if name.endswith("_inv"):
@@ -54,7 +58,7 @@ def kind_of(name: str) -> str:
 
 
 def recipe_of(name: str) -> str:
-    base = name.split("@")[0].replace("_inv", "")
+    base = name.split("~")[0].split("@")[0].replace("_inv", "")
     if base.startswith("orb"):
         return "orb"
     if base.startswith("ema"):
@@ -118,9 +122,16 @@ def overview(day: Optional[str] = None) -> dict:
             hist.setdefault(m, []).append({"day": d, "net": float(r.get("net") or 0), "trades": r.get("trades", 0)})
     today = _bench_summary(day)
     rows = []
-    for m in paper.MODELS:
+    try:
+        import fno
+        sleeves = fno.models_with_sleeves() if fno.enabled() else []
+        fno_wallet = float(fno.capital())
+    except Exception:                                    # noqa: BLE001
+        sleeves, fno_wallet = [], wallet
+    for m in list(paper.MODELS) + sleeves:
         r = today.get(m) or {}
-        rows.append({"name": m, "kind": kind_of(m), "recipe": recipe_of(m), "wallet": wallet, "target": target,
+        rows.append({"name": m, "kind": kind_of(m), "recipe": recipe_of(m),
+                     "wallet": fno_wallet if "~" in m else wallet, "target": target,
                      "today": {"net": float(r.get("net") or 0), "trades": r.get("trades", 0), "wins": r.get("wins", 0),
                                "open": r.get("open_trades", 0), "target_hit": r.get("target_hit")},
                      "history": hist.get(m, []), "learning": headline(m)})
@@ -173,7 +184,7 @@ def detail(name: str, day: Optional[str] = None) -> dict:
     except OSError:
         log_days = []
     trades: List[dict] = []
-    if name == AI:
+    if name == AI or "~" in name:
         trades = [r for r in log_rows(name, day)]
     else:
         opens = {}
@@ -193,7 +204,7 @@ def detail(name: str, day: Optional[str] = None) -> dict:
                            "opened": _hhmm(o.get("t")), "closed": None, "entry": o.get("entry"), "exit": None,
                            "stop": o.get("stop"), "target": o.get("target"), "net": None, "why": "open"})
     knobs = None
-    if name != AI:
+    if name != AI and "~" not in name:
         r = recipe_of(name)
         if r in paper.RECIPES:
             if name.endswith("@ai"):
@@ -284,7 +295,11 @@ def pipeline(now: Optional[datetime] = None) -> dict:
             st = "ok" if ts else "down"
         return {"key": key, "name": name, "what": what, "last": ts, "age_s": a, "status": st}
 
-    tok = _json(common.STATE_DIR / "shoonya_token.json") or {}
+    try:
+        import shoonya
+        tok = _json(shoonya.TOKEN_FILE) or {}
+    except Exception:                                    # noqa: BLE001
+        tok = {}
     live = _json(common.STATE_DIR / "tape" / "live.json") or {}
     tape_ts = datetime.fromtimestamp(live["at"], sess.IST).isoformat(timespec="seconds") if live.get("at") else None
     summ = _json(paper.PAPER_DIR / f"{day}-summary.json") or {}
@@ -302,7 +317,7 @@ def pipeline(now: Optional[datetime] = None) -> dict:
         stage("company", "Company data", "Deals, results, shareholding (NSE)", comp.get("at"), due_after=8 * 60 + 45),
         stage("ai", "AI scans", "The AI trader decides every 5 min", last(lambda r: r.get("event") == "run_end"),
               window=(9 * 60 + 35, 14 * 60 + 35), max_age=600),
-        stage("bench", "Paper bench", "35 rule models on live prices", bench_ts, window=(9 * 60 + 16, 15 * 60), max_age=60),
+        stage("bench", "Paper bench", "35 rule models + F&O sleeves on live prices", bench_ts, window=(9 * 60 + 16, 15 * 60), max_age=60),
         stage("tuner", "Tuner", "The AI sets the @ai knobs", params.get("at"), window=(9 * 60 + 25, 14 * 60 + 30), max_age=2100),
         stage("orders", "Orders and fills", f"Execution ({broker} broker)",
               last(lambda r: r.get("event") in ("paper_order", "placed", "filled")), due_after=None),
