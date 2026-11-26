@@ -1365,6 +1365,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(_j(control.state_view()))
             except Exception as exc:                    # noqa: BLE001
                 return self._json({"error": f"{type(exc).__name__}: {exc}"[:300]}, 500)
+        if path in ("/api/strategies", "/api/strategy", "/api/pipeline"):
+            try:
+                import strategies_view as sv
+                day = (q.get("day") or [sess.now().strftime("%Y-%m-%d")])[0]
+                datetime.strptime(day, "%Y-%m-%d")
+                if path == "/api/strategies":
+                    return self._json(_j(sv.overview(day)))
+                if path == "/api/pipeline":
+                    return self._json(_j(sv.pipeline()))
+                name = (q.get("name") or [""])[0]
+                if not name or len(name) > 60 or not all(c.isalnum() or c in "_@-" for c in name):
+                    return self._json({"error": "bad strategy name"}, 400)
+                return self._json(_j(sv.detail(name, day)))
+            except Exception as exc:                    # noqa: BLE001
+                return self._json({"error": f"{type(exc).__name__}: {exc}"[:300]}, 500)
         if path == "/api/terminal":
             try:
                 return self._json(api_terminal(sess.now().strftime("%Y-%m-%d")))

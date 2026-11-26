@@ -1,10 +1,11 @@
-import { Activity as ActivityIcon, Bot, FlaskConical, Gauge, Monitor, LayoutDashboard, ListOrdered, LogIn, MessageSquare, Pause, Play, Settings2 } from "lucide-react";
+import { Activity as ActivityIcon, Bot, FlaskConical, Gauge, Layers, Monitor, LayoutDashboard, ListOrdered, LogIn, MessageSquare, Pause, Play, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { act, getState, type Order, type Position, type State } from "./api";
 import Activity from "./components/Activity";
 import Brain from "./components/Brain";
 import Market from "./components/Market";
 import Desk from "./components/Desk";
+import Strategies from "./components/Strategies";
 import Paper from "./components/Paper";
 import Notify from "./components/Notify";
 import TradeDrawer from "./components/TradeDrawer";
@@ -18,9 +19,10 @@ import { ClosedTrades, Positions } from "./components/Positions";
 import { clsx, price } from "./fmt";
 import { Badge, Btn, Card, Dot, Flash } from "./ui";
 
-type Tab = "overview" | "desk" | "market" | "ai" | "paper" | "orders" | "activity" | "chat";
+type Tab = "overview" | "strategies" | "desk" | "market" | "ai" | "paper" | "orders" | "activity" | "chat";
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <LayoutDashboard size={18} /> },
+  { id: "strategies", label: "Strategies", icon: <Layers size={18} /> },
   { id: "desk", label: "Desk", icon: <Monitor size={18} /> },
   { id: "market", label: "Market", icon: <Gauge size={18} /> },
   { id: "ai", label: "AI", icon: <Bot size={18} /> },
@@ -193,6 +195,7 @@ export default function App() {
               </div>
             </>
           )}
+          {tab === "strategies" && <Strategies />}
           {tab === "desk" && <Desk />}
           {tab === "market" && <Market />}
           {tab === "ai" && <Brain focus={focusCall} onTrade={(day, id) => setTrade({ day, id })} />}

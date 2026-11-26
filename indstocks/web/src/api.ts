@@ -167,3 +167,26 @@ export interface DeskDeal { kind: string; symbol: string; side?: string; client:
 export async function getDesk(): Promise<DeskResp> {
   return (await fetch("/api/terminal", { cache: "no-store" })).json();
 }
+
+export interface StratToday { net: number; trades: number; wins: number; open: number; target_hit: number | string | null }
+export interface StratRow { name: string; kind: "fixed" | "inverted" | "ai_tuned" | "ai_trader"; recipe: string; wallet: number; target: number;
+  today: StratToday; history: { day: string; net: number; trades: number | null }[]; learning: { day: string; text: string } | null;
+  days: number; total: number; green_days: number; target_days: number }
+export interface StratOverview { day: string; wallet: number; target: number; total_today: number; strategies: StratRow[] }
+export interface StratTrade { stock: string; side: string; qty: number; opened?: string | null; closed?: string | null; entry?: number;
+  exit?: number | null; stop?: number; target?: number; net?: number | null; why?: string; time?: string; event?: string; price?: string; note?: string }
+export interface LogRow { time: string; event: string; stock: string; side: string; qty: string; price: string; stop: string; target: string; net: string; note: string }
+export interface StratDetail { name: string; day: string; kind: string; recipe: string; summary: StratRow | null; trades: StratTrade[];
+  log_rows: LogRow[]; log_md: string; learning_md: string; days: string[];
+  knobs: { values: Record<string, number> | null; why?: string; set_at?: string; day_read?: string; ranges: Record<string, [number, number]>; doc: string } | null }
+export interface Stage { key: string; name: string; what: string; last: string | null; age_s: number | null; status: "ok" | "late" | "down" | "idle" }
+export interface PipelineResp { at: string; broker: string; stages: Stage[] }
+export async function getStrategies(day?: string): Promise<StratOverview> {
+  return (await fetch(`/api/strategies${day ? `?day=${day}` : ""}`, { cache: "no-store" })).json();
+}
+export async function getStrategy(name: string, day?: string): Promise<StratDetail> {
+  return (await fetch(`/api/strategy?name=${encodeURIComponent(name)}${day ? `&day=${day}` : ""}`, { cache: "no-store" })).json();
+}
+export async function getPipeline(): Promise<PipelineResp> {
+  return (await fetch("/api/pipeline", { cache: "no-store" })).json();
+}
