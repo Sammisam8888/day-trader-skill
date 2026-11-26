@@ -48,8 +48,15 @@ def capital() -> D:
         return CAPITAL
 
 
+def target_stops() -> bool:
+    """TRADER_TARGET_STOPS (default false, owner 26 Nov: "it should be hungry to book more profits").
+    false: the day target is a milestone, logged once, and the model keeps trading.
+    true: the old rule, the model is closed and done for the day at the target."""
+    return common.setting("TRADER_TARGET_STOPS", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 def day_target() -> D:
-    """TRADER_BENCH_TARGET: a model that reaches this day net is closed and done for the day (0 = none)."""
+    """TRADER_BENCH_TARGET: the day net each model aims for (0 = none). See target_stops()."""
     try:
         return D(common.setting("TRADER_BENCH_TARGET", "0"))
     except ArithmeticError:
@@ -669,18 +676,22 @@ class Bench:
             if m in self.killed:
                 continue
             day = self.realised.get(m, D(0)) + self.model_open_net(m, prices)
-            if tgt > 0 and day >= tgt:
-                for key in [k for k in self.open if k[0] == m]:
-                    self.close(key, prices.get(key[1], self.open[key].entry), "day target", at)
-                self.killed.add(m)
+            if tgt > 0 and day >= tgt and m not in self.target_hit:
+                stops = target_stops()
+                if stops:
+                    for key in [k for k in self.open if k[0] == m]:
+                        self.close(key, prices.get(key[1], self.open[key].entry), "day target", at)
+                    self.killed.add(m)
                 self.target_hit[m] = round(at, 1)
-                final = self.realised.get(m, D(0))
-                self._ledger({"ev": "target", "t": round(at, 1), "model": m, "day": str(final)})
+                shown = self.realised.get(m, D(0)) if stops else day
+                self._ledger({"ev": "target", "t": round(at, 1), "model": m, "day": str(shown)})
                 if self.write:
                     import journal
                     journal.note(m, self.day, f"DAY TARGET reached at "
-                                 f"{datetime.fromtimestamp(at, sess.IST):%H:%M}: net {final:.0f}. Done for the day.")
-                continue
+                                 f"{datetime.fromtimestamp(at, sess.IST):%H:%M}: net {shown:.0f}. "
+                                 + ("Done for the day." if stops else "Keeps trading for more."))
+                if stops:
+                    continue
             if self.observe_only():
                 # Paper runs uncapped; remember where the kill WOULD have fired, to learn from.
                 if m not in self.would_kill and day <= -D(common.setting("TRADER_PAPER_KILL_STUDY", "75")):
@@ -836,7 +847,7 @@ def main() -> None:
                 summ = bench.summary(last)
                 if bench.fno is not None:
                     for k, v in bench.fno.summary(marks).items():
-                        summ["models"][k] = {**v, "killed": bool(v.get("target_hit")), "would_kill": None}
+                        summ["models"][k] = {**v, "killed": bool(v.get("target_hit")) and target_stops(), "would_kill": None}
                 tmp.write_text(json.dumps(summ))
                 tmp.replace(p)
             except OSError:

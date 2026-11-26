@@ -19,7 +19,7 @@ Day by day: results (net after charges), what changed and why.
 ## Decisions that stand
 
 - Paper only until the PIP bar is met (owner, 19 Nov).
-- No daily loss limit on paper (owner, 23 Nov); the day target banks the day (26 Nov).
+- No daily loss limit on paper (owner, 23 Nov); the day target is a milestone, not a stop: every strategy keeps trading past Rs 1,000 (26 Nov).
 - The AI decides; code enforces. The AI never loosens a protection.
 - A strategy earns real money only on evidence: positive after charges over a long run,
   not one good season (the 3-month vs 10-month lesson of 17 Nov).

@@ -258,7 +258,7 @@ class FnoBook:
         for kind in SLEEVES:
             sleeve = f"{model}~{kind}"
             key = f"{sleeve}|{sym}"
-            if key in self.st["open"] or sleeve in self.st["done"]:
+            if key in self.st["open"] or (sleeve in self.st["done"] and _target_stops()):
                 continue
             c = self.contracts.future(sym) if kind == "fut" else self.contracts.atm_option(sym, spot, side)
             if not c:
@@ -326,7 +326,8 @@ class FnoBook:
                       note=f"{why}; entry {p['entry']}; day so far {D(self.st['realised'][sleeve]):.0f}")
 
     def mark(self, at: float, flat: bool = False) -> Dict[str, D]:
-        """Price every open position; close a sleeve at its day target; close all at 14:50."""
+        """Price every open position; note a sleeve's day target (it keeps trading unless
+        TRADER_TARGET_STOPS); close all at 14:50."""
         marks: Dict[str, D] = {}
         for key, p in list(self.st["open"].items()):
             px = self._px(p["token"], "S" if p["side"] == "B" else "B")
@@ -340,13 +341,18 @@ class FnoBook:
                 if sleeve in self.st["done"]:
                     continue
                 if self.day_net(sleeve, marks) >= tgt:
-                    for key in [k for k in self.st["open"] if k.split("|")[0] == sleeve]:
-                        self._close(key, "day target", at, marks.get(self.st["open"][key]["token"]))
+                    stops = _target_stops()
+                    if stops:
+                        for key in [k for k in self.st["open"] if k.split("|")[0] == sleeve]:
+                            self._close(key, "day target", at, marks.get(self.st["open"][key]["token"]))
+                        shown = D(self.st["realised"].get(sleeve, "0"))
+                    else:
+                        shown = self.day_net(sleeve, marks)
                     self.st["done"][sleeve] = _now_str(at)
                     if self.write:
                         import journal
                         journal.note(sleeve, self.day, f"DAY TARGET reached at {_now_str(at)[:5]}: net "
-                                     f"{D(self.st['realised'].get(sleeve, '0')):.0f}. Done for the day.")
+                                     f"{shown:.0f}. " + ("Done for the day." if stops else "Keeps trading for more."))
         self._save()
         return marks
 
@@ -359,6 +365,10 @@ class FnoBook:
                       "open_trades": sum(1 for k in self.st["open"] if k.split("|")[0] == s),
                       "skipped": int(self.st["skipped"].get(s, 0)), "target_hit": self.st["done"].get(s)}
         return out
+
+
+def _target_stops() -> bool:
+    return common.setting("TRADER_TARGET_STOPS", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 class WrongInstrument(RuntimeError):

@@ -20,7 +20,7 @@ few seconds, and the AI cannot override them.
 | Guard | Setting | Now (PIP, from 26 Nov) |
 |---|---|---|
 | Daily loss stop (close all, halt) | `TRADER_DAILY_LOSS` | **Off** (100000); where Rs 300 would have fired is logged (`daily_loss_would_stop`) |
-| Day target (close all, done for the day) | `TRADER_DAY_TARGET` | **Rs 1,000** |
+| Day target (a milestone: logged as `day_target_reached`, trading continues; `TRADER_TARGET_STOPS=true` closes all and halts) | `TRADER_DAY_TARGET` | **Rs 1,000** |
 | Day lock ratchet (give back a share of the best) | `TRADER_DAYLOCK_STEPS` / `_ARM_RS` | **Off** (owner: only the target banks a day) |
 | Stop after N losers / flip | `TRADER_STOP_AFTER_LOSSES`, `TRADER_FLIP` | **Off** |
 | No-entry window | `TRADER_NO_ENTRY_WINDOWS` | 12:00-13:00 |

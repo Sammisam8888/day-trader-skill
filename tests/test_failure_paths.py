@@ -1,6 +1,7 @@
 """Failure paths found in the 12-13 Nov audit. Each test is a broker state
 that used to lose money or leave a position unprotected."""
 
+import json
 import os
 import sys
 import unittest
@@ -502,7 +503,8 @@ class TrailingLadder(unittest.TestCase):
 class DayRatchet(unittest.TestCase):
     """17 Nov: +895 at the best, ended about -30. The kept share rises with the day."""
     def setUp(self):
-        reset(TRADER_DAYLOCK_STEPS="150:40,300:55,600:65,1000:75,2000:80", TRADER_DAY_TARGET="1000")
+        reset(TRADER_DAYLOCK_STEPS="150:40,300:55,600:65,1000:75,2000:80", TRADER_DAY_TARGET="1000",
+              TRADER_TARGET_STOPS="true")
         sess.now = lambda clock=None: AT
         self.state = {}
 
@@ -528,6 +530,15 @@ class DayRatchet(unittest.TestCase):
         b = self.tick("1050")
         self.assertIn("day target", common.halted())
         self.assertEqual([(p["side"], p["qty"]) for p in b.placed], [("S", 40)])
+
+    def test_by_default_the_target_is_a_milestone_and_the_ai_keeps_trading(self):
+        import profitlock as pl
+        common.ENV_FILE.write_text(common.ENV_FILE.read_text().replace("TRADER_TARGET_STOPS=true", "TRADER_TARGET_STOPS=false"))
+        self.assertIsNone(pl.day_check(D("900"), D("1050"))[1])
+        b = self.tick("1050")
+        self.assertIsNone(common.halted())
+        self.assertEqual(b.placed, [])
+        self.assertTrue(any(r.get("event") == "day_target_reached" for r in (json.loads(x) for x in common.log_path().read_text().splitlines())))
 
     def test_small_wiggle_before_arming_is_left_alone(self):
         self.tick("120"); self.tick("10")

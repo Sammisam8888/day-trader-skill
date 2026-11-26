@@ -8,8 +8,11 @@ trader. No broker access at all (a test enforces it).
 - **Wallet:** `TRADER_BENCH_CAPITAL` = Rs 1,00,000 per model (26 Nov), 5x; each trade
   sized so its stop loses `TRADER_PAPER_RISK` (Rs 500), capped by the model's free
   wallet (open notional <= wallet x 5).
-- **Day target:** `TRADER_BENCH_TARGET` = Rs 1,000: the model's trades are closed and it
-  is done for the day. No loss limit, no trade cap (`TRADER_PAPER_UNCAPPED=true`);
+- **Day target:** `TRADER_BENCH_TARGET` = Rs 1,000 is a milestone, not a stop (owner, 26 Nov:
+  "it should be hungry to book more profits"). The first time a model's day net reaches it, the
+  journal notes "DAY TARGET reached ... Keeps trading for more." and the model trades on. The same
+  holds for its futures and options sleeves. `TRADER_TARGET_STOPS=true` brings back the old rule
+  (close and done for the day). No loss limit, no trade cap (`TRADER_PAPER_UNCAPPED=true`);
   where a Rs 75 kill would have fired is recorded for study.
 - Entries 09:30-14:35, flat 14:50; a restart replays the day from the tape recording.
 

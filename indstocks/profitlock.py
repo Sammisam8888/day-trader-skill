@@ -195,11 +195,22 @@ def day_target() -> Optional[Decimal]:
         return None
 
 
+def target_stops() -> bool:
+    """TRADER_TARGET_STOPS (default false, owner 26 Nov): at false the day target is a milestone
+    and the AI keeps trading; the day-lock ladder still protects what it has made."""
+    return common.setting("TRADER_TARGET_STOPS", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def target_reached(net: Decimal) -> bool:
+    tgt = day_target()
+    return tgt is not None and net >= tgt
+
+
 def day_check(best: Optional[Decimal], net: Decimal):
     """(new_best, reason to lock the day or None)."""
     best = net if best is None else max(best, net)
     tgt = day_target()
-    if tgt is not None and net >= tgt:
+    if tgt is not None and net >= tgt and target_stops():
         return best, f"day target: day net {net:.0f} reached the target {tgt:.0f}, banked"
     steps = day_steps()
     if steps:

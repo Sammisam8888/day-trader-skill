@@ -49,7 +49,20 @@ class Wallet(unittest.TestCase):
     def setUp(self):
         reset(TRADER_BENCH_CAPITAL="100000", TRADER_PAPER_RISK="500", TRADER_BENCH_TARGET="1000")
 
-    def test_target_closes_and_stops_the_model_and_notes_it(self):
+    def test_target_is_a_milestone_and_the_model_keeps_trading(self):
+        b = paper.Bench("2026-11-26")
+        b.open[("rsi2", "AAA")] = paper.Trade("rsi2", "AAA", "B", 1000, 100.0, 95.0, 120.0, T0)
+        b.check_kills({"AAA": 101.5}, T0 + 600)
+        self.assertNotIn("rsi2", b.killed)
+        self.assertIn(("rsi2", "AAA"), b.open, "the winner keeps running")
+        self.assertIn("rsi2", b.target_hit)
+        b.check_kills({"AAA": 102.5}, T0 + 700)
+        self.assertEqual(journal.log_file("rsi2", "2026-11-26").read_text().count("DAY TARGET"), 1)
+        self.assertIn("Keeps trading", journal.log_file("rsi2", "2026-11-26").read_text())
+
+    def test_target_closes_and_stops_the_model_when_asked(self):
+        reset(TRADER_BENCH_CAPITAL="100000", TRADER_PAPER_RISK="500", TRADER_BENCH_TARGET="1000",
+              TRADER_TARGET_STOPS="true")
         b = paper.Bench("2026-11-26")
         b.open[("rsi2", "AAA")] = paper.Trade("rsi2", "AAA", "B", 1000, 100.0, 95.0, 120.0, T0)
         b.check_kills({"AAA": 101.5}, T0 + 600)

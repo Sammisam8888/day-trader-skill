@@ -93,6 +93,7 @@ class Fno(unittest.TestCase):
         self.q.q["1002"].update(bid=D("1306"), ask=D("1307"))       # short future +1,500ish
         self.book.mark(AT + 60)
         self.assertIn("orb15~fut", self.book.st["done"])
+        self.assertIn("orb15~fut|RELIANCE", self.book.st["open"], "the target is a milestone; it keeps trading")
         again = fno.FnoBook(DAY, self.q, self.c)
         self.assertIn("orb15~opt|RELIANCE", again.st["open"], "the book survives a restart")
         again.mark(AT + 120, flat=True)

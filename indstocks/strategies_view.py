@@ -90,8 +90,9 @@ def _ai_day(day: str) -> dict:
             res.append(r)
     return {"net": float(pnl[-1]["net"]) if pnl else 0.0, "trades": len(res),
             "wins": sum(1 for r in res if r.get("win")), "placed": sum(1 for r in rows if r.get("event") == "placed"),
-            "target_hit": next((r.get("ts", "")[11:16] for r in rows if r.get("event") == "day_locked"
-                                and "target" in str(r.get("reason", ""))), None)}
+            "target_hit": next((r.get("ts", "")[11:16] for r in rows if r.get("event") == "day_target_reached"
+                                or (r.get("event") == "day_locked" and "target" in str(r.get("reason", "")))),
+                               None)}
 
 
 def headline(name: str, day: Optional[str] = None) -> Optional[dict]:

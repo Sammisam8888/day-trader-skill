@@ -364,6 +364,11 @@ def tick(broker, now: datetime, state: dict) -> dict:
     # (ii) the day lock: a big day may not give back more than half
     if profitlock.day_enabled() and not lock_best.get("_day_locked") and not lock_best.get("_loss_stopped") \
             and day_net is not None:
+        if profitlock.target_reached(day_net) and not lock_best.get("_target_seen"):
+            lock_best["_target_seen"] = Decimal(1)
+            lock_dirty[0] = True
+            log({"event": "day_target_reached", "net": str(round(day_net, 2)),
+                 "stops": profitlock.target_stops()})
         best_d, why_d = profitlock.day_check(lock_best.get("_day"), day_net)
         if best_d != lock_best.get("_day"):
             lock_best["_day"] = best_d
