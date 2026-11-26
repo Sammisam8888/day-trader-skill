@@ -14,6 +14,23 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
+MASTER_URL = "https://api.shoonya.com/NFO_symbols.txt.zip"
+
+
+def probe_master() -> None:
+    import io
+    import urllib.request
+    import zipfile
+    raw = urllib.request.urlopen(MASTER_URL, timeout=30).read()
+    z = zipfile.ZipFile(io.BytesIO(raw))
+    name = z.namelist()[0]
+    lines = z.read(name).decode("utf-8", "replace").splitlines()
+    print("master", name, len(lines), "lines")
+    print(" header:", lines[0][:300])
+    for l in [x for x in lines if ",RELIANCE," in x][:6]:
+        print(" ", l[:300])
+
+
 def probe(sym: str = "RELIANCE") -> None:
     from shoonya import Shoonya
     b = Shoonya(data_only=True)
@@ -30,4 +47,7 @@ def probe(sym: str = "RELIANCE") -> None:
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--probe"]:
-        probe(*(sys.argv[2:3] or []))
+        try:
+            probe_master()
+        except Exception as e:                           # noqa: BLE001
+            print("master ERROR", str(e)[:200])
