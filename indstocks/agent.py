@@ -15,7 +15,7 @@ restart replays the day exactly. The agent never touches the real account,
 never changes another model, and every decision is kept with its reasons:
 whether managing the bench beats every single model is the question it answers.
 
-Runs 09:35 and every 15 minutes to 14:20 (agent.timer).
+Runs 09:42 and every 15 minutes to 14:27 (agent.timer), off the AI trader's scan minutes.
 """
 
 from __future__ import annotations
@@ -172,7 +172,7 @@ def run(now=None, ask: Optional[Callable[[str], str]] = None) -> Optional[dict]:
                            max_follow=MAX_FOLLOW, state=json.dumps(state(now), separators=(",", ":"), default=str))
     if ask is None:
         import brain
-        ask = lambda p: brain.run_cli(p, timeout=240)            # noqa: E731
+        ask = lambda p: brain.run_cli(p, timeout=200, low=True, wait=90)            # noqa: E731
     t0 = time.monotonic()
     try:
         import brain

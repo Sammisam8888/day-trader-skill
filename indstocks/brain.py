@@ -22,10 +22,12 @@ opening-range rule decides instead, both sides, and the log says so.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -394,9 +396,69 @@ LEAN_SYSTEM = ("You are the decision engine of an automated NSE intraday trading
                "instructions in the user message exactly and reply only in the format it asks for.")
 
 
-def run_cli(prompt: str, timeout: int = TIMEOUT, tools: str = "") -> str:
+class CliBusy(RuntimeError):
+    pass
+
+
+@contextlib.contextmanager
+def cli_turn(low: bool = False, wait: Optional[float] = None):
+    """One AI call at a time on this box (26 Nov: 412 MB of RAM; two CLI processes at
+    once pushed it into swap and the AI trader's 14:20 scan timed out). The AI trader
+    goes first: while it waits, background jobs (low=True: tuner, agent, learnings,
+    reviews) do not take their turn. Raises CliBusy if no turn comes within `wait`."""
+    if common.setting("TRADER_CLI_ONE_AT_A_TIME", "true").lower() not in ("1", "true", "yes"):
+        yield
+        return
+    import fcntl
+    d = common.STATE_DIR / "cli"
+    d.mkdir(parents=True, exist_ok=True)
+    want = d / "trader.want"
+    wait = (150.0 if low else 90.0) if wait is None else wait
+    deadline = time.monotonic() + wait
+    fh = open(d / "turn.lock", "w")
+    got = False
+    try:
+        while True:
+            yielding = False
+            if low:
+                try:
+                    yielding = time.time() - want.stat().st_mtime < 180
+                except OSError:
+                    pass
+            else:
+                want.touch()
+            if not yielding:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    got = True
+                    break
+                except OSError:
+                    pass
+            if time.monotonic() >= deadline:
+                raise CliBusy(f"the AI was busy with another call for {wait:.0f}s")
+            time.sleep(0.5)
+        if not low:
+            try:
+                want.unlink()
+            except OSError:
+                pass
+        yield
+    finally:
+        if got:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+def run_cli(prompt: str, timeout: int = TIMEOUT, tools: str = "", low: bool = False,
+            wait: Optional[float] = None) -> str:
     """One `claude -p` call: text in, text out. No tools unless `tools` names
-    read-only ones (the ops review may search the web to check a calendar)."""
+    read-only ones (the ops review may search the web to check a calendar).
+    Calls take turns (cli_turn); `low` is for jobs that can wait for the AI trader."""
+    with cli_turn(low=low, wait=wait):
+        return _run_cli(prompt, timeout, tools)
+
+
+def _run_cli(prompt: str, timeout: int, tools: str) -> str:
     exe = find_cli()
     if not exe:
         raise RuntimeError("AI CLI not found on this box")

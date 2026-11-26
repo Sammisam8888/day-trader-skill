@@ -100,7 +100,7 @@ def run(day: Optional[str] = None, ask: Optional[Callable[[str], str]] = None, l
     day = day or sess.now().strftime("%Y-%m-%d")
     if ask is None:
         import brain
-        ask = lambda p: brain.run_cli(p, timeout=300)            # noqa: E731
+        ask = lambda p: brain.run_cli(p, timeout=300, low=True, wait=900)            # noqa: E731
     done, skipped, failed = [], [], []
     try:
         folders = sorted(d for d in journal.base().iterdir() if d.is_dir())

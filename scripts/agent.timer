@@ -1,10 +1,10 @@
 [Unit]
-Description=The AI agent's decisions: 09:35, then every 15 minutes to 14:20, weekdays
+Description=The AI agent's decisions: 09:42, then every 15 minutes to 14:27, weekdays (off the AI trader's 5-minute scan minutes)
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 09:35,50:00 Asia/Kolkata
-OnCalendar=Mon..Fri *-*-* 10,11,12,13:05,20,35,50:00 Asia/Kolkata
-OnCalendar=Mon..Fri *-*-* 14:05,20:00 Asia/Kolkata
+OnCalendar=Mon..Fri *-*-* 09:42,57:00 Asia/Kolkata
+OnCalendar=Mon..Fri *-*-* 10,11,12,13:12,27,42,57:00 Asia/Kolkata
+OnCalendar=Mon..Fri *-*-* 14:12,27:00 Asia/Kolkata
 Persistent=false
 
 [Install]

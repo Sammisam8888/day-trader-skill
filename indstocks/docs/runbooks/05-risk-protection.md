@@ -34,3 +34,15 @@ few seconds, and the AI cannot override them.
 - The Rs 300 kill: on 23 Nov the day passed -300 and ended -585 without it.
 - Real money only comes back after the PIP (runbook 06). Before that, add a wide
   backstop (for example Rs 1,500) even if the paper run passes without one.
+
+## One AI call at a time (26 Nov)
+
+The box has 412 MB of RAM. Two AI CLI processes at once pushed it into swap, and on
+26 Nov the AI trader's scans at 11:20, 13:50 and 14:20 timed out (each time the tuner or
+the AI agent was calling the AI too). `brain.cli_turn` now gives the AI one call at a
+time (a file lock in `STATE_DIR/cli/`). The AI trader goes first: while it waits, the
+background jobs (tuner, AI agent, sentiment, reviews, learnings) hold back. A job that
+gets no turn in time skips that run (`CliBusy`) and tries at its next slot.
+`TRADER_CLI_ONE_AT_A_TIME=false` turns this off. The AI agent runs at :12/:27/:42/:57,
+off the scan minutes.
+

@@ -141,7 +141,7 @@ function Detail({ name, onBack, onOpen }: { name: string; onBack: () => void; on
 
       {d.agent && (
         <Card title="What the AI agent follows" right={<span className="text-xs text-faint">{d.agent.decisions.length} decisions today</span>}>
-          {d.agent.decisions.length === 0 ? <Empty>No decision yet today (first at 09:35, then every 15 minutes).</Empty> : (() => {
+          {d.agent.decisions.length === 0 ? <Empty>No decision yet today (first at 09:42, then every 15 minutes).</Empty> : (() => {
             const now = d.agent.decisions[d.agent.decisions.length - 1];
             const fol = Object.entries(now.follow);
             return (

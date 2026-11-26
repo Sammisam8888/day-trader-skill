@@ -125,11 +125,11 @@ def run(now=None, *, ask: Optional[Callable] = None, nse: Optional[Callable] = N
         else:
             tools = "WebSearch,WebFetch" if common.setting("TRADER_OPS_WEB", "true").lower() in ("1", "true", "yes") else ""
             try:
-                raw = brain.run_cli(prompt, timeout=300, tools=tools)
+                raw = brain.run_cli(prompt, timeout=300, tools=tools, low=True, wait=600)
             except Exception:                           # noqa: BLE001
                 if not tools:
                     raise
-                raw = brain.run_cli(prompt, timeout=150)
+                raw = brain.run_cli(prompt, timeout=150, low=True, wait=600)
         tr["raw"] = raw
         out = brain.parse_obj(raw)
     except Exception as exc:                            # noqa: BLE001

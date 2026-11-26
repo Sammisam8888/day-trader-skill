@@ -58,7 +58,7 @@ fixed on the bench.
 ## The AI agent (`agent.py`, book `ai_agent`)
 
 Owner, 26 Nov: one more Rs 1 lakh paper wallet run by the AI as a manager of the other
-strategies. It has no recipe of its own. At 09:35 and every 15 minutes to 14:20
+strategies. It has no recipe of its own. At 09:42 and every 15 minutes to 14:27
 (`agent.timer`) the AI reads the bench (today, the last hour, the last days), the
 index tape, breadth, sentiment and its own book, and writes a decision to
 `auto/paper/agent-DAY.jsonl`:

@@ -224,7 +224,7 @@ def review(day: str, trades: List[dict], lessons: dict, run: Optional[Callable] 
     prompt = PROMPT.format(max_new=MAX_NEW_PER_DAY, day=day,
                            lessons=json.dumps(active, indent=1) if active else "(none yet)",
                            trades=json.dumps(trades, indent=1, default=str))
-    raw = (run or (lambda p: brain.run_cli(p, timeout=240)))(prompt)
+    raw = (run or (lambda p: brain.run_cli(p, timeout=240, low=True, wait=900)))(prompt)
     return brain.parse_obj(raw)
 
 

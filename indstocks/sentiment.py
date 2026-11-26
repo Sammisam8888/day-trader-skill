@@ -416,7 +416,7 @@ def read_news(news: dict, now: datetime, symbols: List[str], run: Optional[Calla
     lines = "\n".join(f"- [{i['t']} {i['src']}] {i['h']}" for i in news["items"])
     prompt = NEWS_PROMPT.format(day=now.strftime("%a %d %b %Y"), now=now.strftime("%H:%M"),
                                 symbols=", ".join(symbols), lines=lines)
-    raw = (run or (lambda p: brain.run_cli(p, timeout=150)))(prompt)
+    raw = (run or (lambda p: brain.run_cli(p, timeout=150, low=True, wait=120)))(prompt)
     data = brain.parse_obj(raw)
     return clean_news(data, symbols)
 

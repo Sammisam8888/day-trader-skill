@@ -330,7 +330,7 @@ def pipeline(now: Optional[datetime] = None) -> dict:
         stage("bench", "Paper bench", "35 rule models + F&O sleeves on live prices", bench_ts, window=(9 * 60 + 16, 15 * 60), max_age=60),
         stage("tuner", "Tuner", "The AI sets the @ai knobs", params.get("at"), window=(9 * 60 + 25, 14 * 60 + 30), max_age=2100),
         stage("agent", "AI agent", "Picks which models its Rs 1L wallet follows, every 15 min",
-              ((paper.agent_decisions(day) or [{}])[-1]).get("at"), window=(9 * 60 + 40, 14 * 60 + 30), max_age=1200),
+              ((paper.agent_decisions(day) or [{}])[-1]).get("at"), window=(9 * 60 + 45, 14 * 60 + 35), max_age=1200),
         stage("orders", "Orders and fills", f"Execution ({broker} broker)",
               last(lambda r: r.get("event") in ("paper_order", "placed", "filled")), due_after=None),
         stage("monitor", "Fill monitor", "Stops, trailing lock, target, P&L", last(lambda r: r.get("event") == "pnl"),

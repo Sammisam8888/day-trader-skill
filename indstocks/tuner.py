@@ -181,7 +181,7 @@ def run(now=None, ask: Optional[Callable[[str], str]] = None) -> dict:
     prompt = PROMPT.format(knobs=knob_table(), state=json.dumps(state(now), separators=(",", ":"), default=str))
     if ask is None:
         import brain
-        ask = lambda p: brain.run_cli(p, timeout=240)            # noqa: E731
+        ask = lambda p: brain.run_cli(p, timeout=200, low=True, wait=90)            # noqa: E731
     t0 = time.monotonic()
     try:
         import brain
