@@ -125,6 +125,31 @@ class BadQuotes(unittest.TestCase):
         self.assertEqual(b.st["open"]["rsi2~opt|RELIANCE"]["lots"], 5)
 
 
+class WrongInstrumentQuote(unittest.TestCase):
+    def test_a_quote_for_another_instrument_is_refused(self):
+        reset()
+        good = {"exch": "NFO", "token": "104379", "tsym": "ITC29DEC26C307.5", "lp": "7.95", "bp1": "7.85", "sp1": "7.95"}
+        self.assertEqual(fno.checked(good, "104379")["bid"], D("7.85"))
+        bad = {"exch": "NSE", "token": "1660", "tsym": "ITC-EQ", "lp": "307.55", "bp1": "307.55", "sp1": "307.60"}
+        with self.assertRaises(fno.WrongInstrument):
+            fno.checked(bad, "104380")
+
+    def test_a_refused_quote_closes_nothing_at_a_wrong_price(self):
+        reset(TRADER_FNO_CAPITAL="100000", TRADER_FNO_FUT_MARGIN_PCT="15")
+        sess.now = lambda clock=None: datetime(2026, 11, 26, 10, 0, tzinfo=sess.IST)
+        c = fno.Contracts(fno.load_master(DAY, fetch=lambda: zipped(MASTER)), date(2026, 11, 26))
+        q = Quotes()
+        b = fno.FnoBook(DAY, q, c)
+        b.on_open("rsi2", "RELIANCE", "B", 1304.0, AT)
+
+        def wrong(token):
+            raise fno.WrongInstrument("got the share")
+        b.quote = wrong
+        b.on_close("rsi2", "RELIANCE", "stop", AT + 60)
+        self.assertIn("rsi2~opt|RELIANCE", b.st["open"], "kept open until a true quote arrives")
+        self.assertEqual(b.st["realised"], {})
+
+
 class BenchDrivesFno(unittest.TestCase):
     def test_replayed_trades_never_touch_fno_live_ones_do(self):
         reset(TRADER_BENCH_CAPITAL="100000", TRADER_PAPER_RISK="500")

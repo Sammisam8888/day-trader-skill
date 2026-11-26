@@ -361,10 +361,32 @@ class FnoBook:
         return out
 
 
+class WrongInstrument(RuntimeError):
+    pass
+
+
+def checked(raw: dict, token: str) -> dict:
+    """A quote only if it is for the contract asked for. 26 Nov: Shoonya's GetQuotes for
+    the ITC 307.5 put (token 104380) answered with ITC's share quote (token 1660,
+    ITC-EQ at 307.55); the sleeves sold Rs 10 options at the share price and showed
+    lakhs of profit. A quote for any other token or exchange is no quote."""
+    if str(raw.get("token")) != str(token) or str(raw.get("exch", "NFO")).upper() != "NFO":
+        raise WrongInstrument(f"asked for NFO {token}, got {raw.get('exch')} {raw.get('token')} {raw.get('tsym')}")
+    from shoonya import D as SD
+    return {"ltp": SD(raw.get("lp")), "bid": SD(raw.get("bp1")), "ask": SD(raw.get("sp1")), "tsym": raw.get("tsym")}
+
+
 def live_quote() -> Callable[[str], dict]:
     from shoonya import Shoonya
     b = Shoonya(data_only=True)
-    return lambda token: b.quote(token, "NFO")
+
+    def q(token: str) -> dict:
+        try:
+            return checked(b.call("GetQuotes", {"exch": "NFO", "token": str(token)}), token)
+        except WrongInstrument as exc:
+            common.log("paper", {"event": "fno_wrong_quote", "detail": str(exc)[:200]})
+            raise
+    return q
 
 
 def models_with_sleeves() -> List[str]:

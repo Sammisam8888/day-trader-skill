@@ -213,6 +213,17 @@ jobs:
             sudo find /var/lib/indstocks/strategies -path '*~*/logs/2026-11-26.md' -delete 2>/dev/null || true
             sudo touch /var/lib/indstocks/.profile-fno-reset-2026-11-26
           fi
+          # 26 Nov (2): the real cause: Shoonya's quote API sometimes answers an option token with the
+          # stock's quote. Quotes are now checked against the token asked for; drop today's corrupted
+          # F&O book and logs again. One time.
+          if [ ! -f /var/lib/indstocks/.profile-fno-reset2-2026-11-26 ]; then
+            sudo systemctl stop paper.service || true
+            sleep 2
+            sudo rm -f /var/lib/indstocks/auto/fno/2026-11-26.json
+            sudo find /var/lib/indstocks/strategies -path '*_fut/logs/2026-11-26.md' -delete 2>/dev/null || true
+            sudo find /var/lib/indstocks/strategies -path '*_opt/logs/2026-11-26.md' -delete 2>/dev/null || true
+            sudo touch /var/lib/indstocks/.profile-fno-reset2-2026-11-26
+          fi
           # Company data (24 Nov): fill it once now so the AI and the Desk have it before the 16:30 run.
           if [ ! -f /var/lib/indstocks/.profile-company-first-run ]; then
             sudo systemctl start company.service || true
