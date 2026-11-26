@@ -380,10 +380,14 @@ def probe() -> None:
         f = c.future(sym)
         o = c.atm_option(sym, 1300.0 if sym == "RELIANCE" else 800.0, "B")
         print(sym, "fut", f and (f["tsym"], f["lot"], str(f["expiry"])), "| atm call", o and (o["tsym"], str(o["strike"])))
-    q = live_quote()
-    f = c.future("RELIANCE")
-    if f:
-        print("quote", f["tsym"], {k: str(v) for k, v in q(f["token"]).items() if k in ("ltp", "bid", "ask")})
+    from shoonya import Shoonya
+    b = Shoonya(data_only=True)
+    for sym, spot in (("BEL", 405.0), ("ITC", 308.0)):
+        for side in ("B", "S"):
+            o = c.atm_option(sym, spot, side)
+            if o:
+                raw = b.call("GetQuotes", {"exch": "NFO", "token": str(o["token"])})
+                print("raw", o["tsym"], o["token"], json.dumps({k: raw.get(k) for k in ("tsym", "token", "lp", "bp1", "sp1", "c", "o", "h", "l", "strprc", "exd", "instname")}))
 
 
 if __name__ == "__main__":
