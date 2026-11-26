@@ -191,6 +191,28 @@ class FnoBook:
         journal.row(sleeve, self.day, time=_now_str(at), **kw)
 
     # prices
+    def _entry_px(self, c: dict, side: str, spot: float, kind: str) -> tuple:
+        """(price, None) or (None, why): a two-sided book, a sane spread, a price that
+        fits the stock (26 Nov: a stale few-paise option quote with an empty book
+        "bought" hundreds of lots and showed lakhs of fake profit)."""
+        try:
+            q = self.quote(c["token"])
+        except Exception as exc:                                  # noqa: BLE001
+            return None, f"no quote for {c['tsym']}: {str(exc)[:60]}"
+        bid, ask = (D(str(q.get(k) or 0)) for k in ("bid", "ask"))
+        if bid <= 0 or ask <= 0:
+            return None, f"{c['tsym']}: no two-sided book (bid {bid}, ask {ask})"
+        limit = _d("TRADER_FNO_MAX_SPREAD_FUT", "0.5") if kind == "fut" else _d("TRADER_FNO_MAX_SPREAD_OPT", "5")
+        if (ask - bid) / ask > limit / 100:
+            return None, f"{c['tsym']}: spread {bid}/{ask} too wide"
+        px = ask if side == "B" else bid
+        spot_d = D(str(spot))
+        if kind == "fut" and abs(px - spot_d) / spot_d > D("0.03"):
+            return None, f"{c['tsym']}: future {px} is more than 3% from the stock {spot_d}"
+        if kind == "opt" and not (spot_d * D("0.002") <= px <= spot_d * D("0.15")):
+            return None, f"{c['tsym']}: premium {px} implausible for an ATM option on {spot_d}"
+        return px, None
+
     def _px(self, token: str, side: str) -> Optional[D]:
         """What a buy (side B) or a sell (S) would fill at now."""
         try:
@@ -243,9 +265,9 @@ class FnoBook:
                 self._skip(sleeve, at, sym, f"no {kind} contract for {sym}")
                 continue
             buy_side = side if kind == "fut" else "B"
-            px = self._px(c["token"], buy_side)
+            px, why = self._entry_px(c, buy_side, spot, kind)
             if px is None:
-                self._skip(sleeve, at, sym, f"no quote for {c['tsym']}")
+                self._skip(sleeve, at, sym, why)
                 continue
             lot = c["lot"]
             if kind == "fut":
@@ -257,7 +279,7 @@ class FnoBook:
             else:
                 per_lot = px * lot
                 budget = min(_d("TRADER_FNO_OPT_BUDGET", "20000"), self.free(sleeve))
-                lots = int(budget // per_lot) if per_lot > 0 else 0
+                lots = min(int(budget // per_lot) if per_lot > 0 else 0, int(_d("TRADER_FNO_MAX_LOTS", "5")))
                 if lots < 1:
                     if per_lot <= self.free(sleeve):
                         lots = 1

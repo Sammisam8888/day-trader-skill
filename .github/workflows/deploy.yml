@@ -205,6 +205,14 @@ jobs:
             echo 'TRADER_STOP_AFTER_LOSSES=0' | sudo tee -a /etc/indstocks.env >/dev/null
             sudo touch /var/lib/indstocks/.profile-no-loser-stop-v2
           fi
+          # 26 Nov: the first F&O sleeves bought stale few-paise option quotes (lakhs of fake profit).
+          # Fixed in fno.py; drop today's F&O book and logs so the day restarts clean. One time.
+          if [ ! -f /var/lib/indstocks/.profile-fno-reset-2026-11-26 ]; then
+            sudo systemctl stop paper.service || true
+            sudo rm -f /var/lib/indstocks/auto/fno/2026-11-26.json
+            sudo find /var/lib/indstocks/strategies -path '*~*/logs/2026-11-26.md' -delete 2>/dev/null || true
+            sudo touch /var/lib/indstocks/.profile-fno-reset-2026-11-26
+          fi
           # Company data (24 Nov): fill it once now so the AI and the Desk have it before the 16:30 run.
           if [ ! -f /var/lib/indstocks/.profile-company-first-run ]; then
             sudo systemctl start company.service || true

@@ -99,6 +99,32 @@ class Fno(unittest.TestCase):
         self.assertEqual(again.st["open"], {})
 
 
+class BadQuotes(unittest.TestCase):
+    def setUp(self):
+        reset(TRADER_FNO_CAPITAL="100000", TRADER_FNO_FUT_MARGIN_PCT="15")
+        sess.now = lambda clock=None: datetime(2026, 11, 26, 10, 0, tzinfo=sess.IST)
+        self.c = fno.Contracts(fno.load_master(DAY, fetch=lambda: zipped(MASTER)), date(2026, 11, 26))
+
+    def test_a_stale_paise_quote_or_an_empty_book_is_never_bought(self):
+        q = Quotes()
+        q.q["2001"] = {"ltp": D("0.05"), "bid": D("0"), "ask": D("0.05")}       # 26 Nov: empty book, stale price
+        q.q["1002"] = {"ltp": D("1310"), "bid": D("1290"), "ask": D("1330")}    # 3% wide
+        b = fno.FnoBook(DAY, q, self.c)
+        b.on_open("rsi2", "RELIANCE", "B", 1304.0, AT)
+        self.assertEqual(b.st["open"], {})
+        log = journal.log_file("rsi2~opt", DAY).read_text()
+        self.assertIn("no two-sided book", log)
+
+    def test_option_lots_are_capped(self):
+        reset(TRADER_FNO_CAPITAL="100000", TRADER_FNO_OPT_BUDGET="100000", TRADER_FNO_MAX_LOTS="5")
+        sess.now = lambda clock=None: datetime(2026, 11, 26, 10, 0, tzinfo=sess.IST)
+        q = Quotes()
+        q.q["2001"] = {"ltp": D("3"), "bid": D("2.95"), "ask": D("3.0")}
+        b = fno.FnoBook(DAY, q, self.c)
+        b.on_open("rsi2", "RELIANCE", "B", 1304.0, AT)
+        self.assertEqual(b.st["open"]["rsi2~opt|RELIANCE"]["lots"], 5)
+
+
 class BenchDrivesFno(unittest.TestCase):
     def test_replayed_trades_never_touch_fno_live_ones_do(self):
         reset(TRADER_BENCH_CAPITAL="100000", TRADER_PAPER_RISK="500")
