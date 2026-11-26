@@ -13,6 +13,7 @@ const toneOf = (x: number | null | undefined) => (x == null ? "text-dim" : x > 0
 const KIND: Record<string, { label: string; tone: string }> = {
   fixed: { label: "fixed", tone: "dim" }, inverted: { label: "inverted", tone: "warn" },
   ai_tuned: { label: "AI-tuned", tone: "info" }, ai_trader: { label: "AI trader", tone: "up" },
+  ai_agent: { label: "AI agent", tone: "up" },
   futures: { label: "futures", tone: "warn" }, options: { label: "options", tone: "info" },
 };
 const ago = (s: number | null) => (s == null ? "never" : s < 90 ? `${Math.round(s)}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago`
@@ -77,7 +78,7 @@ function Md({ text }: { text: string }) {
   );
 }
 
-function Detail({ name, onBack }: { name: string; onBack: () => void }) {
+function Detail({ name, onBack, onOpen }: { name: string; onBack: () => void; onOpen?: (m: string) => void }) {
   const [day, setDay] = useState<string | undefined>(undefined);
   const [d, setD] = useState<StratDetail | null>(null);
   const [tab, setTab] = useState<"trades" | "learning" | "log">("trades");
@@ -138,6 +139,33 @@ function Detail({ name, onBack }: { name: string; onBack: () => void }) {
           {d.knobs.why && <p className="mt-2 text-xs text-faint">AI: {d.knobs.why}</p>}
         </Card>)}
 
+      {d.agent && (
+        <Card title="What the AI agent follows" right={<span className="text-xs text-faint">{d.agent.decisions.length} decisions today</span>}>
+          {d.agent.decisions.length === 0 ? <Empty>No decision yet today (first at 09:35, then every 15 minutes).</Empty> : (() => {
+            const now = d.agent.decisions[d.agent.decisions.length - 1];
+            const fol = Object.entries(now.follow);
+            return (
+              <div className="grid gap-2">
+                <p className="text-sm text-dim"><span className="text-faint">{now.at.slice(11, 16)}</span> {now.day_read}</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {now.stand_aside && <Badge tone="warn">standing aside</Badge>}
+                  {fol.length === 0 && !now.stand_aside && <span className="text-xs text-faint">following no model</span>}
+                  {fol.map(([m, f]) => (
+                    <button key={m} onClick={() => onOpen?.(m)} title={f.why}
+                      className="rounded-md border border-line bg-panel-2 px-2 py-0.5 text-xs num hover:border-info">
+                      {m} <span className="text-fg">x{f.risk}</span>{f.side !== "both" && <span className="text-faint"> {f.side}</span>}
+                    </button>))}
+                </div>
+                {now.note && <p className="text-xs text-faint">AI: {now.note}</p>}
+                <details className="text-xs text-dim"><summary className="cursor-pointer text-faint">all decisions</summary>
+                  <ul className="mt-1 grid gap-1">{d.agent.decisions.slice().reverse().map((x, i) => (
+                    <li key={i}><span className="num text-faint">{x.at.slice(11, 16)}</span> follow {Object.keys(x.follow).join(", ") || "none"}
+                      {x.exit.length > 0 && ` | exit ${x.exit.join(", ")}`}{x.exit_all && " | EXIT ALL"}{x.stand_aside && " | stand aside"}{x.note && ` - ${x.note}`}</li>))}
+                  </ul></details>
+              </div>);
+          })()}
+        </Card>)}
+
       <div className="flex gap-1">
         {(["trades", "learning", "log"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)} className={clsx("rounded-lg px-3 py-1.5 text-sm",
@@ -166,7 +194,7 @@ function Detail({ name, onBack }: { name: string; onBack: () => void }) {
                   <td className="py-1.5 pr-2 text-dim">{t.opened}</td><td className="pr-2 text-dim">{t.closed ?? <Badge tone="info">open</Badge>}</td>
                   <td className="pr-2">{t.stock}</td><td className={clsx("pr-2", t.side === "BUY" ? "text-up" : "text-down")}>{t.side}</td>
                   <td className="pr-2">{t.qty}</td><td className="pr-2">{t.entry}</td><td className="pr-2">{t.stop}</td><td className="pr-2">{t.target}</td>
-                  <td className="pr-2">{t.exit ?? ""}</td><td className="pr-2 text-xs text-faint">{t.why}</td>
+                  <td className="pr-2">{t.exit ?? ""}</td><td className="pr-2 text-xs text-faint">{t.why}{t.followed && <span className="block">via {t.followed}</span>}</td>
                   <td className={clsx("text-right", toneOf(t.net))}>{t.net == null ? "" : rs(t.net, 2)}</td>
                 </tr>))}</tbody>
             </table></div>)}
@@ -211,7 +239,7 @@ export default function Strategies() {
   }, []);
   const rows = useMemo(() => (ov?.strategies ?? []).filter((r) => (kind === "all" || r.kind === kind) && r.name.toLowerCase().includes(q.toLowerCase())), [ov, kind, q]);
 
-  if (sel) return <Detail name={sel} onBack={() => setSel(null)} />;
+  if (sel) return <Detail key={sel} name={sel} onBack={() => setSel(null)} onOpen={setSel} />;
   if (!ov) return <Empty>loading strategies...</Empty>;
   const hit = ov.strategies.filter((r) => r.today.target_hit);
   const traded = ov.strategies.filter((r) => r.today.trades > 0 || r.today.open > 0);
@@ -233,7 +261,7 @@ export default function Strategies() {
 
       <Card title={`Every strategy, ${ov.day}`} right={<span className="text-xs text-faint">Rs {ov.wallet.toLocaleString("en-IN")} paper wallet each | tap one to open</span>}>
         <div className="mb-3 flex flex-wrap items-center gap-1.5">
-          {["all", "ai_trader", "ai_tuned", "fixed", "inverted", "futures", "options"].map((k2) => (
+          {["all", "ai_agent", "ai_trader", "ai_tuned", "fixed", "inverted", "futures", "options"].map((k2) => (
             <button key={k2} onClick={() => setKind(k2)} className={clsx("rounded-full border px-2.5 py-0.5 text-xs",
               kind === k2 ? "border-info text-fg" : "border-line text-dim")}>{k2 === "all" ? "all" : KIND[k2].label}</button>))}
           <label className="ml-auto flex items-center gap-1 rounded-lg border border-line bg-panel-2 px-2 py-1 text-xs">

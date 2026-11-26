@@ -59,6 +59,11 @@ def about(name: str) -> tuple:
     if name == journal.AI:
         return ("The AI trader: an AI picks setups (orb, failed_break, day_break) on 5-minute scans; code manages "
                 "stops, a trailing profit lock and a Rs 1,000 day target.", "size, stop, target, setups, direction")
+    if name == "ai_agent":
+        return ("The AI agent: its own Rs 1 lakh wallet, run by the AI as a manager of the bench. Every 15 minutes "
+                "it chooses which rule models to follow (copying their new signals, with a risk multiplier and a "
+                "side filter) and which of its positions to close. Its DECISION lines in the log are those choices.",
+                "which models to follow, risk multiplier 0.25..2 per model, side filter, when to exit or stand aside")
     sleeve = ""
     if name.endswith("~fut"):
         sleeve = (" This is its FUTURES sleeve: every stock signal of the strategy is traded as 1 lot of the stock's "

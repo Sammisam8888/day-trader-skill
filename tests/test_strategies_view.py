@@ -47,8 +47,9 @@ class View(unittest.TestCase):
         ov = sv.overview(DAY)
         names = [r["name"] for r in ov["strategies"]]
         import fno
-        self.assertEqual(set(names), set(paper.MODELS) | {journal.AI} | set(fno.models_with_sleeves()))
-        self.assertEqual(len(names), 36 + 70, "35 models + the AI trader + a futures and an options sleeve per model")
+        self.assertEqual(set(names), set(paper.MODELS) | {paper.AGENT, journal.AI} | set(fno.models_with_sleeves()))
+        self.assertEqual(len(names), 37 + 70, "35 models + the AI agent + the AI trader + a futures and an options sleeve per model")
+        self.assertEqual(sv.kind_of(paper.AGENT), "ai_agent")
         top = ov["strategies"][0]
         self.assertEqual((top["name"], top["today"]["net"], top["target_days"], top["days"]), ("liq_sweep", 1012.4, 1, 2))
         self.assertEqual(top["learning"]["text"], "Sweeps of the opening lows paid")

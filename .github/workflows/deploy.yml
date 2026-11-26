@@ -309,12 +309,12 @@ jobs:
           for u in auto.service auto.timer flatten.service flatten.timer watch.service \
                    watch.timer fillmonitor.service dashboard.service login.service login.timer \
                    sentiment.service sentiment.timer ops.service ops.timer book.service book.timer newswatch.service \
-                   learning.service learning.timer tape.service paper.service tuner.service tuner.timer company.service company.timer strategylearn.service strategylearn.timer; do
+                   learning.service learning.timer tape.service paper.service tuner.service tuner.timer agent.service agent.timer company.service company.timer strategylearn.service strategylearn.timer; do
             sudo cp "scripts/$u" "/etc/systemd/system/$u"
           done
           sudo rm -rf /etc/systemd/system/auto.timer.d
           sudo systemctl daemon-reload
-          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer tuner.timer company.timer strategylearn.timer >/dev/null
+          sudo systemctl enable --now auto.timer flatten.timer watch.timer login.timer sentiment.timer ops.timer book.timer learning.timer tuner.timer agent.timer company.timer strategylearn.timer >/dev/null
           if [ ! -f /var/lib/indstocks/.profile-company-first-run-v2 ]; then
             sudo timeout 200 systemctl start company.service || true
             sudo touch /var/lib/indstocks/.profile-company-first-run-v2

@@ -55,10 +55,33 @@ and the bench, and sets the @ai knobs (writes `auto/paper/params-DAY.json`, hist
 `.jsonl`). A bad reply keeps the previous settings. The scorecard of the idea is @ai vs
 fixed on the bench.
 
+## The AI agent (`agent.py`, book `ai_agent`)
+
+Owner, 26 Nov: one more Rs 1 lakh paper wallet run by the AI as a manager of the other
+strategies. It has no recipe of its own. At 09:35 and every 15 minutes to 14:20
+(`agent.timer`) the AI reads the bench (today, the last hour, the last days), the
+index tape, breadth, sentiment and its own book, and writes a decision to
+`auto/paper/agent-DAY.jsonl`:
+
+- `follow`: up to 8 models; when one of them opens a trade, the agent opens the same
+  trade (stock, side, stop, target) in its own wallet, sized so the stop loses
+  `TRADER_AGENT_RISK` (default `TRADER_PAPER_RISK`, Rs 500) x a risk multiplier
+  0.25..2, with a side filter (both / long / short). One position per stock.
+- `exit` (models) / `exit_all`: close its positions that followed those models, now.
+- `stand_aside`: no new trades until the next decision.
+
+The bench applies each decision from its timestamp, so a restart replays the agent's
+day exactly. Its log shows every DECISION line and, per trade, which model it followed;
+the dashboard's Strategies tab has an "AI agent" filter and a card of what it follows.
+No loss limit, the Rs 1,000 target is a milestone like every other book.
+`TRADER_AGENT=false` switches it off. The question it answers: does managing the bench
+beat every single model after charges?
+
 ## Adding a strategy
 
 1. Write `m_<name>(bars, state, p) -> ("B"|"S", stop, target) | None` in `paper.py`.
 2. Add it to `RECIPES`, its knobs with ranges to `KNOBS`, a fixed copy to `MODELS`
-   (the @ai copy is automatic), one line to the tuner's model list.
+   (the @ai copy is automatic), one line to the tuner's model list. The AI agent can
+   follow it from the next decision on.
 3. Test it in `tests/test_strategies.py`, run the 20-day replay, deploy. Its journal
    folder appears on the first trade.

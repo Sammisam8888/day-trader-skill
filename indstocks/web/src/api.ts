@@ -169,16 +169,19 @@ export async function getDesk(): Promise<DeskResp> {
 }
 
 export interface StratToday { net: number; trades: number; wins: number; open: number; target_hit: number | string | null }
-export interface StratRow { name: string; kind: "fixed" | "inverted" | "ai_tuned" | "ai_trader" | "futures" | "options"; recipe: string; wallet: number; target: number;
+export interface StratRow { name: string; kind: "fixed" | "inverted" | "ai_tuned" | "ai_trader" | "ai_agent" | "futures" | "options"; recipe: string; wallet: number; target: number;
   today: StratToday; history: { day: string; net: number; trades: number | null }[]; learning: { day: string; text: string } | null;
   days: number; total: number; green_days: number; target_days: number }
 export interface StratOverview { day: string; wallet: number; target: number; total_today: number; strategies: StratRow[] }
 export interface StratTrade { stock: string; side: string; qty: number; opened?: string | null; closed?: string | null; entry?: number;
-  exit?: number | null; stop?: number; target?: number; net?: number | null; why?: string; time?: string; event?: string; price?: string; note?: string }
+  exit?: number | null; stop?: number; target?: number; net?: number | null; why?: string; followed?: string | null; time?: string; event?: string; price?: string; note?: string }
 export interface LogRow { time: string; event: string; stock: string; side: string; qty: string; price: string; stop: string; target: string; net: string; note: string }
 export interface StratDetail { name: string; day: string; kind: string; recipe: string; summary: StratRow | null; trades: StratTrade[];
   log_rows: LogRow[]; log_md: string; learning_md: string; days: string[];
-  knobs: { values: Record<string, number> | null; why?: string; set_at?: string; day_read?: string; ranges: Record<string, [number, number]>; doc: string } | null }
+  knobs: { values: Record<string, number> | null; why?: string; set_at?: string; day_read?: string; ranges: Record<string, [number, number]>; doc: string } | null;
+  agent?: { decisions: AgentDecision[] } | null }
+export interface AgentDecision { at: string; day_read: string; follow: Record<string, { risk: number; side: string; why: string }>;
+  exit: string[]; exit_all: boolean; stand_aside: boolean; note: string }
 export interface Stage { key: string; name: string; what: string; last: string | null; age_s: number | null; status: "ok" | "late" | "down" | "idle" }
 export interface PipelineResp { at: string; broker: string; stages: Stage[] }
 export async function getStrategies(day?: string): Promise<StratOverview> {

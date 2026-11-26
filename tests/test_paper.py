@@ -101,7 +101,7 @@ class Trading(unittest.TestCase):
     def test_summary_shape(self):
         b = paper.Bench("2026-11-18", write=False)
         s = b.summary({})
-        self.assertEqual(set(s["models"]), set(paper.MODELS))
+        self.assertEqual(set(s["models"]), set(paper.MODELS) | {paper.AGENT})
         self.assertEqual(D(s["total"]), 0)
 
 

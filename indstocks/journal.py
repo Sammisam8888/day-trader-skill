@@ -84,10 +84,11 @@ def note(strategy: str, day: str, text: str) -> None:
 
 
 def reset_bench_day(day: str) -> None:
-    """The bench rebuilds a day from the tape after a restart: clear its logs for that day first."""
+    """The bench rebuilds a day from the tape after a restart: clear its logs for that day first.
+    The AI trader's log and the F&O sleeves' logs are not replayed, so they are kept."""
     try:
         for d in base().iterdir():
-            if d.name != AI:
+            if d.name != AI and not d.name.endswith(("_fut", "_opt")):
                 f = d / "logs" / f"{day}.md"
                 if f.exists():
                     f.unlink()

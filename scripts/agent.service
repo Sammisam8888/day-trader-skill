@@ -1,0 +1,11 @@
+[Unit]
+Description=The AI agent manages its own Rs 1 lakh paper wallet across the bench's models (paper only, no orders)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/indstocks.env
+ExecStart=/usr/bin/python3 /opt/indstocks/day-trader-skill/indstocks/agent.py
+TimeoutStartSec=300
+User=root
+Nice=10

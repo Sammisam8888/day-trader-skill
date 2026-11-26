@@ -35,6 +35,7 @@ checked, and it can never loosen a protection.
 | `flatten.timer` | 14:50, 14:53, 14:57 | Close everything |
 | `paper.service` | always (09:15-15:05) | The paper bench (30+ models) |
 | `tuner.timer` | 09:22, then :52/:22 to 14:22 | AI sets the @ai models' knobs |
+| `agent.timer` | 09:35, then every 15 min to 14:20 | The AI agent picks which models its Rs 1L wallet follows |
 | `newswatch.service` | always | NSE filings + RSS, AI-scored alerts |
 | `sentiment.timer` | every 15 min | Market tilt, VIX, PCR, FII/DII, events |
 | `company.timer` | 08:40, 16:30 | Bulk/block deals, results dates, shareholding (NSE) |

@@ -46,6 +46,8 @@ def _json(path) -> Optional[dict]:
 def kind_of(name: str) -> str:
     if name == AI:
         return "ai_trader"
+    if name == "ai_agent":
+        return "ai_agent"
     if name.endswith("~fut"):
         return "futures"
     if name.endswith("~opt"):
@@ -129,7 +131,7 @@ def overview(day: Optional[str] = None) -> dict:
         fno_wallet = float(fno.capital())
     except Exception:                                    # noqa: BLE001
         sleeves, fno_wallet = [], wallet
-    for m in list(paper.MODELS) + sleeves:
+    for m in paper.books() + sleeves:
         r = today.get(m) or {}
         rows.append({"name": m, "kind": kind_of(m), "recipe": recipe_of(m),
                      "wallet": fno_wallet if "~" in m else wallet, "target": target,
@@ -199,13 +201,19 @@ def detail(name: str, day: Optional[str] = None) -> dict:
                 trades.append({"stock": r["symbol"], "side": "BUY" if r["side"] == "B" else "SELL", "qty": r["qty"],
                                "opened": _hhmm(o.get("t")), "closed": _hhmm(r.get("t")), "entry": r.get("entry"),
                                "exit": r.get("exit"), "stop": o.get("stop"), "target": o.get("target"),
-                               "net": float(r.get("net") or 0), "why": r.get("why")})
+                               "net": float(r.get("net") or 0), "why": r.get("why"), "followed": o.get("src")})
         for sym, o in opens.items():
             trades.append({"stock": sym, "side": "BUY" if o["side"] == "B" else "SELL", "qty": o["qty"],
                            "opened": _hhmm(o.get("t")), "closed": None, "entry": o.get("entry"), "exit": None,
-                           "stop": o.get("stop"), "target": o.get("target"), "net": None, "why": "open"})
+                           "stop": o.get("stop"), "target": o.get("target"), "net": None, "why": "open",
+                           "followed": o.get("src")})
+    agent = None
+    if name == paper.AGENT:
+        rows_ = paper.agent_decisions(day)
+        agent = {"decisions": [{k: r.get(k) for k in ("at", "day_read", "follow", "exit", "exit_all", "stand_aside", "note")}
+                               for r in rows_][-30:]}
     knobs = None
-    if name != AI and "~" not in name:
+    if name != AI and "~" not in name and name != paper.AGENT:
         r = recipe_of(name)
         if r in paper.RECIPES:
             if name.endswith("@ai"):
@@ -227,7 +235,8 @@ def detail(name: str, day: Optional[str] = None) -> dict:
     ov = next((r for r in overview(day)["strategies"] if r["name"] == name), None)
     return {"name": name, "day": day, "kind": kind_of(name), "recipe": recipe_of(name), "summary": ov,
             "trades": trades, "log_rows": log_rows(name, day), "log_md": log_md, "learning_md": learn_md,
-            "days": sorted(set(log_days) | {h["day"] for h in (ov or {}).get("history", [])}), "knobs": knobs}
+            "days": sorted(set(log_days) | {h["day"] for h in (ov or {}).get("history", [])}), "knobs": knobs,
+            "agent": agent}
 
 
 def _hhmm(t) -> Optional[str]:
@@ -320,6 +329,8 @@ def pipeline(now: Optional[datetime] = None) -> dict:
               window=(9 * 60 + 35, 14 * 60 + 35), max_age=600),
         stage("bench", "Paper bench", "35 rule models + F&O sleeves on live prices", bench_ts, window=(9 * 60 + 16, 15 * 60), max_age=60),
         stage("tuner", "Tuner", "The AI sets the @ai knobs", params.get("at"), window=(9 * 60 + 25, 14 * 60 + 30), max_age=2100),
+        stage("agent", "AI agent", "Picks which models its Rs 1L wallet follows, every 15 min",
+              ((paper.agent_decisions(day) or [{}])[-1]).get("at"), window=(9 * 60 + 40, 14 * 60 + 30), max_age=1200),
         stage("orders", "Orders and fills", f"Execution ({broker} broker)",
               last(lambda r: r.get("event") in ("paper_order", "placed", "filled")), due_after=None),
         stage("monitor", "Fill monitor", "Stops, trailing lock, target, P&L", last(lambda r: r.get("event") == "pnl"),

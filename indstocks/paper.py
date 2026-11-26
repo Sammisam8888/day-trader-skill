@@ -546,6 +546,11 @@ MODELS.update({
 MODELS.update({f"{r}@ai": tuned(r) for r in RECIPES})
 
 
+def books() -> List[str]:
+    """Every paper book: the models, then the AI agent."""
+    return list(MODELS) + ([AGENT] if agent_on() else [])
+
+
 def inverted(fn: Callable) -> Callable:
     """Any signal function taken the other way (kept for research scripts)."""
     def g(bars, state) -> Signal:
@@ -555,6 +560,64 @@ def inverted(fn: Callable) -> Callable:
         side, stop, target = sig
         return ("S" if side == "B" else "B", target, stop)
     return g
+
+
+# ------------------------------------------------------------------ the AI agent
+# Owner, 26 Nov: "Keep 1 separate 1 lakh deployed strategy particularly for ai based
+# agentic control over multi strategies". The AI agent (agent.py, every 15 minutes)
+# picks which bench models to follow and how much to risk on each; this book copies
+# those models' new signals into the agent's own Rs 1 lakh wallet and closes what the
+# agent says to close. Its decisions are timestamped, so a restart replays them.
+
+AGENT = "ai_agent"
+AGENT_RISK_MULT = (0.25, 2.0)
+
+
+def agent_on() -> bool:
+    return common.setting("TRADER_AGENT", "true").strip().lower() in ("1", "true", "yes", "on")
+
+
+def agent_risk() -> D:
+    try:
+        return D(common.setting("TRADER_AGENT_RISK", common.setting("TRADER_PAPER_RISK", "500")))
+    except ArithmeticError:
+        return D("500")
+
+
+_AGENT = {"mtime": None, "day": None, "rows": []}
+
+
+def agent_decisions(day: str) -> List[dict]:
+    """Every decision the AI agent made today, oldest first (agent-DAY.jsonl)."""
+    f = PAPER_DIR / f"agent-{day}.jsonl"
+    try:
+        mt = f.stat().st_mtime
+    except OSError:
+        mt = None
+    if mt != _AGENT["mtime"] or day != _AGENT["day"]:
+        rows = []
+        if mt is not None:
+            for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and isinstance(r.get("t"), (int, float)):
+                    rows.append(r)
+        rows.sort(key=lambda r: r["t"])
+        _AGENT.update(mtime=mt, day=day, rows=rows)
+    return _AGENT["rows"]
+
+
+def agent_decision(day: str, at: float) -> Optional[dict]:
+    """The agent's decision in force at time `at` (None before its first one)."""
+    cur = None
+    for r in agent_decisions(day):
+        if r["t"] <= at:
+            cur = r
+        else:
+            break
+    return cur
 
 
 # ------------------------------------------------------------------ the book
@@ -581,6 +644,7 @@ class Trade:
     target: float
     opened: float
     best: float = 0.0
+    src: str = ""                         # the AI agent's copies: which model's signal it followed
 
 
 @dataclass
@@ -600,6 +664,7 @@ class Bench:
     target_hit: Dict[str, float] = field(default_factory=dict)
     fno: Optional[object] = None          # fno.FnoBook: the F&O sleeves, driven by live trades only
     live: bool = False                    # False while a day is replayed from the tape
+    agent_seen: float = 0.0               # the agent decision whose exits were applied
 
     def risk_rs(self) -> D:
         try:
@@ -672,7 +737,8 @@ class Bench:
 
     def check_kills(self, prices: Dict[str, float], at: float) -> None:
         tgt = day_target()
-        for m in MODELS:
+        self.agent_exits(prices, at)
+        for m in books():
             if m in self.killed:
                 continue
             day = self.realised.get(m, D(0)) + self.model_open_net(m, prices)
@@ -752,6 +818,64 @@ class Bench:
                     self.fno.on_open(m, sym, side, px, at)
                 except Exception as exc:                           # noqa: BLE001
                     common.log("paper", {"event": "fno_error", "where": "open", "error": str(exc)[:200]})
+            self.agent_follow(m, sym, side, px, stop, target, at)
+
+    def agent_follow(self, m: str, sym: str, side: str, px: float, stop: float, target: float, at: float) -> None:
+        """Model m just opened: if the AI agent follows m now, take the same trade in its own wallet."""
+        if not agent_on() or AGENT in self.killed or (AGENT, sym) in self.open or _hm(at) >= ENTRY_UNTIL:
+            return
+        dec = agent_decision(self.day, at)
+        if not dec or dec.get("stand_aside"):
+            return
+        f = (dec.get("follow") or {}).get(m)
+        if not isinstance(f, dict):
+            return
+        want = str(f.get("side", "both"))
+        if (want == "long" and side != "B") or (want == "short" and side != "S"):
+            return
+        try:
+            mult = min(max(float(f.get("risk", 1.0)), AGENT_RISK_MULT[0]), AGENT_RISK_MULT[1])
+        except (TypeError, ValueError):
+            mult = 1.0
+        slip = tick_of(px)
+        entry = px + slip if side == "B" else px - slip
+        per_share = abs(entry - stop)
+        if per_share <= 0:
+            return
+        room = float(capital() * LEVERAGE) - sum(t.entry * t.qty for k, t in self.open.items() if k[0] == AGENT)
+        qty = int(min(room // entry, float(agent_risk()) * mult / per_share))
+        if qty < 1:
+            return
+        self.open[(AGENT, sym)] = Trade(AGENT, sym, side, qty, round(entry, 2), round(stop, 2), round(target, 2), at, src=m)
+        self._ledger({"ev": "open", "t": round(at, 1), "model": AGENT, "symbol": sym, "side": side, "qty": qty,
+                      "entry": round(entry, 2), "stop": round(stop, 2), "target": round(target, 2), "src": m,
+                      "risk_x": mult})
+        self._journal(AGENT, at, "open", sym, side, qty, round(entry, 2), round(stop, 2), round(target, 2),
+                      note=f"followed {m} (risk x{mult:g}): {str(f.get('why', ''))[:120]}")
+
+    def agent_exits(self, prices: Dict[str, float], at: float) -> None:
+        """A new agent decision may close positions: all of them, or those that followed given models."""
+        if not agent_on():
+            return
+        dec = agent_decision(self.day, at)
+        if not dec or dec["t"] == self.agent_seen:
+            return
+        self.agent_seen = dec["t"]
+        if self.write:
+            import journal
+            fl = ", ".join(f"{m} x{f.get('risk', 1):g}{'' if f.get('side', 'both') == 'both' else ' ' + str(f.get('side'))}"
+                           for m, f in (dec.get("follow") or {}).items())
+            journal.note(AGENT, self.day, f"DECISION {datetime.fromtimestamp(dec['t'], sess.IST):%H:%M}: follow "
+                         f"[{fl or 'none'}]" + (f"; exit {', '.join(dec['exit'])}" if dec.get("exit") else "")
+                         + ("; EXIT ALL" if dec.get("exit_all") else "")
+                         + ("; stand aside" if dec.get("stand_aside") else "")
+                         + (f". {dec['note']}" if dec.get("note") else ""))
+        exit_all = bool(dec.get("exit_all"))
+        exit_models = set(dec.get("exit") or [])
+        for key in [k for k in self.open if k[0] == AGENT]:
+            t = self.open[key]
+            if exit_all or t.src in exit_models:
+                self.close(key, prices.get(t.symbol, t.entry), "AI agent exit", at)
 
     def feed(self, sym: str, at: float, px: float, cum: Optional[float]) -> None:
         s = self.series.setdefault(sym, Series())
@@ -765,7 +889,7 @@ class Bench:
 
     def summary(self, prices: Dict[str, float]) -> dict:
         rows = {}
-        for m in MODELS:
+        for m in books():
             op = self.model_open_net(m, prices)
             rows[m] = {"net": str((self.realised.get(m, D(0)) + op).quantize(D("0.01"))),
                        "realised": str(self.realised.get(m, D(0))), "open": str(op.quantize(D("0.01"))),
