@@ -1,0 +1,70 @@
+{
+ "day_read": "Range-bound, rotational day. Nifty is flat (+0.18%, mid-range in a 0.85% range) under the 26000 call wall on thin volume (0.39x), while Banknifty sits at its day low on rising volume. Breakouts keep failing (ORB copies lose, inverses win) and only the strictly filtered @ai copies are making money.",
+ "models": {
+  "bollinger_fade": {
+   "enabled": 0,
+   "why": "worst or near-worst model on all five past days; fades keep failing"
+  },
+  "rsi2": {
+   "enabled": 0,
+   "why": "The straight copy is 1/12 today, and the inverted copy lost heavily on past days. Keep it off."
+  },
+  "vwap_revert": {
+   "band_sd": 2.5,
+   "stop_sd": 1.0,
+   "enabled": 0,
+   "why": "The straight copy is 2/17. The inverted copy's +985 comes from 40 trades of thin edge eaten by charges, so it isn't worth chasing."
+  },
+  "volume_burst": {
+   "enabled": 1,
+   "vol_x": 4.0,
+   "body_atr": 1.8,
+   "side": 1,
+   "why": "Best model today (+2739, beating both defaults). Keep the strict filters and long-only side unchanged."
+  },
+  "vwap_trend": {
+   "confirm": 5,
+   "stop_atr": 3.0,
+   "target_atr": 4.0,
+   "side": 1,
+   "why": "@ai is only +331 on 37 trades, so charges eat most of the edge. Requiring one more confirming close cuts whipsaw entries in the flat tape for the last hour. It stays long only, in line with the FII-ba"
+  },
+  "ema_cross": {
+   "stop_atr": 2.0,
+   "target_atr": 3.5,
+   "side": 1,
+   "enabled": 0,
+   "why": "@ai is 1/3 for -359. Crossovers whipsaw on a flat, low-volume tape with about 1.5 hours left."
+  },
+  "orb": {
+   "minutes": 30,
+   "max_width_pct": 1.2,
+   "invert": 1,
+   "target_x": 1.5,
+   "enabled": 0,
+   "why": "The opening-range window is long past. orb15/30 lose, and their inverses win often but net negative after charges."
+  },
+  "squeeze_break": {
+   "target_atr": 3.0,
+   "side": 1,
+   "enabled": 0,
+   "why": "The @ai copy is 0/3 for -1950 long-only and the straight copy is 0/3 too. The inverted copy's +500 on 3 trades is too thin to invert into a call-wall cap on low volume, so switch it off to stop the bl"
+  },
+  "opening_drive_fade": {
+   "invert": 1,
+   "why": "The inverted copy is 3/3 and the day keeps extending in the drive's direction. No change."
+  },
+  "liq_run": {
+   "enabled": 0,
+   "why": "The straight copy is +1080, but breaks of equal highs just under the 26000 wall on half-normal volume are low-odds this late. Keep it off."
+  },
+  "liq_sweep": {
+   "enabled": 0,
+   "reclaim_bars": 3,
+   "target_r": 1.5,
+   "side": 1,
+   "why": "@ai has fallen from +987 to -2280 on 27 trades. Sweep reversals are churning in the low-volume chop, and charges are compounding the losses."
+  }
+ },
+ "at": "2026-11-26T13:52:03+05:30"
+}
